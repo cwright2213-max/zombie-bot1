@@ -109,7 +109,6 @@ async def zombie_start(interaction: discord.Interaction) -> None:
     await interaction.response.send_message(
         embed=combat_embed(messages, player),
         view=CombatView(interaction.user.id, game_store),
-        ephemeral=True,
     )
 
 
@@ -118,7 +117,6 @@ async def zombie_status(interaction: discord.Interaction) -> None:
     await interaction.response.send_message(
         status(game_store.get(interaction.user.id)),
         view=ZombieMenuView(interaction.user.id, game_store),
-        ephemeral=True,
     )
 
 
@@ -128,7 +126,6 @@ async def zombie_menu(interaction: discord.Interaction) -> None:
     await interaction.response.send_message(
         status(game_store.get(interaction.user.id)),
         view=ZombieMenuView(interaction.user.id, game_store),
-        ephemeral=True,
     )
 
 
@@ -157,7 +154,6 @@ async def zombie_action(
     await interaction.response.send_message(
         embed=combat_embed(messages, player),
         view=CombatView(interaction.user.id, game_store) if player.run_active else ZombieMenuView(interaction.user.id, game_store),
-        ephemeral=True,
     )
 
 

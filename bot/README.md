@@ -20,7 +20,9 @@ Each Discord user has an independent save in `zombie_saves.json`. The game
 converts the attached terminal game into one-action-per-command turns, so a
 fight can be played directly from Discord without blocking the bot.
 
-`/zombie menu` opens a private button-based interface. The buttons cover
+`/zombie menu` opens a public button-based interface so other players can see
+levels and progress. Only the player who opened a menu can use its buttons.
+The buttons cover
 combat, healing, shopping, zones, ammo, and upgrades, with the same quick
 action layout used by the combat screen. Slash commands remain available for
 players who prefer typing commands.
