@@ -23,6 +23,7 @@ from bot.zombie_survival import (
     take_action,
     upgrade,
 )
+from bot.zombie_ui import CombatView, ZombieMenuView
 
 
 logging.basicConfig(
@@ -105,12 +106,26 @@ async def zombie_start(interaction: discord.Interaction) -> None:
     player = game_store.get(interaction.user.id)
     messages = start_run(player)
     game_store.save()
-    await interaction.response.send_message("\n".join(messages))
+    await interaction.response.send_message("\n".join(messages), view=CombatView(interaction.user.id, game_store), ephemeral=True)
 
 
 @zombie.command(name="status", description="Show your survivor status.")
 async def zombie_status(interaction: discord.Interaction) -> None:
-    await interaction.response.send_message(status(game_store.get(interaction.user.id)))
+    await interaction.response.send_message(
+        status(game_store.get(interaction.user.id)),
+        view=ZombieMenuView(interaction.user.id, game_store),
+        ephemeral=True,
+    )
+
+
+@zombie.command(name="menu", description="Open selectable zombie survival menus.")
+async def zombie_menu(interaction: discord.Interaction) -> None:
+    """Open the interactive select-menu game interface."""
+    await interaction.response.send_message(
+        status(game_store.get(interaction.user.id)),
+        view=ZombieMenuView(interaction.user.id, game_store),
+        ephemeral=True,
+    )
 
 
 @zombie.command(name="action", description="Take a turn in your current fight.")
@@ -135,7 +150,11 @@ async def zombie_action(
     player = game_store.get(interaction.user.id)
     messages = take_action(player, action.value, heal_item.value if heal_item else None)
     game_store.save()
-    await interaction.response.send_message("\n".join(messages + [action_help_for_response(player)]))
+    await interaction.response.send_message(
+        "\n".join(messages + [action_help_for_response(player)]),
+        view=CombatView(interaction.user.id, game_store) if player.run_active else ZombieMenuView(interaction.user.id, game_store),
+        ephemeral=True,
+    )
 
 
 def action_help_for_response(player: Any) -> str:

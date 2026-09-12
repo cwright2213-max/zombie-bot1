@@ -14,10 +14,15 @@ turn-based zombie survival game.
 - `/zombie zone` — travel between unlocked zones
 - `/zombie ammo` — buy and equip elemental ammo
 - `/zombie upgrade` — spend XP on upgrades
+- `/zombie menu` — open private selectable menus and buttons for the game
 
 Each Discord user has an independent save in `zombie_saves.json`. The game
 converts the attached terminal game into one-action-per-command turns, so a
 fight can be played directly from Discord without blocking the bot.
+
+`/zombie menu` opens interactive Discord components. The menus cover combat,
+healing, shopping, zones, ammo, and upgrades. Slash commands remain available
+for players who prefer typing commands.
 
 ## Run it
 
