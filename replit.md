@@ -1,6 +1,6 @@
-# [Project name]
+# Python Discord Bot
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+Starter Discord bot with slash commands, built with Python and discord.py.
 
 ## Run & Operate
 
@@ -11,6 +11,12 @@ _Replace the heading above with the project's name, and this line with one sente
 - `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
 - Required env: `DATABASE_URL` — Postgres connection string
 
+## Discord bot
+
+- `python -m bot.main` — start the Discord bot
+- Required secret: `DISCORD_BOT_TOKEN`
+- `bot/main.py` — source of truth for commands and Discord client setup
+
 ## Stack
 
 - pnpm workspaces, Node.js 24, TypeScript 5.9
@@ -19,26 +25,31 @@ _Replace the heading above with the project's name, and this line with one sente
 - Validation: Zod (`zod/v4`), `drizzle-zod`
 - API codegen: Orval (from OpenAPI spec)
 - Build: esbuild (CJS bundle)
+- Bot: Python 3.13 + discord.py
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- `bot/main.py` — Discord client and slash commands
+- `bot/README.md` — setup and invite instructions
+- `pyproject.toml` / `uv.lock` — Python dependency metadata
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- The bot uses Discord slash commands, so message-content intent is not required for the starter commands.
+- The bot token is read only from `DISCORD_BOT_TOKEN` and is never stored in source files.
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+The bot responds to `/ping`, `/about`, and `/serverinfo` in servers where it has
+been invited.
 
 ## User preferences
 
-_Populate as you build — explicit user instructions worth remembering across sessions._
+No additional preferences recorded.
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
+- Invite the bot with the `applications.commands` scope so slash commands can sync.
 
 ## Pointers
 
