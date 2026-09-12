@@ -26,6 +26,50 @@ def result_text(messages: list[str], player: object) -> str:
     return "\n".join(parts + [current_status])
 
 
+def _health_bar(current: int, maximum: int, width: int = 12) -> str:
+    filled = round(max(0, min(current, maximum)) / maximum * width) if maximum else 0
+    return f"`{'█' * filled}{'░' * (width - filled)}`"
+
+
+def combat_embed(messages: list[str], player: object) -> discord.Embed:
+    """Render the latest turn and both sides of the current fight."""
+    embed = discord.Embed(
+        title="Zombie Survival",
+        color=discord.Color.dark_red(),
+    )
+    embed.description = "\n".join(message for message in messages if message) or "Choose your next action."
+
+    if getattr(player, "run_active", False) and getattr(player, "enemy", None):
+        enemy = player.enemy
+        embed.add_field(
+            name=f"You — {player.health}/{player.max_health} HP",
+            value=f"{_health_bar(player.health, player.max_health)}\n"
+            f"Ammo: {player.magazine}/{player.magazine_size} + {player.spare_ammo} spare",
+            inline=True,
+        )
+        embed.add_field(
+            name=f"{enemy.name} — {enemy.health}/{enemy.max_health} HP",
+            value=f"{_health_bar(enemy.health, enemy.max_health)}\n"
+            f"Wave {player.wave} • {player.zombies_remaining} left",
+            inline=True,
+        )
+        embed.add_field(
+            name="Loadout",
+            value=f"{player.weapon_name} • {player.ammo_name} ammo",
+            inline=False,
+        )
+        embed.set_footer(text="Choose an action below. This panel updates after every turn.")
+    else:
+        embed.add_field(
+            name="Run ended",
+            value=f"Health: {player.health}/{player.max_health} HP\n"
+            f"Money: ${player.money} • XP: {player.xp}",
+            inline=False,
+        )
+        embed.set_footer(text="Use Start run to begin another survival run.")
+    return embed
+
+
 class PlayerView(discord.ui.View):
     """Base view that prevents one player from controlling another player's menu."""
 
@@ -90,37 +134,58 @@ class ZombieMenuView(PlayerView):
 
 
 class CombatView(PlayerView):
-    """Combat actions presented as a select menu."""
+    """Combat actions presented as one-click choice buttons."""
 
-    @discord.ui.select(
-        placeholder="Choose a combat action...",
-        options=[
-            discord.SelectOption(label="Attack", value="attack", description="Fire one round at the zombie"),
-            discord.SelectOption(label="Reload", value="reload", description="Refill your magazine"),
-            discord.SelectOption(label="Heal", value="heal", description="Choose a healing item"),
-            discord.SelectOption(label="Flee", value="flee", description="End the current run"),
-        ],
-    )
-    async def action_select(
+    async def _take_action(
         self,
         interaction: discord.Interaction,
-        select: discord.ui.Select,
+        action: str,
     ) -> None:
-        action = select.values[0]
-        if action == "heal":
-            await interaction.response.edit_message(
-                content="Choose a healing item.",
-                view=HealView(self.user_id, self.store),
-            )
-            return
         player = self.store.get(self.user_id)
         messages = take_action(player, action)
         self.store.save()
         next_view: PlayerView = self if player.run_active else ZombieMenuView(self.user_id, self.store)
         await interaction.response.edit_message(
-            content=result_text(messages, player),
+            content=None,
+            embed=combat_embed(messages, player),
             view=next_view,
         )
+
+    @discord.ui.button(label="Attack", style=discord.ButtonStyle.danger, row=0)
+    async def attack(
+        self,
+        interaction: discord.Interaction,
+        _button: discord.ui.Button,
+    ) -> None:
+        await self._take_action(interaction, "attack")
+
+    @discord.ui.button(label="Heal", style=discord.ButtonStyle.success, row=0)
+    async def heal(
+        self,
+        interaction: discord.Interaction,
+        _button: discord.ui.Button,
+    ) -> None:
+        await interaction.response.edit_message(
+            content="Choose a healing item.",
+            embed=None,
+            view=HealView(self.user_id, self.store),
+        )
+
+    @discord.ui.button(label="Reload", style=discord.ButtonStyle.primary, row=0)
+    async def reload(
+        self,
+        interaction: discord.Interaction,
+        _button: discord.ui.Button,
+    ) -> None:
+        await self._take_action(interaction, "reload")
+
+    @discord.ui.button(label="Flee", style=discord.ButtonStyle.secondary, row=0)
+    async def flee(
+        self,
+        interaction: discord.Interaction,
+        _button: discord.ui.Button,
+    ) -> None:
+        await self._take_action(interaction, "flee")
 
     @discord.ui.button(label="Start run", style=discord.ButtonStyle.success, row=1)
     async def start(
@@ -132,7 +197,8 @@ class CombatView(PlayerView):
         messages = start_run(player)
         self.store.save()
         await interaction.response.edit_message(
-            content=result_text(messages, player),
+            content=None,
+            embed=combat_embed(messages, player),
             view=CombatView(self.user_id, self.store),
         )
 
@@ -160,31 +226,41 @@ class CombatView(PlayerView):
 
 
 class HealView(PlayerView):
-    """Secondary select menu for healing choices."""
+    """Secondary button choices for healing."""
 
-    @discord.ui.select(
-        placeholder="Choose a healing item...",
-        options=[
-            discord.SelectOption(label="Full restore", value="full_restore"),
-            discord.SelectOption(label="Painkillers", value="painkillers"),
-        ],
-    )
-    async def heal_select(
+    async def _use_heal(
         self,
         interaction: discord.Interaction,
-        select: discord.ui.Select,
+        item: str,
     ) -> None:
         player = self.store.get(self.user_id)
-        messages = take_action(player, "heal", select.values[0])
+        messages = take_action(player, "heal", item)
         self.store.save()
         next_view: PlayerView = CombatView(self.user_id, self.store) if player.run_active else ZombieMenuView(
             self.user_id,
             self.store,
         )
         await interaction.response.edit_message(
-            content=result_text(messages, player),
+            content=None,
+            embed=combat_embed(messages, player),
             view=next_view,
         )
+
+    @discord.ui.button(label="Full restore", style=discord.ButtonStyle.success, row=0)
+    async def full_restore(
+        self,
+        interaction: discord.Interaction,
+        _button: discord.ui.Button,
+    ) -> None:
+        await self._use_heal(interaction, "full_restore")
+
+    @discord.ui.button(label="Painkillers", style=discord.ButtonStyle.success, row=0)
+    async def painkillers(
+        self,
+        interaction: discord.Interaction,
+        _button: discord.ui.Button,
+    ) -> None:
+        await self._use_heal(interaction, "painkillers")
 
     @discord.ui.button(label="Back to combat", style=discord.ButtonStyle.secondary, row=1)
     async def back(
@@ -193,7 +269,8 @@ class HealView(PlayerView):
         _button: discord.ui.Button,
     ) -> None:
         await interaction.response.edit_message(
-            content=status(self.store.get(self.user_id)),
+            content=None,
+            embed=combat_embed([], self.store.get(self.user_id)),
             view=CombatView(self.user_id, self.store),
         )
 

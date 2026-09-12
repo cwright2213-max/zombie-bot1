@@ -23,7 +23,7 @@ from bot.zombie_survival import (
     take_action,
     upgrade,
 )
-from bot.zombie_ui import CombatView, ZombieMenuView
+from bot.zombie_ui import CombatView, ZombieMenuView, combat_embed
 
 
 logging.basicConfig(
@@ -106,7 +106,11 @@ async def zombie_start(interaction: discord.Interaction) -> None:
     player = game_store.get(interaction.user.id)
     messages = start_run(player)
     game_store.save()
-    await interaction.response.send_message("\n".join(messages), view=CombatView(interaction.user.id, game_store), ephemeral=True)
+    await interaction.response.send_message(
+        embed=combat_embed(messages, player),
+        view=CombatView(interaction.user.id, game_store),
+        ephemeral=True,
+    )
 
 
 @zombie.command(name="status", description="Show your survivor status.")
@@ -151,7 +155,7 @@ async def zombie_action(
     messages = take_action(player, action.value, heal_item.value if heal_item else None)
     game_store.save()
     await interaction.response.send_message(
-        "\n".join(messages + [action_help_for_response(player)]),
+        embed=combat_embed(messages, player),
         view=CombatView(interaction.user.id, game_store) if player.run_active else ZombieMenuView(interaction.user.id, game_store),
         ephemeral=True,
     )
