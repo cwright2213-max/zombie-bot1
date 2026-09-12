@@ -93,33 +93,35 @@ class PlayerView(discord.ui.View):
 
 
 class ZombieMenuView(PlayerView):
-    """Top-level game menu."""
+    """Top-level game menu displayed as quick-access buttons."""
 
-    @discord.ui.select(
-        placeholder="Choose a game menu...",
-        options=[
-            discord.SelectOption(label="Combat", value="combat", description="Start a run or take a turn"),
-            discord.SelectOption(label="Shop", value="shop", description="Buy supplies and weapons"),
-            discord.SelectOption(label="Zones", value="zones", description="Travel to an unlocked zone"),
-            discord.SelectOption(label="Ammo Lab", value="ammo", description="Buy and equip elemental ammo"),
-            discord.SelectOption(label="Upgrades", value="upgrades", description="Spend XP on upgrades"),
-        ],
-    )
-    async def menu_select(
+    async def _open(
         self,
         interaction: discord.Interaction,
-        select: discord.ui.Select,
+        view: PlayerView,
     ) -> None:
         player = self.store.get(self.user_id)
-        view_map: dict[str, PlayerView] = {
-            "combat": CombatView(self.user_id, self.store),
-            "shop": ShopView(self.user_id, self.store),
-            "zones": ZoneView(self.user_id, self.store),
-            "ammo": AmmoView(self.user_id, self.store),
-            "upgrades": UpgradeView(self.user_id, self.store),
-        }
-        view = view_map[select.values[0]]
         await interaction.response.edit_message(content=status(player), view=view)
+
+    @discord.ui.button(label="Combat", style=discord.ButtonStyle.danger, row=0)
+    async def combat(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
+        await self._open(interaction, CombatView(self.user_id, self.store))
+
+    @discord.ui.button(label="Shop", style=discord.ButtonStyle.primary, row=0)
+    async def shop(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
+        await self._open(interaction, ShopView(self.user_id, self.store))
+
+    @discord.ui.button(label="Zones", style=discord.ButtonStyle.primary, row=0)
+    async def zones(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
+        await self._open(interaction, ZoneView(self.user_id, self.store))
+
+    @discord.ui.button(label="Ammo lab", style=discord.ButtonStyle.primary, row=0)
+    async def ammo(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
+        await self._open(interaction, AmmoView(self.user_id, self.store))
+
+    @discord.ui.button(label="Upgrades", style=discord.ButtonStyle.success, row=0)
+    async def upgrades(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
+        await self._open(interaction, UpgradeView(self.user_id, self.store))
 
     @discord.ui.button(label="Refresh status", style=discord.ButtonStyle.secondary, row=1)
     async def refresh_status(
@@ -276,32 +278,43 @@ class HealView(PlayerView):
 
 
 class ShopView(PlayerView):
-    """Shop select menu."""
+    """Shop choices displayed as buttons."""
 
-    @discord.ui.select(
-        placeholder="Choose an item...",
-        options=[
-            discord.SelectOption(label="Ammo box — $30", value="ammo"),
-            discord.SelectOption(label="Painkillers — $40", value="painkillers"),
-            discord.SelectOption(label="Full restore — $120", value="full_restore"),
-            *[
-                discord.SelectOption(
-                    label=f"{weapon_name} — ${weapon_data['price']}",
-                    value=weapon_name,
-                    description=f"{weapon_data['damage']} damage, {weapon_data['mag']} round magazine",
-                )
-                for weapon_name, weapon_data in WEAPONS.items()
-                if weapon_name != "Pistol"
-            ],
-        ],
-    )
-    async def shop_select(
+    def __init__(self, user_id: int, store: GameStore) -> None:
+        super().__init__(user_id, store)
+        choices = [
+            ("Ammo box · $30", "ammo", discord.ButtonStyle.primary),
+            ("Painkillers · $40", "painkillers", discord.ButtonStyle.primary),
+            ("Full restore · $120", "full_restore", discord.ButtonStyle.primary),
+        ]
+        choices.extend(
+            (
+                f"{weapon_name} · ${weapon_data['price']}",
+                weapon_name,
+                discord.ButtonStyle.secondary,
+            )
+            for weapon_name, weapon_data in WEAPONS.items()
+            if weapon_name != "Pistol"
+        )
+        for index, (label, value, style) in enumerate(choices):
+            button = discord.ui.Button(label=label, style=style, row=index // 4)
+
+            async def callback(
+                interaction: discord.Interaction,
+                selected: str = value,
+            ) -> None:
+                await self._buy(interaction, selected)
+
+            button.callback = callback
+            self.add_item(button)
+
+    async def _buy(
         self,
         interaction: discord.Interaction,
-        select: discord.ui.Select,
+        item: str,
     ) -> None:
         player = self.store.get(self.user_id)
-        messages = buy_item(player, select.values[0])
+        messages = buy_item(player, item)
         self.store.save()
         await interaction.response.edit_message(
             content=result_text(messages, player),
@@ -321,26 +334,29 @@ class ShopView(PlayerView):
 
 
 class ZoneView(PlayerView):
-    """Zone travel select menu."""
+    """Zone travel choices displayed as buttons."""
 
-    @discord.ui.select(
-        placeholder="Choose a zone...",
-        options=[
-            discord.SelectOption(
-                label=zone_name,
-                value=zone_name,
-                description=f"Unlocks at level {zone_data['min_level']}",
-            )
-            for zone_name, zone_data in ZONES.items()
-        ],
-    )
-    async def zone_select(
+    def __init__(self, user_id: int, store: GameStore) -> None:
+        super().__init__(user_id, store)
+        for index, zone_name in enumerate(ZONES):
+            button = discord.ui.Button(label=zone_name, style=discord.ButtonStyle.primary, row=index // 5)
+
+            async def callback(
+                interaction: discord.Interaction,
+                selected: str = zone_name,
+            ) -> None:
+                await self._travel(interaction, selected)
+
+            button.callback = callback
+            self.add_item(button)
+
+    async def _travel(
         self,
         interaction: discord.Interaction,
-        select: discord.ui.Select,
+        zone_name: str,
     ) -> None:
         player = self.store.get(self.user_id)
-        messages = change_zone(player, select.values[0])
+        messages = change_zone(player, zone_name)
         self.store.save()
         await interaction.response.edit_message(
             content=result_text(messages, player),
@@ -360,26 +376,29 @@ class ZoneView(PlayerView):
 
 
 class AmmoView(PlayerView):
-    """Ammo lab select menu."""
+    """Ammo choices displayed as buttons."""
 
-    @discord.ui.select(
-        placeholder="Choose an ammo type...",
-        options=[
-            discord.SelectOption(
-                label=ammo_name,
-                value=ammo_name,
-                description=f"${ammo_data['price']} — unlocks at level {ammo_data['unlock_level']}",
-            )
-            for ammo_name, ammo_data in AMMO.items()
-        ],
-    )
-    async def ammo_select(
+    def __init__(self, user_id: int, store: GameStore) -> None:
+        super().__init__(user_id, store)
+        for index, ammo_name in enumerate(AMMO):
+            button = discord.ui.Button(label=ammo_name, style=discord.ButtonStyle.primary, row=index // 4)
+
+            async def callback(
+                interaction: discord.Interaction,
+                selected: str = ammo_name,
+            ) -> None:
+                await self._equip(interaction, selected)
+
+            button.callback = callback
+            self.add_item(button)
+
+    async def _equip(
         self,
         interaction: discord.Interaction,
-        select: discord.ui.Select,
+        ammo_name: str,
     ) -> None:
         player = self.store.get(self.user_id)
-        messages = equip_ammo(player, select.values[0])
+        messages = equip_ammo(player, ammo_name)
         self.store.save()
         await interaction.response.edit_message(
             content=result_text(messages, player),
@@ -399,23 +418,34 @@ class AmmoView(PlayerView):
 
 
 class UpgradeView(PlayerView):
-    """Upgrade select menu."""
+    """Upgrade choices displayed as buttons."""
 
-    @discord.ui.select(
-        placeholder="Choose an upgrade...",
-        options=[
-            discord.SelectOption(label="Max health — 80 XP", value="health"),
-            discord.SelectOption(label="Weapon damage — 100 XP", value="damage"),
-            discord.SelectOption(label="Magazine size — 70 XP", value="magazine"),
-        ],
-    )
-    async def upgrade_select(
+    def __init__(self, user_id: int, store: GameStore) -> None:
+        super().__init__(user_id, store)
+        choices = [
+            ("Max health · 80 XP", "health"),
+            ("Weapon damage · 100 XP", "damage"),
+            ("Magazine size · 70 XP", "magazine"),
+        ]
+        for label, value in choices:
+            button = discord.ui.Button(label=label, style=discord.ButtonStyle.success, row=0)
+
+            async def callback(
+                interaction: discord.Interaction,
+                selected: str = value,
+            ) -> None:
+                await self._upgrade(interaction, selected)
+
+            button.callback = callback
+            self.add_item(button)
+
+    async def _upgrade(
         self,
         interaction: discord.Interaction,
-        select: discord.ui.Select,
+        stat: str,
     ) -> None:
         player = self.store.get(self.user_id)
-        messages = upgrade(player, select.values[0])
+        messages = upgrade(player, stat)
         self.store.save()
         await interaction.response.edit_message(
             content=result_text(messages, player),

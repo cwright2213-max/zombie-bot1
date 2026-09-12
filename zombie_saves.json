@@ -1,13 +1,13 @@
 {
   "572053060969299977": {
     "max_health": 100,
-    "health": 90,
-    "money": 0,
-    "xp": 0,
+    "health": 0,
+    "money": 50,
+    "xp": 25,
     "weapon_name": "Pistol",
     "weapon_damage": 20,
     "magazine_size": 12,
-    "magazine": 11,
+    "magazine": 2,
     "spare_ammo": 36,
     "full_restores": 1,
     "painkillers": 3,
@@ -16,17 +16,9 @@
     "owned_ammo": [
       "Standard"
     ],
-    "run_active": true,
+    "run_active": false,
     "wave": 1,
-    "zombies_remaining": 3,
-    "enemy": {
-      "name": "Walker",
-      "health": 30,
-      "max_health": 50,
-      "damage": 10,
-      "money_reward": 10,
-      "xp_reward": 5,
-      "effects": {}
-    }
+    "zombies_remaining": 1,
+    "enemy": null
   }
 }
