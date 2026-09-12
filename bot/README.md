@@ -13,12 +13,15 @@ turn-based zombie survival game.
 - `/zombie shop` — buy supplies and weapons
 - `/zombie zone` — travel between unlocked zones
 - `/zombie ammo` — buy and equip elemental ammo
-- `/zombie upgrade` — spend XP on upgrades
+- `/zombie upgrade` — spend stars on upgrades
 - `/zombie menu` — open private selectable menus and buttons for the game
 
 Each Discord user has an independent save in `zombie_saves.json`. The game
 converts the attached terminal game into one-action-per-command turns, so a
 fight can be played directly from Discord without blocking the bot.
+
+XP uses a gradually increasing level curve. Every level gained awards one star,
+and each of the three upgrades costs one star.
 
 `/zombie menu` opens a public button-based interface so other players can see
 levels and progress. Only the player who opened a menu can use its buttons.
