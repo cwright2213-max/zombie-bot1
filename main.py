@@ -1,1 +1,2 @@
-import bot.main
+from bot.main import main
+main()
