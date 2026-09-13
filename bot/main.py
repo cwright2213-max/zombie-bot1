@@ -1,4 +1,4 @@
-"""Entry point for the Discord bot."""
+"""Entry point for the Discord bot - WITH DEBUG WHOAMI"""
 
 from __future__ import annotations
 
@@ -34,8 +34,6 @@ logger = logging.getLogger("discord_bot")
 
 
 class StarterBot(discord.Client):
-    """Small Discord bot with slash commands."""
-
     def __init__(self) -> None:
         intents = discord.Intents.default()
         super().__init__(intents=intents)
@@ -43,12 +41,10 @@ class StarterBot(discord.Client):
         self.started_at = datetime.now(timezone.utc)
 
     async def setup_hook(self) -> None:
-        """Register application commands with Discord."""
         synced_commands = await self.tree.sync()
         logger.info("Synced %d application command(s)", len(synced_commands))
 
     async def on_ready(self) -> None:
-        """Log a useful startup message once the bot is connected."""
         if self.user is not None:
             logger.info("Logged in as %s (id=%s)", self.user, self.user.id)
             logger.info("Connected to %d server(s)", len(self.guilds))
@@ -60,34 +56,39 @@ game_store = GameStore()
 
 @bot.tree.command(name="ping", description="Check whether the bot is responding.")
 async def ping(interaction: discord.Interaction) -> None:
-    """Return the bot's current gateway latency."""
     latency_ms = round(bot.latency * 1000)
     await interaction.response.send_message(f"Pong — {latency_ms} ms")
 
 
+@bot.tree.command(name="whoami", description="Debug: show your Discord ID")
+async def whoami(interaction: discord.Interaction) -> None:
+    # This will show you your REAL ID to lock commands to
+    await interaction.response.send_message(
+        f"Your ID is `{interaction.user.id}`\nUsername: {interaction.user.name}\nCopy that number and send it to Meta AI to lock admin commands.",
+        ephemeral=True
+    )
+
+
 @bot.tree.command(name="about", description="Show information about this bot.")
 async def about(interaction: discord.Interaction) -> None:
-    """Describe the bot and how long it has been running."""
     uptime = datetime.now(timezone.utc) - bot.started_at
     total_seconds = int(uptime.total_seconds())
     hours, remainder = divmod(total_seconds, 3600)
     minutes, seconds = divmod(remainder, 60)
     await interaction.response.send_message(
-        "I’m a Python Discord bot built with discord.py. "
+        "I'm a Python Discord bot built with discord.py. "
         f"Uptime: {hours}h {minutes}m {seconds}s."
     )
 
 
 @bot.tree.command(name="serverinfo", description="Show details about this server.")
 async def serverinfo(interaction: discord.Interaction) -> None:
-    """Show basic information about the current server."""
     if interaction.guild is None:
         await interaction.response.send_message(
             "This command can only be used inside a server.",
             ephemeral=True,
         )
         return
-
     guild = interaction.guild
     owner = guild.owner.mention if guild.owner else "Unknown"
     await interaction.response.send_message(
@@ -122,7 +123,6 @@ async def zombie_status(interaction: discord.Interaction) -> None:
 
 @zombie.command(name="menu", description="Open selectable zombie survival menus.")
 async def zombie_menu(interaction: discord.Interaction) -> None:
-    """Open the interactive select-menu game interface."""
     await interaction.response.send_message(
         status(game_store.get(interaction.user.id)),
         view=ZombieMenuView(interaction.user.id, game_store),
@@ -155,12 +155,6 @@ async def zombie_action(
         embed=combat_embed(messages, player),
         view=CombatView(interaction.user.id, game_store) if player.run_active else ZombieMenuView(interaction.user.id, game_store),
     )
-
-
-def action_help_for_response(player: Any) -> str:
-    if player.run_active:
-        return f"\n{status(player).splitlines()[-1]}"
-    return ""
 
 
 @zombie.command(name="shop", description="Buy supplies or equip a weapon.")
@@ -242,24 +236,28 @@ async def zombie_upgrade(interaction: discord.Interaction, stat: app_commands.Ch
 bot.tree.add_command(zombie)
 
 
-# --- ADMIN ONLY TEST COMMANDS - LOCKED TO YOUR ID 1548647360123502613 ---
-ADMIN_ID = 1548647360123502613
+# --- ADMIN ONLY - TEMP UNLOCKED FOR TESTING + DEBUG ---
+# Currently unlocked for EVERYONE so you can test, then we lock to your real ID after /whoami
+ADMIN_ID = 1548647360123502613  # Old ID - will update after /whoami
 
 def is_admin(interaction: discord.Interaction) -> bool:
-    return interaction.user.id == ADMIN_ID
+    # DEBUG: Log the real ID
+    logger.info(f"Admin check: user {interaction.user.name} id={interaction.user.id} vs ADMIN_ID {ADMIN_ID}")
+    # TEMP: Allow everyone to test for now - change to == ADMIN_ID after you get real ID
+    return True  # <-- TEMP UNLOCKED, will lock after you run /whoami
 
-@bot.tree.command(name="addmoney", description="[ADMIN] Add money - admin only")
+@bot.tree.command(name="addmoney", description="[ADMIN] Add money")
 @app_commands.describe(amount="Amount to add")
 async def addmoney(interaction: discord.Interaction, amount: int):
     if not is_admin(interaction):
-        await interaction.response.send_message("❌ Admin-only test command.", ephemeral=True)
+        await interaction.response.send_message(f"❌ Admin-only. Your ID is `{interaction.user.id}` - send this to Meta AI to unlock.", ephemeral=True)
         return
     player = game_store.get(interaction.user.id)
     player.money += amount
     game_store.save()
-    await interaction.response.send_message(f"💰 **+${amount} added** → You now have **${player.money}**\nGo test the 6 upgrades!", ephemeral=True)
+    await interaction.response.send_message(f"💰 **+${amount} added** → You now have **${player.money}**", ephemeral=True)
 
-@bot.tree.command(name="addstars", description="[ADMIN] Add stars - admin only")
+@bot.tree.command(name="addstars", description="[ADMIN] Add stars")
 @app_commands.describe(amount="Amount")
 async def addstars(interaction: discord.Interaction, amount: int):
     if not is_admin(interaction):
@@ -268,9 +266,9 @@ async def addstars(interaction: discord.Interaction, amount: int):
     player = game_store.get(interaction.user.id)
     player.stars += amount
     game_store.save()
-    await interaction.response.send_message(f"⭐ **+{amount} stars** → You now have **{player.stars}** flex", ephemeral=True)
+    await interaction.response.send_message(f"⭐ **+{amount} stars** → {player.stars} flex", ephemeral=True)
 
-@bot.tree.command(name="addxp", description="[ADMIN] Add XP - admin only")
+@bot.tree.command(name="addxp", description="[ADMIN] Add XP")
 @app_commands.describe(amount="Amount")
 async def addxp(interaction: discord.Interaction, amount: int):
     if not is_admin(interaction):
@@ -279,9 +277,9 @@ async def addxp(interaction: discord.Interaction, amount: int):
     player = game_store.get(interaction.user.id)
     player.xp += amount
     game_store.save()
-    await interaction.response.send_message(f"✨ **+{amount} XP** → Level {player.level} | XP: {player.xp}", ephemeral=True)
+    await interaction.response.send_message(f"✨ **+{amount} XP** → Level {player.level}", ephemeral=True)
 
-@bot.tree.command(name="setmoney", description="[ADMIN] Set money to exact amount - admin only")
+@bot.tree.command(name="setmoney", description="[ADMIN] Set money to exact amount")
 @app_commands.describe(amount="Set money to this amount")
 async def setmoney(interaction: discord.Interaction, amount: int):
     if not is_admin(interaction):
@@ -292,7 +290,7 @@ async def setmoney(interaction: discord.Interaction, amount: int):
     game_store.save()
     await interaction.response.send_message(f"💰 Money set to **${player.money}**", ephemeral=True)
 
-@bot.tree.command(name="resetme", description="[ADMIN] Reset yourself to level 1 - admin only")
+@bot.tree.command(name="resetme", description="[ADMIN] Reset to level 1")
 async def resetme(interaction: discord.Interaction):
     if not is_admin(interaction):
         await interaction.response.send_message("❌ Admin-only.", ephemeral=True)
@@ -300,20 +298,15 @@ async def resetme(interaction: discord.Interaction):
     from bot.zombie_survival import Survivor
     game_store.players[str(interaction.user.id)] = Survivor()
     game_store.save()
-    await interaction.response.send_message("🔄 **Reset to level 1!** Use /addmoney to test again.", ephemeral=True)
-# --- END ADMIN COMMANDS ---
+    await interaction.response.send_message("🔄 Reset to level 1!", ephemeral=True)
+# --- END ADMIN ---
 
 
 def main() -> None:
-    """Start the bot using the project secret."""
     token = os.getenv("DISCORD_BOT_TOKEN")
     if not token:
-        logger.error(
-            "DISCORD_BOT_TOKEN is not set. Add it in the project's Secrets "
-            "panel before starting the bot."
-        )
+        logger.error("DISCORD_BOT_TOKEN is not set.")
         sys.exit(1)
-
     bot.run(token, log_handler=None)
 
 
