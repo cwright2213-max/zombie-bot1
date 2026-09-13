@@ -4,7 +4,13 @@ import json, random, logging
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
-from .storage import load_all_players, save_player, DB_PATH
+try:
+    from .storage import load_all_players, save_player, DB_PATH
+except ImportError:
+    try:
+        from storage import load_all_players, save_player, DB_PATH
+    except ImportError:
+        from bot.storage import load_all_players, save_player, DB_PATH
 SAVE_FILE = DB_PATH
 MAX_PAINKILLERS_PER_RUN = 3
 MAX_FULL_RESTORES_PER_RUN = 1
