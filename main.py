@@ -56,6 +56,52 @@ def save_player(user_id, player_dict):
 
 SAVE_FILE = DB_PATH
 
+def make_bar(current: int, max_val: int, length: int = 12) -> str:
+    if max_val <= 0:
+        return "░" * length
+    pct = max(0, min(1, current / max_val))
+    filled = int(pct * length)
+    return "█" * filled + "░" * (length - filled)
+
+def combat_embed(player, last_msgs=None):
+    import discord
+    p_bar = make_bar(player.health, player.max_health, 12)
+    p_pct = int(player.health / player.max_health * 100) if player.max_health else 0
+    if player.enemy:
+        e_bar = make_bar(player.enemy.health, player.enemy.max_health, 12)
+        e_pct = int(player.enemy.health / player.enemy.max_health * 100) if player.enemy.max_health else 0
+        e_name = player.enemy.name
+        e_hp = f"{player.enemy.health}/{player.enemy.max_health}"
+        e_dmg = player.enemy.damage
+    else:
+        e_bar = "░"*12
+        e_pct = 0
+        e_name = "No enemy"
+        e_hp = "0/0"
+        e_dmg = 0
+    embed = discord.Embed(
+        title=f"🧟 {player.zone_name} — WAVE {player.wave} | {player.zombies_remaining} zombies left",
+        color=discord.Color.from_rgb(200, 50, 50) if p_pct < 30 else discord.Color.from_rgb(50, 180, 80)
+    )
+    embed.add_field(
+        name=f"❤️ You: {player.health}/{player.max_health} HP ({p_pct}%)",
+        value=f"`{p_bar}`\n🔫 {player.weapon_name} {player.magazine}/{player.magazine_size} ({player.get_spare()} spare) [{player.ammo_name}]",
+        inline=False
+    )
+    embed.add_field(
+        name=f"💀 {e_name}: {e_hp} HP ({e_pct}%)",
+        value=f"`{e_bar}`\n⚔️ ~{e_dmg} dmg",
+        inline=False
+    )
+    if last_msgs:
+        clean = [m for m in last_msgs if m and "HP restored" not in m and "Waves survived" not in m][:3]
+        if clean:
+            embed.add_field(name="⚔️ Last action", value="\n".join(clean)[:1024], inline=False)
+    embed.set_footer(text=f"💰 ${player.money} | ⭐ {player.stars} | ✨ {player.xp} XP | {player.ammo_name} {player.magazine}/{player.magazine_size}")
+    return embed
+
+
+
 MAX_PAINKILLERS_PER_RUN = 3
 MAX_FULL_RESTORES_PER_RUN = 1
 ZONES: dict[str, dict[str, Any]] = {
@@ -981,7 +1027,8 @@ class ZombieMenuView(PlayerView):
         if not player.run_active:
             await interaction.response.send_message("❌ Not in a run. Tap Start run first.", ephemeral=True)
             return
-        await interaction.response.edit_message(content=status(player) + "\n\n" + action_help(player), embed=None, view=CombatView(self.user_id, self.store))
+        embed = combat_embed(player, [action_help(player)])
+        await interaction.response.edit_message(content=None, embed=embed, view=CombatView(self.user_id, self.store))
     @discord.ui.button(label="🛒 Shop", style=discord.ButtonStyle.primary, row=0)
     async def shop(self, interaction: discord.Interaction, _b):
         await interaction.response.edit_message(content=status(self.store.get(self.user_id)), embed=None, view=ShopView(self.user_id, self.store))
@@ -1006,20 +1053,19 @@ class CombatView(PlayerView):
         msgs = take_action(player, "attack")
         self.store.save()
         if not player.run_active:
-            # PRETTY EMBED for death/flee
             embed = discord.Embed(
-                title="☠️ Run Ended" if "died" in "\n".join(msgs).lower() or "out of ammo" in "\n".join(msgs).lower() else "🏃 Run Ended - Fled",
+                title="☠️ Run Ended",
                 description="\n".join(msgs),
-                color=discord.Color.red() if "died" in "\n".join(msgs).lower() else discord.Color.green()
+                color=discord.Color.red()
             )
-            # Add stats as fields for readability
             embed.add_field(name="🌊 Waves", value=f"{player.wave - 1 if player.run_zombies_killed>0 else 0} survived\nReached Wave {player.wave}", inline=True)
             embed.add_field(name="🧟 Kills", value=f"{player.run_zombies_killed} zombies", inline=True)
             embed.add_field(name="💰 Rewards", value=f"+${player.run_money_earned}\n+{player.run_xp_earned} XP", inline=True)
             embed.set_footer(text=f"HP restored to {player.max_health}/{player.max_health} • Use Start run for another go")
             await interaction.response.edit_message(content=None, embed=embed, view=ZombieMenuView(self.user_id, self.store))
         else:
-            await interaction.response.edit_message(content="\n".join(msgs) + "\n\n" + status(player) + "\n\n" + action_help(player), view=CombatView(self.user_id, self.store))
+            embed = combat_embed(player, msgs)
+            await interaction.response.edit_message(content=None, embed=embed, view=CombatView(self.user_id, self.store))
 
     @discord.ui.button(label="🔄 Reload", style=discord.ButtonStyle.primary, row=0)
     async def reload(self, interaction: discord.Interaction, _b):
@@ -1038,11 +1084,14 @@ class CombatView(PlayerView):
             embed.set_footer(text=f"HP restored to {player.max_health}/{player.max_health}")
             await interaction.response.edit_message(content=None, embed=embed, view=ZombieMenuView(self.user_id, self.store))
         else:
-            await interaction.response.edit_message(content="\n".join(msgs) + "\n\n" + status(player) + "\n\n" + action_help(player), view=CombatView(self.user_id, self.store))
+            embed = combat_embed(player, msgs)
+            await interaction.response.edit_message(content=None, embed=embed, view=CombatView(self.user_id, self.store))
 
     @discord.ui.button(label="💊 Heal", style=discord.ButtonStyle.success, row=0)
     async def heal(self, interaction: discord.Interaction, _b):
-        await interaction.response.edit_message(content=status(self.store.get(self.user_id)) + "\nChoose heal:", view=HealView(self.user_id, self.store))
+        player = self.store.get(self.user_id)
+        embed = combat_embed(player, ["Choose heal item"])
+        await interaction.response.edit_message(content=None, embed=embed, view=HealView(self.user_id, self.store))
 
     @discord.ui.button(label="🏃 Flee", style=discord.ButtonStyle.secondary, row=0)
     async def flee(self, interaction: discord.Interaction, _b):
@@ -1060,6 +1109,7 @@ class CombatView(PlayerView):
         embed.set_footer(text=f"HP restored to {player.max_health}/{player.max_health} • Fleeing keeps all rewards")
         await interaction.response.edit_message(content=None, embed=embed, view=ZombieMenuView(self.user_id, self.store))
 
+
 class HealView(PlayerView):
     @discord.ui.button(label="💊 Painkillers", style=discord.ButtonStyle.success, row=0)
     async def pk(self, interaction: discord.Interaction, _b):
@@ -1075,7 +1125,9 @@ class HealView(PlayerView):
         await interaction.response.edit_message(content="\n".join(msgs)+"\n\n"+status(p), view=CombatView(self.user_id, self.store))
     @discord.ui.button(label="⬅️ Back", style=discord.ButtonStyle.secondary, row=1)
     async def back(self, interaction: discord.Interaction, _b):
-        await interaction.response.edit_message(content=status(self.store.get(self.user_id))+"\n\n"+action_help(self.store.get(self.user_id)), embed=None, view=CombatView(self.user_id, self.store))
+        p=self.store.get(self.user_id)
+        embed = combat_embed(p, [action_help(p)])
+        await interaction.response.edit_message(content=None, embed=embed, view=CombatView(self.user_id, self.store))
 
 class ShopView(PlayerView):
     @discord.ui.button(label="📦 Ammo box", style=discord.ButtonStyle.primary, row=0)
@@ -1212,7 +1264,8 @@ async def zombie_start_cmd(interaction: discord.Interaction):
         return
     msgs = start_run(player)
     game_store.save()
-    await interaction.response.send_message(content="\n".join(msgs)+"\n\n"+status(player), view=CombatView(interaction.user.id, game_store))
+    embed = combat_embed(player, msgs)
+    await interaction.response.send_message(embed=embed, view=CombatView(interaction.user.id, game_store))
 
 def main():
     import os, sys
