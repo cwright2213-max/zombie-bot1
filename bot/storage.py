@@ -1,94 +1,61 @@
-import sqlite3
-import json
-import shutil
-import logging
+"""Persistent player storage - FIX for Railway volume"""
+from __future__ import annotations
+import json, os, sqlite3, logging
 from pathlib import Path
+from typing import Dict, Any
 
-logger = logging.getLogger("zombie.storage")
-
-DB_PATH = Path("data/players.db")
-BACKUP_PATH = Path("data/players.db.bak")
-LEGACY_JSON = Path("zombie_saves.json")
+# Railway persistent volume should be mounted at /data
+# Fallback to ./data for local/Replit
+if Path("/data").exists():
+    DB_PATH = Path("/data/players.db")
+else:
+    DB_PATH = Path("data/players.db")
 
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
-def get_db():
-    conn = sqlite3.connect(DB_PATH, timeout=10.0)
-    conn.execute("CREATE TABLE IF NOT EXISTS players (id TEXT PRIMARY KEY, data TEXT NOT NULL, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+def _get_conn():
+    conn = sqlite3.connect(str(DB_PATH))
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS players (
+            user_id TEXT PRIMARY KEY,
+            data TEXT NOT NULL,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.commit()
     return conn
 
-def validate_player_data(data: dict) -> tuple[bool, str]:
-    if not isinstance(data, dict):
-        return False, "not a dict"
-    for k in ["health", "zone_name", "weapon_name"]:
-        if k not in data:
-            return False, f"missing {k}"
-    return True, "ok"
-
-def save_player(player_id: str, data: dict) -> bool:
-    ok, reason = validate_player_data(data)
-    if not ok:
-        logger.error(f"Rejecting save for {player_id}: {reason} - quarantining")
-        q_path = Path(f"data/quarantine_{player_id}.json")
-        try:
-            q_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        except:
-            pass
-        return False
+def load_all_players() -> Dict[str, Any]:
+    """Load all players from SQLite - survives deploys if /data volume exists"""
     try:
-        if DB_PATH.exists() and DB_PATH.stat().st_size > 0:
+        conn = _get_conn()
+        cur = conn.execute("SELECT user_id, data FROM players")
+        result = {}
+        for uid, jdata in cur.fetchall():
             try:
-                shutil.copy2(DB_PATH, BACKUP_PATH)
-            except Exception as e:
-                logger.warning(f"Backup failed: {e}")
-        conn = get_db()
-        conn.execute("INSERT OR REPLACE INTO players (id, data) VALUES (?, ?)", (str(player_id), json.dumps(data)))
+                result[uid] = json.loads(jdata)
+            except:
+                logging.warning(f"Corrupt data for {uid}, skipping")
+        conn.close()
+        print(f"[STORAGE] Loaded {len(result)} players from {DB_PATH}")
+        return result
+    except Exception as e:
+        print(f"[STORAGE] Load failed: {e}")
+        return {}
+
+def save_player(user_id: str, player_dict: dict):
+    """Save single player immediately"""
+    try:
+        conn = _get_conn()
+        conn.execute(
+            "INSERT OR REPLACE INTO players (user_id, data, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)",
+            (str(user_id), json.dumps(player_dict))
+        )
         conn.commit()
         conn.close()
-        return True
     except Exception as e:
-        logger.exception(f"Save failed for {player_id}: {e}")
-        return False
+        print(f"[STORAGE] Save failed for {user_id}: {e}")
+        logging.exception("save failed")
 
-def load_all_players() -> dict:
-    if not DB_PATH.exists() and LEGACY_JSON.exists():
-        try:
-            logger.info("Migrating legacy zombie_saves.json to SQLite")
-            legacy = json.loads(LEGACY_JSON.read_text(encoding="utf-8"))
-            if isinstance(legacy, dict):
-                conn = get_db()
-                for pid, pdata in legacy.items():
-                    if isinstance(pdata, dict):
-                        conn.execute("INSERT OR REPLACE INTO players VALUES (?, ?)", (str(pid), json.dumps(pdata)))
-                conn.commit()
-                conn.close()
-                LEGACY_JSON.rename(LEGACY_JSON.with_suffix(".json.migrated.bak"))
-        except Exception as e:
-            logger.exception(f"Legacy migration failed: {e}")
-
-    try:
-        conn = get_db()
-        rows = conn.execute("SELECT id, data FROM players").fetchall()
-        conn.close()
-        players = {}
-        bad = 0
-        for pid, raw in rows:
-            try:
-                data = json.loads(raw)
-                players[pid] = data
-            except Exception as e:
-                logger.error(f"Corrupt DB record {pid} - skipping only this player: {e}")
-                bad += 1
-                continue
-        if bad:
-            logger.warning(f"Loaded {len(players)} good, quarantined {bad} bad")
-        return players
-    except Exception as e:
-        logger.exception(f"DB load failed: {e}, trying backup")
-        if BACKUP_PATH.exists():
-            try:
-                shutil.copy2(BACKUP_PATH, DB_PATH)
-                return load_all_players()
-            except Exception as e2:
-                logger.exception(f"Backup restore failed: {e2}")
-        return {}
+# Legacy compatibility - if you had old SAVE_FILE json
+SAVE_FILE = DB_PATH
