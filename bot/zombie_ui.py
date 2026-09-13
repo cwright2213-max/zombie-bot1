@@ -16,10 +16,12 @@ from bot.zombie_survival import (
     change_zone,
     equip_ammo,
     get_upgrade_cost,
+    get_star_upgrade_cost,
     start_run,
     status,
     take_action,
     upgrade,
+    upgrade_star,
 )
 
 def _health_bar(current: int, maximum: int, width: int = 12) -> str:
@@ -99,7 +101,11 @@ def status_detail_embed(player: object) -> discord.Embed:
     embed = discord.Embed(title="📊 Survivor Stats", color=discord.Color.from_rgb(88, 101, 242))
     embed.add_field(name="🔫 Loadout", value=f"**{player.weapon_name}** • {player.ammo_name}\n{player.magazine}/{player.magazine_size} + {player.get_spare()} spare", inline=True)
     embed.add_field(name="📈 Progress", value=f"Lvl {player.level} • {player.xp} XP\n⭐ {player.stars} • 💰 ${player.money}", inline=True)
-    embed.add_field(name="💪 Upgrades", value=f"❤️ HP Lvl {player.health_upgrades}\n💥 Dmg Lvl {player.damage_upgrades}\n📦 Mag Lvl {player.mag_upgrades}\n🎯 Crit Lvl {player.crit_upgrades}\n🛡️ Armor Lvl {player.armor_upgrades}\n💰 Loot Lvl {player.scavenger_upgrades}", inline=False)
+    # New star prestige display
+    star_text = f"💨 Dodge Lvl {player.star_dodge_upgrades} ({player.dodge_chance*100:.1f}%) | ✨ Magic Lvl {player.star_magical_upgrades} ({player.magical_bullet_chance*100:.1f}%)\n💊 Medic Lvl {player.star_medic_upgrades} ({player.medic_chance*100:.2f}%) | 🐺 Pet Lvl {player.star_pet_upgrades} ({player.pet_chance*100:.0f}% • {player.pet_damage} dmg)"
+    embed.add_field(name="⭐ Star Prestige", value=star_text, inline=False)
+    embed.add_field(name="💪 Money Upgrades", value=f"❤️ HP Lvl {player.health_upgrades} | 💥 Dmg Lvl {player.damage_upgrades} | 📦 Mag Lvl {player.mag_upgrades}\n🎯 Crit Lvl {player.crit_upgrades} ({player.crit_chance*100:.1f}%) | 🛡️ Armor Lvl {player.armor_upgrades} | 💰 Loot Lvl {player.scavenger_upgrades}", inline=False)
+    embed.add_field(name="⭐ Star Prestige", value=f"💥 CritDmg Lvl {player.star_crit_dmg_upgrades} ({player.crit_damage_mult:.2f}x) | 🔬 Elem Lvl {player.star_elemental_upgrades} (+{int((player.elemental_bonus-1)*100)}%)\n❤️ Fort Lvl {player.star_fortitude_upgrades} | ⭐ Hunter Lvl {player.star_hunter_upgrades} (+{int((player.star_drop_bonus-1)*100)}%)", inline=False)
     embed.add_field(name=f"🌍 {player.zone_name}", value=ammo_effectiveness_text(player), inline=False)
     return embed
 
@@ -170,6 +176,11 @@ class ZombieMenuView(PlayerView):
     async def stats_btn(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
         player = self.store.get(self.user_id)
         await interaction.response.edit_message(content=None, embed=status_detail_embed(player), view=ZombieMenuView(self.user_id, self.store))
+
+    @discord.ui.button(label="⭐ Stars", style=discord.ButtonStyle.primary, row=1)
+    async def star_shop_main(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
+        player = self.store.get(self.user_id)
+        await interaction.response.edit_message(content=None, embed=star_shop_embed(player), view=StarUpgradeView(self.user_id, self.store))
 
 
 class CombatView(PlayerView):
@@ -338,7 +349,7 @@ class UpgradeView(PlayerView):
     def __init__(self, user_id: int, store: GameStore) -> None:
         super().__init__(user_id, store)
         player = self.store.get(user_id)
-        # Show all 6 upgrades with dynamic money costs
+        # Money upgrades
         choices = [
             (f"❤️ Health +20 · ${get_upgrade_cost(player,'health')}", "health", player.health_upgrades),
             (f"💥 Damage +3 · ${get_upgrade_cost(player,'damage')}", "damage", player.damage_upgrades),
@@ -350,7 +361,6 @@ class UpgradeView(PlayerView):
         for index, (label, value, count) in enumerate(choices):
             cost = get_upgrade_cost(player, value)
             can_afford = player.money >= cost
-            # Show current level in label: e.g. ❤️ Health +20 Lvl3 · $450
             display_label = f"{label} (Lvl {count})"
             button = discord.ui.Button(
                 label=display_label, 
@@ -362,20 +372,111 @@ class UpgradeView(PlayerView):
                 await self._upgrade(interaction, selected)
             button.callback = callback
             self.add_item(button)
+        # Row for navigation
         back = discord.ui.Button(label="🏠 Main menu", style=discord.ButtonStyle.secondary, row=2)
         async def back_callback(interaction: discord.Interaction) -> None:
-            await interaction.response.edit_message(content=status(self.store.get(self.user_id)), view=ZombieMenuView(self.user_id, self.store))
+            await interaction.response.edit_message(content=None, embed=status_detail_embed(self.store.get(self.user_id)), view=ZombieMenuView(self.user_id, self.store))
         back.callback = back_callback
         self.add_item(back)
         
-        # Add info button showing money and stars
-        info = discord.ui.Button(label=f"💰 ${player.money} | ⭐ {player.stars} flex", style=discord.ButtonStyle.primary, row=2, disabled=True)
+        star_btn = discord.ui.Button(label=f"⭐ Star Shop ({player.stars}⭐)", style=discord.ButtonStyle.primary, row=2)
+        async def star_callback(interaction: discord.Interaction) -> None:
+            await interaction.response.edit_message(content=None, embed=star_shop_embed(self.store.get(self.user_id)), view=StarUpgradeView(self.user_id, self.store))
+        star_btn.callback = star_callback
+        self.add_item(star_btn)
+        
+        info = discord.ui.Button(label=f"💰 ${player.money}", style=discord.ButtonStyle.secondary, row=2, disabled=True)
         self.add_item(info)
 
     async def _upgrade(self, interaction: discord.Interaction, stat: str) -> None:
         player = self.store.get(self.user_id)
         messages = upgrade(player, stat)
         self.store.save()
-        # Rebuild view with updated costs
         player = self.store.get(self.user_id)
-        await interaction.response.edit_message(content=status(player) + "\n\n" + "\n".join(messages), view=UpgradeView(self.user_id, self.store))
+        await interaction.response.edit_message(content=None, embed=shop_embed(player, messages), view=UpgradeView(self.user_id, self.store))
+
+def star_shop_embed(player: object) -> discord.Embed:
+    embed = discord.Embed(
+        title="⭐ Star Prestige Shop",
+        color=discord.Color.from_rgb(255, 215, 0),
+        description=f"**{player.stars}⭐** stars available\nRare prestige upgrades - unlock for 5⭐ then upgrade cheap!",
+    )
+    # Dodge
+    dodge_cost = get_star_upgrade_cost(player,'dodge')
+    dodge_next = f"{(player.dodge_chance*100):.1f}%"
+    if player.star_dodge_upgrades == 0:
+        dodge_next = f"10% (unlock)"
+    else:
+        next_chance = min(0.10 + (player.star_dodge_upgrades)*0.005, 0.30)*100
+        dodge_next = f"{player.dodge_chance*100:.1f}% → {next_chance:.1f}%"
+    embed.add_field(name="💨 Dodge", value=f"Lvl {player.star_dodge_upgrades} • {player.dodge_chance*100:.1f}%\nCost: ⭐{dodge_cost}\n10% base +0.5% → 30% cap", inline=True)
+
+    magical_cost = get_star_upgrade_cost(player,'magical')
+    embed.add_field(name="✨ Magical Bullet", value=f"Lvl {player.star_magical_upgrades} • {player.magical_bullet_chance*100:.1f}%\nCost: ⭐{magical_cost}\n5% base +0.5% → 20% cap", inline=True)
+
+    medic_cost = get_star_upgrade_cost(player,'medic')
+    embed.add_field(name="💊 Medic", value=f"Lvl {player.star_medic_upgrades} • {player.medic_chance*100:.2f}%\nCost: ⭐{medic_cost}\n2% base +0.25% → 7% cap", inline=True)
+
+    pet_cost = get_star_upgrade_cost(player,'pet')
+    embed.add_field(name="🐺 Wolf Pet", value=f"Lvl {player.star_pet_upgrades} • {player.pet_chance*100:.0f}% ({player.pet_damage} dmg)\nCost: ⭐{pet_cost}\n5% base +1% → 10% cap, 25% wep dmg", inline=True)
+
+    embed.set_footer(text="Unlock 5⭐ each, then Dodge/Magical/Medic = 1⭐/lvl, Pet = 3⭐/lvl")
+    return embed
+
+class StarUpgradeView(PlayerView):
+    def __init__(self, user_id: int, store: GameStore) -> None:
+        super().__init__(user_id, store)
+        player = self.store.get(user_id)
+        choices = [
+            (f"💨 Dodge {player.dodge_chance*100:.1f}% · ⭐{get_star_upgrade_cost(player,'dodge')}", "dodge", player.star_dodge_upgrades),
+            (f"✨ Magic {player.magical_bullet_chance*100:.1f}% · ⭐{get_star_upgrade_cost(player,'magical')}", "magical", player.star_magical_upgrades),
+            (f"💊 Medic {player.medic_chance*100:.2f}% · ⭐{get_star_upgrade_cost(player,'medic')}", "medic", player.star_medic_upgrades),
+            (f"🐺 Pet {player.pet_chance*100:.0f}% · ⭐{get_star_upgrade_cost(player,'pet')}", "pet", player.star_pet_upgrades),
+        ]
+        for index, (label, value, count) in enumerate(choices):
+            cost = get_star_upgrade_cost(player, value)
+            can_afford = player.stars >= cost
+            # Check caps
+            is_capped = False
+            if value == "dodge" and count>0 and player.dodge_chance >= 0.30:
+                is_capped = True
+            elif value == "magical" and count>0 and player.magical_bullet_chance >= 0.20:
+                is_capped = True
+            elif value == "medic" and count>0 and player.medic_chance >= 0.07:
+                is_capped = True
+            elif value == "pet" and count>0 and player.pet_chance >= 0.10:
+                is_capped = True
+            
+            display_label = f"{label} (Lvl {count})" + (" MAX" if is_capped else "")
+            button = discord.ui.Button(
+                label=display_label,
+                style=discord.ButtonStyle.success if can_afford and not is_capped else discord.ButtonStyle.secondary,
+                row=index // 2,
+                disabled=not can_afford or is_capped
+            )
+            async def callback(interaction: discord.Interaction, selected: str = value) -> None:
+                await self._upgrade_star(interaction, selected)
+            button.callback = callback
+            self.add_item(button)
+        # Nav
+        back_money = discord.ui.Button(label="💰 Money Upgrades", style=discord.ButtonStyle.secondary, row=2)
+        async def back_money_cb(interaction: discord.Interaction) -> None:
+            await interaction.response.edit_message(content=None, embed=status_detail_embed(self.store.get(self.user_id)), view=UpgradeView(self.user_id, self.store))
+        back_money.callback = back_money_cb
+        self.add_item(back_money)
+        
+        back = discord.ui.Button(label="🏠 Main menu", style=discord.ButtonStyle.secondary, row=2)
+        async def back_callback(interaction: discord.Interaction) -> None:
+            await interaction.response.edit_message(content=None, embed=status_detail_embed(self.store.get(self.user_id)), view=ZombieMenuView(self.user_id, self.store))
+        back.callback = back_callback
+        self.add_item(back)
+        
+        info = discord.ui.Button(label=f"⭐ {player.stars} stars", style=discord.ButtonStyle.primary, row=2, disabled=True)
+        self.add_item(info)
+
+    async def _upgrade_star(self, interaction: discord.Interaction, stat: str) -> None:
+        player = self.store.get(self.user_id)
+        messages = upgrade_star(player, stat)
+        self.store.save()
+        player = self.store.get(self.user_id)
+        await interaction.response.edit_message(content=None, embed=star_shop_embed(player), view=StarUpgradeView(self.user_id, self.store))

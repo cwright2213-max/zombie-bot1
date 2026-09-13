@@ -90,6 +90,9 @@ class Survivor:
     # --- NEW: permanent upgrade counters ---
     damage_upgrades: int = 0; health_upgrades: int = 0; mag_upgrades: int = 0
     crit_upgrades: int = 0; armor_upgrades: int = 0; scavenger_upgrades: int = 0
+    # --- STAR UPGRADES (prestige) - CUSTOM 4 ---
+    star_dodge_upgrades: int = 0; star_magical_upgrades: int = 0
+    star_medic_upgrades: int = 0; star_pet_upgrades: int = 0
     @property
     def level(self) -> int: return level_for_xp(self.xp)
     def get_spare(self, ammo_type: str | None = None) -> int: return self.spare_ammo.get(ammo_type or self.ammo_name, 0)
@@ -108,11 +111,39 @@ class Survivor:
         return min(chance, 0.40)
     @property
     def armor_reduction(self) -> int:
-        # Cap at 35 to prevent invincibility, -2 per level
         return min(self.armor_upgrades * 2, 35)
     @property
     def scavenger_bonus(self) -> float:
         return 1.0 + self.scavenger_upgrades * 0.05
+    # --- STAR UPGRADE PROPERTIES ---
+    @property
+    def dodge_chance(self) -> float:
+        if self.star_dodge_upgrades <= 0:
+            return 0.0
+        # 10% base, +0.5% per extra level, cap 30%
+        chance = 0.10 + (self.star_dodge_upgrades - 1) * 0.005
+        return min(chance, 0.30)
+    @property
+    def magical_bullet_chance(self) -> float:
+        if self.star_magical_upgrades <= 0:
+            return 0.0
+        chance = 0.05 + (self.star_magical_upgrades - 1) * 0.005
+        return min(chance, 0.20)
+    @property
+    def medic_chance(self) -> float:
+        if self.star_medic_upgrades <= 0:
+            return 0.0
+        chance = 0.02 + (self.star_medic_upgrades - 1) * 0.0025
+        return min(chance, 0.07)
+    @property
+    def pet_chance(self) -> float:
+        if self.star_pet_upgrades <= 0:
+            return 0.0
+        chance = 0.05 + (self.star_pet_upgrades - 1) * 0.01
+        return min(chance, 0.10)
+    @property
+    def pet_damage(self) -> int:
+        return int(self.weapon_damage * 0.25)
         # max health: 100 base + 20 per health upgrade
         self.max_health = 100 + self.health_upgrades * 20
     def to_dict(self) -> dict[str, Any]:
@@ -131,6 +162,20 @@ class Survivor:
             data["damage_upgrades"] = old_bonus // 5
         if "health_upgrades" not in data:
             data["health_upgrades"] = max(0, (data.get("max_health",100)-100)//20)
+        if "star_dodge_upgrades" not in data:
+            data["star_dodge_upgrades"] = data.get("star_crit_dmg_upgrades", 0)  # migrate old if exists
+        if "star_magical_upgrades" not in data:
+            data["star_magical_upgrades"] = data.get("star_elemental_upgrades", 0)
+        if "star_medic_upgrades" not in data:
+            data["star_medic_upgrades"] = data.get("star_fortitude_upgrades", 0)
+        if "star_pet_upgrades" not in data:
+            data["star_pet_upgrades"] = data.get("star_hunter_upgrades", 0)
+
+        # Ensure new fields exist
+        for f in ["star_dodge_upgrades", "star_magical_upgrades", "star_medic_upgrades", "star_pet_upgrades"]:
+            if f not in data:
+                data[f] = 0
+
         if "mag_upgrades" not in data:
             base_mag = WEAPONS.get(data.get("weapon_name","Pistol"), WEAPONS["Pistol"])["mag"]
             old_mag_bonus = max(0, data.get("magazine_size", base_mag) - base_mag)
@@ -267,6 +312,9 @@ def _enemy_damage(player: Survivor) -> list[str]:
         return []
     if enemy.effects.pop("shock", 0):
         return [f"⚡ **{enemy.name} stunned!** Misses."]
+    # DODGE CHECK - star prestige
+    if player.dodge_chance > 0 and random.random() < player.dodge_chance:
+        return [f"💨 **DODGED!** You evaded {enemy.name}'s attack! ({player.dodge_chance*100:.1f}% chance)"]
     base_dmg = enemy.damage // 2 if enemy.effects.get("freeze", 0) else enemy.damage
     damage = max(1, base_dmg - player.armor_reduction)
     player.health = max(0, player.health - damage)
@@ -321,6 +369,14 @@ def _finish_enemy(player: Survivor) -> list[str]:
             player.stars += ups
             messages.append(f"🎉 **LEVEL UP!** Level {player.level}! +{ups} ⭐")
     if player.zombies_remaining <= 0:
+        # MEDIC DROP CHECK - per wave now, not per kill (less OP)
+        if player.medic_chance > 0 and random.random() < player.medic_chance:
+            if random.random() < 0.5:
+                player.painkillers += 2
+                messages.append(f"💊 **Medic drop!** +2 painkillers on wave clear! ({player.medic_chance*100:.2f}% chance)")
+            else:
+                player.full_restores += 1
+                messages.append(f"✨ **Medic drop!** +1 full restore on wave clear! ({player.medic_chance*100:.2f}% chance)")
         bonus = int(10 * player.wave * zone_for(player)["money_mult"])
         player.money += bonus
         player.run_money_earned += bonus
@@ -405,7 +461,13 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
                     f"💰 You kept ${player.run_money_earned} • {player.run_xp_earned} XP from this run.",
                 ] + _grant_end_of_run_rewards(player)
             return [f"❌ Need {cost} {player.ammo_name} ammo! Have {player.magazine}/{player.magazine_size}", f"🔄 Reload (you have {spare} spare)"]
-        player.magazine -= cost
+        # MAGICAL BULLET CHECK - chance to not use ammo
+        is_magical = False
+        if player.magical_bullet_chance > 0 and random.random() < player.magical_bullet_chance:
+            is_magical = True
+        else:
+            player.magazine -= cost
+        
         mod = ammo_modifier(player, player.ammo_name)
         dmg = int(player.weapon_damage * mod)
         is_crit = random.random() < player.crit_chance
@@ -413,8 +475,15 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
             dmg = int(dmg * 2)
         enemy.health = max(0, enemy.health - dmg)
         mod_txt = f" (Zone {int(mod*100)}%)" if mod != 1.0 else ""
-        crit_txt = " **CRIT!**" if 'is_crit' in locals() and is_crit else ""
-        messages.append(f"🔫 Hit **{enemy.name} for {dmg}**{crit_txt} using {player.ammo_name} ({cost}/shot){mod_txt}")
+        crit_txt = " **CRIT!**" if is_crit else ""
+        magical_txt = " ✨ **MAGICAL! Free shot!**" if is_magical else ""
+        messages.append(f"🔫 Hit **{enemy.name} for {dmg}**{crit_txt}{magical_txt} using {player.ammo_name} ({cost}/shot){mod_txt}")
+        
+        # PET ATTACK CHECK
+        if player.pet_chance > 0 and random.random() < player.pet_chance:
+            pet_dmg = player.pet_damage
+            enemy.health = max(0, enemy.health - pet_dmg)
+            messages.append(f"🐺 **Wolf bites {enemy.name} for {pet_dmg} dmg!** ({player.pet_chance*100:.0f}% chance)")
         effect = ammo_data["effect"]
         chances = {"bleed": 0.25, "burn": 0.30, "freeze": 0.20, "poison": 0.35, "shock": 0.15}
         if effect and random.random() < chances[effect]:
@@ -575,54 +644,84 @@ def get_upgrade_cost(player: Survivor, stat: str) -> int:
     # cost = base * mult^count
     return int(bases[stat] * (mults[stat] ** count))
 
-def upgrade(player: Survivor, stat: str) -> list[str]:
-    if player.run_active:
-        return ["Can't upgrade in a run!"]
+
+def get_star_upgrade_cost(player: Survivor, stat: str) -> int:
+    """Custom star costs: 5 to unlock, then 1 or 3 per level"""
     stat = stat.lower().strip()
-    # Map aliases to canonical
-    alias_map = {
-        "health": "health", "hp": "health", "max_health": "health",
-        "damage": "damage", "weapon": "damage", "dmg": "damage",
-        "mag": "mag", "magazine": "mag", "ammo": "mag",
-        "crit": "crit", "critical": "crit", "crit_chance": "crit",
-        "armor": "armor", "armour": "armor", "def": "armor", "defense": "armor", "tank": "armor",
-        "scavenger": "scavenger", "scav": "scavenger", "money": "scavenger", "loot": "scavenger", "economy": "scavenger",
+    alias = {
+        "dodge": "dodge", "dodge_chance": "dodge", "evade": "dodge",
+        "magical": "magical", "magical_bullet": "magical", "magic": "magical", "bullet": "magical", "ammo_saver": "magical",
+        "medic": "medic", "medic_drop": "medic", "heal_drop": "medic",
+        "pet": "pet", "pet_attack": "pet", "wolf": "pet", "dog": "pet",
     }
-    canonical = alias_map.get(stat)
+    canonical = alias.get(stat, stat)
+    if canonical == "dodge":
+        if player.star_dodge_upgrades == 0:
+            return 5
+        return 1
+    elif canonical == "magical":
+        if player.star_magical_upgrades == 0:
+            return 5
+        return 1
+    elif canonical == "medic":
+        if player.star_medic_upgrades == 0:
+            return 5
+        return 1
+    elif canonical == "pet":
+        if player.star_pet_upgrades == 0:
+            return 5
+        return 3
+    return 999
+
+def upgrade_star(player: Survivor, stat: str) -> list[str]:
+    if player.run_active:
+        return ["Can't upgrade during a run!"]
+    stat = stat.lower().strip()
+    alias = {
+        "dodge": "dodge", "dodge_chance": "dodge", "evade": "dodge",
+        "magical": "magical", "magical_bullet": "magical", "magic": "magical", "bullet": "magical", "ammo_saver": "magical",
+        "medic": "medic", "medic_drop": "medic", "heal_drop": "medic",
+        "pet": "pet", "pet_attack": "pet", "wolf": "pet", "dog": "pet",
+    }
+    canonical = alias.get(stat)
     if not canonical:
-        return [f"Unknown upgrade '{stat}'. Options: health(${get_upgrade_cost(player,'health')}) / damage(${get_upgrade_cost(player,'damage')}) / mag(${get_upgrade_cost(player,'mag')}) / crit(${get_upgrade_cost(player,'crit')}) / armor(${get_upgrade_cost(player,'armor')}) / scavenger(${get_upgrade_cost(player,'scavenger')}) | 💰 ${player.money} | ⭐ {player.stars} flex"]
-    
-    cost = get_upgrade_cost(player, canonical)
-    if player.money < cost:
-        return [f"Need ${cost} for {canonical} upgrade, you have ${player.money}. Grind more waves!"]
-    
-    player.money -= cost
-    if canonical == "health":
-        player.health_upgrades += 1
-        player.recalc_stats()
-        player.health = player.max_health
-        return [f"❤️ Max HP → **{player.max_health}** (+{player.health_upgrades*20}) | Paid ${cost} | 💰 ${player.money} left | Next: ${get_upgrade_cost(player,'health')}"]
-    if canonical == "damage":
-        player.damage_upgrades += 1
-        player.recalc_stats()
-        return [f"💥 Damage → **{player.weapon_damage}** (base + {player.damage_upgrades*3} from {player.damage_upgrades} upgrades) | Paid ${cost} | 💰 ${player.money} left | Next: ${get_upgrade_cost(player,'damage')}"]
-    if canonical == "mag":
-        player.mag_upgrades += 1
-        player.recalc_stats()
-        return [f"📦 Mag → **{player.magazine_size}** (+{player.mag_upgrades*1}) | Paid ${cost} | 💰 ${player.money} left | Next: ${get_upgrade_cost(player,'mag')}"]
-    if canonical == "crit":
-        player.crit_upgrades += 1
-        return [f"🎯 Crit → **{int(player.crit_chance*100)}%** (+2% per level, 2x dmg) | Paid ${cost} | 💰 ${player.money} left | Next: ${get_upgrade_cost(player,'crit')}"]
-    if canonical == "armor":
-        player.armor_upgrades += 1
-        return [f"🛡️ Armor → **-{player.armor_reduction} dmg taken** (-2 per level) | Paid ${cost} | 💰 ${player.money} left | Next: ${get_upgrade_cost(player,'armor')}"]
-    if canonical == "scavenger":
-        player.scavenger_upgrades += 1
-        return [f"💰 Scavenger → **+{int((player.scavenger_bonus-1)*100)}% money** per kill | Paid ${cost} | 💰 ${player.money} left | Next: ${get_upgrade_cost(player,'scavenger')}"]
-    return [f"Unknown error"]
+        return [f"Unknown star upgrade '{stat}'. Options: dodge(⭐{get_star_upgrade_cost(player,'dodge')}) / magical(⭐{get_star_upgrade_cost(player,'magical')}) / medic(⭐{get_star_upgrade_cost(player,'medic')}) / pet(⭐{get_star_upgrade_cost(player,'pet')}) | ⭐ {player.stars} stars"]
+
+    cost = get_star_upgrade_cost(player, canonical)
+    if player.stars < cost:
+        return [f"Need ⭐{cost} for {canonical}, you have ⭐{player.stars}. Keep grinding waves!"]
+
+    # Check caps before purchase
+    if canonical == "dodge":
+        if player.star_dodge_upgrades > 0 and player.dodge_chance >= 0.30:
+            return [f"❌ Dodge already maxed at 30%! (Lvl {player.star_dodge_upgrades})"]
+        player.stars -= cost
+        player.star_dodge_upgrades += 1
+        return [f"💨 Dodge → **{player.dodge_chance*100:.1f}%** dodge chance (Lvl {player.star_dodge_upgrades}) | Paid ⭐{cost} | ⭐ {player.stars} left | Next: ⭐{get_star_upgrade_cost(player,'dodge')} (cap 30%)"]
+    if canonical == "magical":
+        if player.star_magical_upgrades > 0 and player.magical_bullet_chance >= 0.20:
+            return [f"❌ Magical Bullet already maxed at 20%! (Lvl {player.star_magical_upgrades})"]
+        player.stars -= cost
+        player.star_magical_upgrades += 1
+        return [f"✨ Magical Bullet → **{player.magical_bullet_chance*100:.1f}%** free shot (Lvl {player.star_magical_upgrades}) | Paid ⭐{cost} | ⭐ {player.stars} left | Next: ⭐{get_star_upgrade_cost(player,'magical')} (cap 20%)"]
+    if canonical == "medic":
+        if player.star_medic_upgrades > 0 and player.medic_chance >= 0.07:
+            return [f"❌ Medic already maxed at 7%! (Lvl {player.star_medic_upgrades})"]
+        player.stars -= cost
+        player.star_medic_upgrades += 1
+        return [f"💊 Medic → **{player.medic_chance*100:.2f}%** heal drop (Lvl {player.star_medic_upgrades}) | Paid ⭐{cost} | ⭐ {player.stars} left | Next: ⭐{get_star_upgrade_cost(player,'medic')} (cap 7%)"]
+    if canonical == "pet":
+        if player.star_pet_upgrades > 0 and player.pet_chance >= 0.10:
+            return [f"❌ Pet already maxed at 10%! (Lvl {player.star_pet_upgrades})"]
+        player.stars -= cost
+        player.star_pet_upgrades += 1
+        return [f"🐺 Wolf Pet → **{player.pet_chance*100:.0f}%** to deal {player.pet_damage} dmg (Lvl {player.star_pet_upgrades}) | Paid ⭐{cost} | ⭐ {player.stars} left | Next: ⭐{get_star_upgrade_cost(player,'pet')} (cap 10%)"]
+    return ["Unknown error"]
+
 
 
 def _grant_star_drop(player: Survivor) -> list[str]:
+    # Apply hunter bonus - increases chance of 1-3 stars
     """RARE star drop: 0-2 stars normally, 3 stars ONLY after wave 20+"""
     wave = max(1, player.wave)
     
