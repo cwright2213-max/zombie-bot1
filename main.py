@@ -1841,55 +1841,39 @@ class AmmoView(PlayerView):
         await interaction.response.edit_message(content=status(player) + "\n\n" + "\n".join(messages) + "\n\n" + ammo_effectiveness_text(player), view=AmmoView(self.user_id, self.store))
 
 
+
 class UpgradeView(PlayerView):
     def __init__(self, user_id: int, store: GameStore) -> None:
         super().__init__(user_id, store)
+        player = self.store.get(user_id)
+        # Dynamic labels with cost and level
+        def make_btn(stat, emoji, name, plus, row):
+            cost = get_upgrade_cost(player, stat)
+            lvl = getattr(player, f"{stat}_upgrades", 0)
+            if stat == "scavenger":
+                lvl = player.scavenger_upgrades
+            label = f"{emoji} {name} {plus} · ${cost} (Lvl {lvl})"
+            btn = discord.ui.Button(label=label[:80], style=discord.ButtonStyle.success, row=row)
+            async def cb(interaction: discord.Interaction, stat=stat):
+                p = self.store.get(self.user_id)
+                msgs = upgrade(p, stat)
+                self.store.save()
+                # Rebuild view to update costs
+                await interaction.response.edit_message(content="\n".join(msgs) + "\n\n" + status(p) + f"\n\n💰 ${p.money} | ⭐ {p.stars}", view=UpgradeView(self.user_id, self.store))
+            btn.callback = cb
+            return btn
 
-    @discord.ui.button(label="❤️ Health +20", style=discord.ButtonStyle.success, row=0)
-    async def health(self, interaction: discord.Interaction, _b):
-        p=self.store.get(self.user_id)
-        msgs=upgrade(p,"health")
-        self.store.save()
-        await interaction.response.edit_message(content="\n".join(msgs)+"\n\n"+status(p), view=UpgradeView(self.user_id, self.store))
+        self.add_item(make_btn("health", "❤️", "Health", "+20", 0))
+        self.add_item(make_btn("damage", "💥", "Damage", "+3", 0))
+        self.add_item(make_btn("mag", "📦", "Mag", "+1", 0))
+        self.add_item(make_btn("crit", "🎯", "Crit", "+2%", 1))
+        self.add_item(make_btn("armor", "🛡️", "Armor", "-2", 1))
+        self.add_item(make_btn("scavenger", "💰", "Loot", "+5%", 1))
 
-    @discord.ui.button(label="💥 Damage +3", style=discord.ButtonStyle.success, row=0)
-    async def damage(self, interaction: discord.Interaction, _b):
-        p=self.store.get(self.user_id)
-        msgs=upgrade(p,"damage")
-        self.store.save()
-        await interaction.response.edit_message(content="\n".join(msgs)+"\n\n"+status(p), view=UpgradeView(self.user_id, self.store))
-
-    @discord.ui.button(label="📦 Mag +1", style=discord.ButtonStyle.success, row=0)
-    async def mag(self, interaction: discord.Interaction, _b):
-        p=self.store.get(self.user_id)
-        msgs=upgrade(p,"mag")
-        self.store.save()
-        await interaction.response.edit_message(content="\n".join(msgs)+"\n\n"+status(p), view=UpgradeView(self.user_id, self.store))
-
-    @discord.ui.button(label="🎯 Crit +2%", style=discord.ButtonStyle.success, row=1)
-    async def crit(self, interaction: discord.Interaction, _b):
-        p=self.store.get(self.user_id)
-        msgs=upgrade(p,"crit")
-        self.store.save()
-        await interaction.response.edit_message(content="\n".join(msgs)+"\n\n"+status(p), view=UpgradeView(self.user_id, self.store))
-
-    @discord.ui.button(label="🛡️ Armor -2", style=discord.ButtonStyle.success, row=1)
-    async def armor(self, interaction: discord.Interaction, _b):
-        p=self.store.get(self.user_id)
-        msgs=upgrade(p,"armor")
-        self.store.save()
-        await interaction.response.edit_message(content="\n".join(msgs)+"\n\n"+status(p), view=UpgradeView(self.user_id, self.store))
-
-    @discord.ui.button(label="💰 Loot +5%", style=discord.ButtonStyle.success, row=1)
-    async def loot(self, interaction: discord.Interaction, _b):
-        p=self.store.get(self.user_id)
-        msgs=upgrade(p,"scavenger")
-        self.store.save()
-        await interaction.response.edit_message(content="\n".join(msgs)+"\n\n"+status(p), view=UpgradeView(self.user_id, self.store))
-
-    @discord.ui.button(label="⭐ Star Upgrades", style=discord.ButtonStyle.primary, row=2)
+    @discord.ui.button(label="⭐ Star Upgrades (5 to unlock)", style=discord.ButtonStyle.primary, row=2)
     async def stars(self, interaction: discord.Interaction, _b):
-        await interaction.response.edit_message(content=status(self.store.get(self.user_id))+"\n\n**⭐ STAR PRESTIGE (5 to unlock, then 1 or 3)**", view=StarUpgradeView(self.user_id, self.store))
+        p = self.store.get(self.user_id)
+        await interaction.response.edit_message(content=status(p) + f"\n\n💰 ${p.money} | ⭐ {p.stars} flex\n**STAR PRESTIGE** - 5 to unlock, then 1 or 3 per level", view=StarUpgradeView(self.user_id, self.store))
 
     @discord.ui.button(label="🏠 Main menu", style=discord.ButtonStyle.secondary, row=2)
     async def mainmenu(self, interaction: discord.Interaction, _b):
@@ -1899,43 +1883,52 @@ class UpgradeView(PlayerView):
 class StarUpgradeView(PlayerView):
     def __init__(self, user_id: int, store: GameStore) -> None:
         super().__init__(user_id, store)
+        player = self.store.get(user_id)
+        def make_star(stat, emoji, name, row):
+            cost = get_star_upgrade_cost(player, stat)
+            lvl = 0
+            cur = 0.0
+            cap = ""
+            if stat == "dodge":
+                lvl = player.star_dodge_upgrades
+                cur = player.dodge_chance*100
+                cap = "30%"
+            elif stat == "magical":
+                lvl = player.star_magical_upgrades
+                cur = player.magical_bullet_chance*100
+                cap = "20%"
+            elif stat == "medic":
+                lvl = player.star_medic_upgrades
+                cur = player.medic_chance*100
+                cap = "7%"
+            elif stat == "pet":
+                lvl = player.star_pet_upgrades
+                cur = player.pet_chance*100
+                cap = "10%"
+            # Label: emoji Name cur% · ⭐cost (Lvl X / cap)
+            label = f"{emoji} {name} {cur:.1f}% · ⭐{cost} (Lvl {lvl}/{cap})"
+            btn = discord.ui.Button(label=label[:80], style=discord.ButtonStyle.primary, row=row)
+            async def cb(interaction: discord.Interaction, stat=stat):
+                p = self.store.get(self.user_id)
+                msgs = upgrade_star(p, stat)
+                self.store.save()
+                await interaction.response.edit_message(content="\n".join(msgs) + "\n\n" + status(p) + f"\n💰 ${p.money} | ⭐ {p.stars} flex", view=StarUpgradeView(self.user_id, self.store))
+            btn.callback = cb
+            return btn
 
-    @discord.ui.button(label="💨 Dodge", style=discord.ButtonStyle.primary, row=0)
-    async def dodge(self, interaction: discord.Interaction, _b):
-        p=self.store.get(self.user_id)
-        msgs=upgrade_star(p,"dodge")
-        self.store.save()
-        await interaction.response.edit_message(content="\n".join(msgs)+"\n\n"+status(p), view=StarUpgradeView(self.user_id, self.store))
+        self.add_item(make_star("dodge", "💨", "Dodge", 0))
+        self.add_item(make_star("magical", "✨", "Magical", 0))
+        self.add_item(make_star("medic", "💊", "Medic", 0))
+        self.add_item(make_star("pet", "🐺", "Pet", 1))
 
-    @discord.ui.button(label="✨ Magical", style=discord.ButtonStyle.primary, row=0)
-    async def magical(self, interaction: discord.Interaction, _b):
-        p=self.store.get(self.user_id)
-        msgs=upgrade_star(p,"magical")
-        self.store.save()
-        await interaction.response.edit_message(content="\n".join(msgs)+"\n\n"+status(p), view=StarUpgradeView(self.user_id, self.store))
-
-    @discord.ui.button(label="💊 Medic", style=discord.ButtonStyle.primary, row=0)
-    async def medic(self, interaction: discord.Interaction, _b):
-        p=self.store.get(self.user_id)
-        msgs=upgrade_star(p,"medic")
-        self.store.save()
-        await interaction.response.edit_message(content="\n".join(msgs)+"\n\n"+status(p), view=StarUpgradeView(self.user_id, self.store))
-
-    @discord.ui.button(label="🐺 Pet", style=discord.ButtonStyle.primary, row=1)
-    async def pet(self, interaction: discord.Interaction, _b):
-        p=self.store.get(self.user_id)
-        msgs=upgrade_star(p,"pet")
-        self.store.save()
-        await interaction.response.edit_message(content="\n".join(msgs)+"\n\n"+status(p), view=StarUpgradeView(self.user_id, self.store))
-
-    @discord.ui.button(label="⬆️ Money Upgrades", style=discord.ButtonStyle.success, row=1)
+    @discord.ui.button(label="⬆️ Money Upgrades", style=discord.ButtonStyle.success, row=2)
     async def money(self, interaction: discord.Interaction, _b):
-        await interaction.response.edit_message(content=status(self.store.get(self.user_id)), view=UpgradeView(self.user_id, self.store))
+        p = self.store.get(self.user_id)
+        await interaction.response.edit_message(content=status(p) + f"\n\n💰 ${p.money} | ⭐ {p.stars}", view=UpgradeView(self.user_id, self.store))
 
     @discord.ui.button(label="🏠 Main menu", style=discord.ButtonStyle.secondary, row=2)
     async def mainmenu2(self, interaction: discord.Interaction, _b):
         await interaction.response.edit_message(content=status(self.store.get(self.user_id)), view=ZombieMenuView(self.user_id, self.store))
-
 
 class StarterBot(discord.Client):
     """Small Discord bot with slash commands."""
@@ -2219,6 +2212,7 @@ def main() -> None:
         sys.exit(1)
 
     bot.run(token, log_handler=None)
+
 
 
 
