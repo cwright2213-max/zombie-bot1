@@ -220,13 +220,16 @@ async def zombie_ammo(interaction: discord.Interaction, ammo_name: app_commands.
     await interaction.response.send_message("\n".join(messages))
 
 
-@zombie.command(name="upgrade", description="Spend XP on survivor upgrades.")
+@zombie.command(name="upgrade", description="Buy permanent upgrades with money.")
 @app_commands.describe(stat="The stat to upgrade")
 @app_commands.choices(
     stat=[
-        app_commands.Choice(name="Max health", value="health"),
-        app_commands.Choice(name="Weapon damage", value="damage"),
-        app_commands.Choice(name="Magazine size", value="magazine"),
+        app_commands.Choice(name="Max health +20", value="health"),
+        app_commands.Choice(name="Weapon damage +3", value="damage"),
+        app_commands.Choice(name="Magazine size +1", value="mag"),
+        app_commands.Choice(name="Crit chance +2%", value="crit"),
+        app_commands.Choice(name="Armor -2 dmg", value="armor"),
+        app_commands.Choice(name="Loot +5% money", value="scavenger"),
     ]
 )
 async def zombie_upgrade(interaction: discord.Interaction, stat: app_commands.Choice[str]) -> None:
@@ -237,6 +240,68 @@ async def zombie_upgrade(interaction: discord.Interaction, stat: app_commands.Ch
 
 
 bot.tree.add_command(zombie)
+
+
+# --- ADMIN ONLY TEST COMMANDS - LOCKED TO YOUR ID 1548647360123502613 ---
+ADMIN_ID = 1548647360123502613
+
+def is_admin(interaction: discord.Interaction) -> bool:
+    return interaction.user.id == ADMIN_ID
+
+@bot.tree.command(name="addmoney", description="[ADMIN] Add money - admin only")
+@app_commands.describe(amount="Amount to add")
+async def addmoney(interaction: discord.Interaction, amount: int):
+    if not is_admin(interaction):
+        await interaction.response.send_message("❌ Admin-only test command.", ephemeral=True)
+        return
+    player = game_store.get(interaction.user.id)
+    player.money += amount
+    game_store.save()
+    await interaction.response.send_message(f"💰 **+${amount} added** → You now have **${player.money}**\nGo test the 6 upgrades!", ephemeral=True)
+
+@bot.tree.command(name="addstars", description="[ADMIN] Add stars - admin only")
+@app_commands.describe(amount="Amount")
+async def addstars(interaction: discord.Interaction, amount: int):
+    if not is_admin(interaction):
+        await interaction.response.send_message("❌ Admin-only.", ephemeral=True)
+        return
+    player = game_store.get(interaction.user.id)
+    player.stars += amount
+    game_store.save()
+    await interaction.response.send_message(f"⭐ **+{amount} stars** → You now have **{player.stars}** flex", ephemeral=True)
+
+@bot.tree.command(name="addxp", description="[ADMIN] Add XP - admin only")
+@app_commands.describe(amount="Amount")
+async def addxp(interaction: discord.Interaction, amount: int):
+    if not is_admin(interaction):
+        await interaction.response.send_message("❌ Admin-only.", ephemeral=True)
+        return
+    player = game_store.get(interaction.user.id)
+    player.xp += amount
+    game_store.save()
+    await interaction.response.send_message(f"✨ **+{amount} XP** → Level {player.level} | XP: {player.xp}", ephemeral=True)
+
+@bot.tree.command(name="setmoney", description="[ADMIN] Set money to exact amount - admin only")
+@app_commands.describe(amount="Set money to this amount")
+async def setmoney(interaction: discord.Interaction, amount: int):
+    if not is_admin(interaction):
+        await interaction.response.send_message("❌ Admin-only.", ephemeral=True)
+        return
+    player = game_store.get(interaction.user.id)
+    player.money = amount
+    game_store.save()
+    await interaction.response.send_message(f"💰 Money set to **${player.money}**", ephemeral=True)
+
+@bot.tree.command(name="resetme", description="[ADMIN] Reset yourself to level 1 - admin only")
+async def resetme(interaction: discord.Interaction):
+    if not is_admin(interaction):
+        await interaction.response.send_message("❌ Admin-only.", ephemeral=True)
+        return
+    from bot.zombie_survival import Survivor
+    game_store.players[str(interaction.user.id)] = Survivor()
+    game_store.save()
+    await interaction.response.send_message("🔄 **Reset to level 1!** Use /addmoney to test again.", ephemeral=True)
+# --- END ADMIN COMMANDS ---
 
 
 def main() -> None:
