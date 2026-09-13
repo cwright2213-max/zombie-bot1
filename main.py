@@ -60,20 +60,7 @@ def save_player(user_id: str, player_dict: dict):
 SAVE_FILE = DB_PATH
 
 
-# === ZOMBIE SURVIVAL - RESTORED ===
-"""Turn-based Discord zombie survival - FIXED H-01 profiles never silently lost"""
-import json, random, logging
-from dataclasses import asdict, dataclass, field
-from pathlib import Path
-from typing import Any
-try:
-    from .storage import load_all_players, save_player, DB_PATH
-except ImportError:
-    try:
-        from storage import load_all_players, save_player, DB_PATH
-    except ImportError:
-        from bot.storage import load_all_players, save_player, DB_PATH
-SAVE_FILE = DB_PATH
+# === ZOMBIE SURVIVAL - LATEST ===
 MAX_PAINKILLERS_PER_RUN = 3
 MAX_FULL_RESTORES_PER_RUN = 1
 ZONES: dict[str, dict[str, Any]] = {
@@ -893,7 +880,6 @@ def get_status(player: Survivor) -> str:
 
 def get_detailed_status(player: Survivor) -> str:
     return status_detailed(player)
-
 
 class GameStore:
     def __init__(self) -> None:
@@ -2144,6 +2130,17 @@ async def resetme(interaction: discord.Interaction):
 # --- END ADMIN COMMANDS ---
 
 
+def main() -> None:
+    """Start the bot using the project secret."""
+    token = os.getenv("DISCORD_BOT_TOKEN")
+    if not token:
+        logger.error(
+            "DISCORD_BOT_TOKEN is not set. Add it in the project's Secrets "
+            "panel before starting the bot."
+        )
+        sys.exit(1)
+
+    bot.run(token, log_handler=None)
 
 
 
@@ -2153,7 +2150,7 @@ def main():
     if not token:
         print("DISCORD_BOT_TOKEN not set")
         sys.exit(1)
-    print(f"Token found {token[:12]}... Starting")
+    print(f"Token found {token[:10]}... Starting")
     bot.run(token, log_handler=None)
 
 if __name__ == "__main__":
