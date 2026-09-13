@@ -1,4 +1,4 @@
-"""Discord buttons and menus - FINAL CLEAN VERSION with shop money fix."""
+"""Discord buttons and menus - CLEANED UI - minimal info."""
 
 from __future__ import annotations
 
@@ -45,35 +45,31 @@ def combat_embed(messages: list[str], player: object) -> discord.Embed:
         )
         run_money = getattr(player, "run_money_earned", 0)
         run_xp = getattr(player, "run_xp_earned", 0)
-        embed.add_field(
-            name="💰 Total Money Earned",
-            value=f"**${player.money}**",
-            inline=True,
-        )
-        embed.add_field(
-            name="✨ Total XP Earned",
-            value=f"**{player.xp} XP** (Lvl {player.level})",
-            inline=True,
-        )
         if run_money or run_xp:
             embed.add_field(
                 name="📊 This Run",
-                value=f"💵 +${run_money} • 🌟 +{run_xp} XP\n❤️ {player.health}/{player.max_health} HP restored",
-                inline=False,
+                value=f"💵 +${run_money} • ✨ +{run_xp} XP",
+                inline=True,
             )
-        else:
-            embed.add_field(name="Status", value=f"❤️ {player.health}/{player.max_health} HP restored", inline=False)
-        embed.set_footer(text="Start another run or shop in main menu.")
+        embed.add_field(
+            name="💰 Total",
+            value=f"**${player.money}** • Lvl {player.level}",
+            inline=True,
+        )
+        embed.add_field(name="Status", value=f"❤️ {player.health}/{player.max_health} HP restored", inline=False)
+        embed.set_footer(text="Start another run or open shop.")
         return embed
 
     embed = discord.Embed(
         title=f"🧟 WAVE {player.wave} • {player.zombies_remaining} left",
         color=discord.Color.from_rgb(237, 66, 69),
-        description="\n".join(m for m in messages if m) or "Lock, load, and choose.",
+        description="\n".join(m for m in messages if m) or "Choose your action.",
     )
+    # Clean player field - no dict spam
+    spare = player.get_spare() if hasattr(player, 'get_spare') else player.spare_ammo.get(player.ammo_name, 0)
     embed.add_field(
         name=f"❤️ YOU — {player.health}/{player.max_health} HP",
-        value=f"{_health_bar(player.health, player.max_health)} **{player.health}/{player.max_health}**\n🔫 `{player.magazine}/{player.magazine_size}` + {player.spare_ammo} spare",
+        value=f"{_health_bar(player.health, player.max_health)} **{player.health}/{player.max_health}**\n🔫 `{player.magazine}/{player.magazine_size}` + {spare} spare",
         inline=True,
     )
     enemy = player.enemy
@@ -91,36 +87,40 @@ def heal_menu_embed(player: object) -> discord.Embed:
     embed = discord.Embed(
         title="💚 Field Medic Kit",
         color=discord.Color.from_rgb(87, 242, 135),
-        description=f"Health: **{player.health}/{player.max_health} HP** {_health_bar(player.health, player.max_health)}\nHealing does **not** consume your turn.",
+        description=f"Health: **{player.health}/{player.max_health} HP** {_health_bar(player.health, player.max_health)}",
     )
-    pain_status = "✅ Ready" if player.painkillers > 0 and pain_left > 0 and player.health < player.max_health else "❌ Unavailable"
-    embed.add_field(name=f"💊 Painkillers • {pain_status}", value=f"**{player.painkillers} owned**\n`{pain_left} uses left this run`\nHeals ~{player.max_health//4} HP", inline=True)
-    full_status = "✅ Ready" if player.full_restores > 0 and full_left > 0 and player.health < player.max_health else "❌ Unavailable"
-    embed.add_field(name=f"✨ Full Restore • {full_status}", value=f"**{player.full_restores} owned**\n`{full_left} use left this run`\nFull heal", inline=True)
-    if player.health >= player.max_health:
-        embed.set_footer(text="Already full HP!")
-    else:
-        embed.set_footer(text=f"{pain_left} painkiller uses + {full_left} restore uses left")
+    pain_status = "✅ Ready" if player.painkillers > 0 and pain_left > 0 and player.health < player.max_health else "❌"
+    embed.add_field(name=f"💊 Painkillers {pain_status}", value=f"**{player.painkillers} owned**\n`{pain_left} left this run`", inline=True)
+    full_status = "✅ Ready" if player.full_restores > 0 and full_left > 0 and player.health < player.max_health else "❌"
+    embed.add_field(name=f"✨ Full Restore {full_status}", value=f"**{player.full_restores} owned**\n`{full_left} left this run`", inline=True)
     return embed
 
 def status_detail_embed(player: object) -> discord.Embed:
-    embed = discord.Embed(title="📊 Survivor Intel", color=discord.Color.from_rgb(88, 101, 242))
-    embed.add_field(name="🔫 Loadout", value=f"**{player.weapon_name}** • {player.ammo_name} ammo\nLevel {player.level} • {player.stars} ⭐", inline=False)
+    embed = discord.Embed(title="📊 Survivor Stats", color=discord.Color.from_rgb(88, 101, 242))
+    embed.add_field(name="🔫 Loadout", value=f"**{player.weapon_name}** • {player.ammo_name}\n{player.magazine}/{player.magazine_size} + {player.get_spare()} spare", inline=True)
+    embed.add_field(name="📈 Progress", value=f"Lvl {player.level} • {player.xp} XP\n⭐ {player.stars} • 💰 ${player.money}", inline=True)
+    embed.add_field(name="💪 Upgrades", value=f"❤️ HP Lvl {player.health_upgrades}\n💥 Dmg Lvl {player.damage_upgrades}\n📦 Mag Lvl {player.mag_upgrades}\n🎯 Crit Lvl {player.crit_upgrades}\n🛡️ Armor Lvl {player.armor_upgrades}\n💰 Loot Lvl {player.scavenger_upgrades}", inline=False)
     embed.add_field(name=f"🌍 {player.zone_name}", value=ammo_effectiveness_text(player), inline=False)
-    embed.add_field(name="📦 Resources", value=f"💰 ${player.money} • ✨ {player.xp} XP\n❤️ {player.health}/{player.max_health} HP", inline=False)
     return embed
 
 def shop_embed(player: object, last_messages: list[str] | None = None) -> discord.Embed:
-    """NEW: Shop embed that ALWAYS shows current money - fixes your bug"""
+    """CLEAN shop - no dict spam"""
     embed = discord.Embed(
         title="🛒 Armory Shop",
         color=discord.Color.from_rgb(87, 242, 135),
-        description="\n".join(last_messages) if last_messages else "Buy gear. Money deducts instantly.",
+        description="\n".join(last_messages) if last_messages else f"💰 **${player.money}** available",
     )
-    embed.add_field(name="💰 Your Money", value=f"**${player.money}**", inline=True)
-    embed.add_field(name="📦 Ammo", value=f"{player.spare_ammo} spare + {player.magazine}/{player.magazine_size} mag", inline=True)
-    embed.add_field(name="💊 Heals", value=f"{player.painkillers} painkillers • {player.full_restores} restores", inline=True)
-    embed.set_footer(text="Prices deduct immediately - no need to switch menus.")
+    # Clean ammo display - not raw dict
+    spare = player.get_spare() if hasattr(player, 'get_spare') else 0
+    ammo_line = f"{player.magazine}/{player.magazine_size} mag + {spare} spare"
+    if hasattr(player, 'spare_ammo') and isinstance(player.spare_ammo, dict):
+        # Show total spare across types if multiple
+        total_spare = sum(player.spare_ammo.values())
+        ammo_line = f"{player.magazine}/{player.magazine_size} mag • {total_spare} total spare"
+    
+    embed.add_field(name="💰 Money", value=f"**${player.money}**", inline=True)
+    embed.add_field(name="📦 Ammo", value=ammo_line, inline=True)
+    embed.add_field(name="💊 Heals", value=f"{player.painkillers}x 💊 • {player.full_restores}x ✨", inline=True)
     return embed
 
 class PlayerView(discord.ui.View):

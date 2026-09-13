@@ -668,22 +668,63 @@ def _grant_random_elemental_drop(player: Survivor) -> list[str]:
     return [f"🎁 **Scavenged!** +1x **{chosen}** bullet + {normal_amount}x Standard bullets found!"]
 
 def status(player: Survivor) -> str:
+    """CLEAN VERSION - minimal info at a glance"""
     earned, needed = level_progress(player)
-    pain_left = MAX_PAINKILLERS_PER_RUN - player.painkillers_used_this_run
-    full_left = MAX_FULL_RESTORES_PER_RUN - player.full_restores_used_this_run
-    cost = AMMO[player.ammo_name]["cost_per_attack"]
-    spare = player.get_spare()
-    lines = [
-        f"**🧟 {player.zone_name} | Lvl {player.level}** {earned}/{needed} XP | ⭐ {player.stars} | 💰 ${player.money}",
-        f"❤️ {player.health}/{player.max_health} | 🔫 {player.weapon_name} ({player.weapon_damage} dmg) {player.magazine}/{player.magazine_size}+{spare} [{player.ammo_name} {cost}/shot] | 🎯 {int(player.crit_chance*100)}% crit | 🛡️ -{player.armor_reduction} dmg | 💰 +{int((player.scavenger_bonus-1)*100)}% loot",
-    ]
+    
+    # Main header - location + level + XP bar
     if player.run_active and player.enemy:
-        lines.append(f"⚔️ Wave {player.wave} • {player.zombies_remaining} left • Fighting {player.enemy.name} {player.enemy.health}/{player.enemy.max_health} HP • 💵 Run: ${player.run_money_earned} | ✨ {player.run_xp_earned} XP")
-    else:
-        pool_text = " | ".join([f"{k}: {v}" for k, v in player.spare_ammo.items() if v > 0])
-        lines.append(f"💊 {player.painkillers} painkillers ({pain_left} left) • ✨ {player.full_restores} restores ({full_left} left)")
-        lines.append(f"🎒 Ammo pools: {pool_text or 'Empty'} | Owned: {', '.join(player.owned_ammo)} | Guns: {', '.join(player.owned_weapons)}")
-    return "\n".join(lines)
+        # In-combat: show wave and enemy only
+        lines = [
+            f"**🧟 {player.zone_name} — WAVE {player.wave}** | {player.zombies_remaining} zombies left",
+            f"❤️ {player.health}/{player.max_health} HP | 🔫 {player.weapon_name} {player.magazine}/{player.magazine_size} ({player.get_spare()} spare)",
+            f"💀 Fighting {player.enemy.name} {player.enemy.health}/{player.enemy.max_health} HP",
+        ]
+        if player.run_money_earned or player.run_xp_earned:
+            lines.append(f"💵 Run: ${player.run_money_earned} • ✨ {player.run_xp_earned} XP")
+        return "
+".join(lines)
+    
+    # Out of combat - clean summary
+    lines = [
+        f"**🧟 {player.zone_name} — Lvl {player.level}** ({earned}/{needed} XP)",
+        f"❤️ {player.health}/{player.max_health} | 💰 ${player.money} | ⭐ {player.stars}",
+        f"🔫 {player.weapon_name} {player.magazine}/{player.magazine_size} • {player.get_spare()} spare [{player.ammo_name}]",
+    ]
+    
+    # Only show heal counts if not full and have items
+    if player.health < player.max_health and (player.painkillers > 0 or player.full_restores > 0):
+        pain_left = MAX_PAINKILLERS_PER_RUN - player.painkillers_used_this_run
+        full_left = MAX_FULL_RESTORES_PER_RUN - player.full_restores_used_this_run
+        heals = []
+        if player.painkillers > 0:
+            heals.append(f"💊 {player.painkillers}x ({pain_left} left)")
+        if player.full_restores > 0:
+            heals.append(f"✨ {player.full_restores}x ({full_left} left)")
+        if heals:
+            lines.append(" • ".join(heals))
+    
+    return "
+".join(lines)
+
+def status_detailed(player: Survivor) -> str:
+    """Detailed view for inventory/stats menu"""
+    earned, needed = level_progress(player)
+    lines = [
+        f"**📊 Survivor Detail — Lvl {player.level}**",
+        f"❤️ HP: {player.health}/{player.max_health} (+{player.health_upgrades*20})",
+        f"💥 Dmg: {player.weapon_damage} (+{player.damage_upgrades*3}) | 📦 Mag: {player.magazine_size} (+{player.mag_upgrades})",
+        f"🎯 Crit: {int(player.crit_chance*100)}% | 🛡️ Armor: -{player.armor_reduction} | 💰 Loot: +{int((player.scavenger_bonus-1)*100)}%",
+        f"💰 ${player.money} | ⭐ {player.stars} | ✨ {player.xp} XP ({earned}/{needed})",
+        f"🔫 {player.weapon_name} [{player.ammo_name}] | 📦 Spare: {player.get_spare()}",
+        f"🎒 Ammo: {', '.join([f'{k}:{v}' for k,v in player.spare_ammo.items() if v>0]) or 'Empty'}",
+        f"💊 Painkillers: {player.painkillers} | ✨ Restores: {player.full_restores}",
+        f"🗺️ Zone: {player.zone_name} | Guns: {', '.join(player.owned_weapons)}",
+    ]
+    return "
+".join(lines)
 
 def get_status(player: Survivor) -> str:
     return status(player)
+
+def get_detailed_status(player: Survivor) -> str:
+    return status_detailed(player)
