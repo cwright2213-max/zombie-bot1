@@ -647,15 +647,15 @@ def buy_item(player: Survivor, item: str) -> list[str]:
         player.spare_ammo[ammo_type] = player.spare_ammo.get(ammo_type, 0) + box_amount
         return [f"📦 Bought {ammo_type} box +{box_amount}. {player.spare_ammo[ammo_type]} spare now. ${player.money} left."]
     if item == "painkillers":
-        if player.money < 40:
-            return [f"❌ Need $40, you have ${player.money}"]
-        player.money -= 40
+        if player.money < 15:
+            return [f"❌ Need $15, you have ${player.money}"]
+        player.money -= 15
         player.painkillers += 2
         return [f"💊 Bought painkillers +2. ${player.money} left."]
     if item == "full_restore":
-        if player.money < 120:
-            return [f"❌ Need $120, you have ${player.money}"]
-        player.money -= 120
+        if player.money < 80:
+            return [f"❌ Need $80, you have ${player.money}"]
+        player.money -= 80
         player.full_restores += 1
         return [f"✨ Bought full restore +1. ${player.money} left."]
     if item not in WEAPONS:
@@ -1111,40 +1111,95 @@ class CombatView(PlayerView):
 
 
 class HealView(PlayerView):
-    @discord.ui.button(label="💊 Painkillers", style=discord.ButtonStyle.success, row=0)
-    async def pk(self, interaction: discord.Interaction, _b):
-        p=self.store.get(self.user_id)
-        msgs=take_action(p,"heal","painkillers")
-        self.store.save()
-        await interaction.response.edit_message(content="\n".join(msgs)+"\n\n"+status(p), view=CombatView(self.user_id, self.store))
-    @discord.ui.button(label="✨ Full restore", style=discord.ButtonStyle.success, row=0)
-    async def fr(self, interaction: discord.Interaction, _b):
-        p=self.store.get(self.user_id)
-        msgs=take_action(p,"heal","full_restore")
-        self.store.save()
-        await interaction.response.edit_message(content="\n".join(msgs)+"\n\n"+status(p), view=CombatView(self.user_id, self.store))
-    @discord.ui.button(label="⬅️ Back", style=discord.ButtonStyle.secondary, row=1)
-    async def back(self, interaction: discord.Interaction, _b):
-        p=self.store.get(self.user_id)
-        embed = combat_embed(p, [action_help(p)])
-        await interaction.response.edit_message(content=None, embed=embed, view=CombatView(self.user_id, self.store))
+    def __init__(self, user_id: int, store, timeout: float = 180):
+        super().__init__(user_id, store, timeout)
+        player = self.store.get(user_id)
+        # Update button labels to show counts
+        # We need to dynamically set labels, so override in __init__
+        # Clear default buttons and re-add with counts
+        self.clear_items()
+        # Painkillers button with count and limits
+        pk_left = 3 - player.painkillers_used_this_run
+        pk_label = f"💊 Painkillers ({player.painkillers}x - {pk_left} left this run)"
+        pk_btn = discord.ui.Button(label=pk_label[:80], style=discord.ButtonStyle.success, row=0)
+        async def pk_cb(interaction,):
+            p=self.store.get(self.user_id)
+            msgs=take_action(p,"heal","painkillers")
+            self.store.save()
+            embed = combat_embed(p, msgs)
+            await interaction.response.edit_message(content=None, embed=embed, view=CombatView(self.user_id, self.store))
+        pk_btn.callback = pk_cb
+        self.add_item(pk_btn)
+
+        fr_left = 1 - player.full_restores_used_this_run
+        fr_label = f"✨ Full restore ({player.full_restores}x - {fr_left} left)"
+        fr_btn = discord.ui.Button(label=fr_label[:80], style=discord.ButtonStyle.success, row=0)
+        async def fr_cb(interaction,):
+            p=self.store.get(self.user_id)
+            msgs=take_action(p,"heal","full_restore")
+            self.store.save()
+            embed = combat_embed(p, msgs)
+            await interaction.response.edit_message(content=None, embed=embed, view=CombatView(self.user_id, self.store))
+        fr_btn.callback = fr_cb
+        self.add_item(fr_btn)
+
+        back_btn = discord.ui.Button(label="⬅️ Back", style=discord.ButtonStyle.secondary, row=1)
+        async def back_cb(interaction,):
+            p=self.store.get(self.user_id)
+            embed = combat_embed(p, [action_help(p)])
+            await interaction.response.edit_message(content=None, embed=embed, view=CombatView(self.user_id, self.store))
+        back_btn.callback = back_cb
+        self.add_item(back_btn)
+
+
+
 
 class ShopView(PlayerView):
-    @discord.ui.button(label="📦 Ammo box", style=discord.ButtonStyle.primary, row=0)
+    def __init__(self, user_id: int, store, timeout: float = 180):
+        super().__init__(user_id, store, timeout)
+        player = self.store.get(user_id)
+        for i, wname in enumerate(["Shotgun", "Rifle", "SMG", "Sawed-Of"]):
+            if wname in WEAPONS:
+                w = WEAPONS[wname]
+                owned = wname in player.owned_weapons
+                price = w["price"]
+                lvl = w["unlock_level"]
+                if owned:
+                    label = f"🔫 {wname} (Owned)"
+                else:
+                    label = f"🔫 {wname} ${price} Lvl {lvl}"
+                btn = discord.ui.Button(label=label[:80], style=discord.ButtonStyle.primary if not owned else discord.ButtonStyle.secondary, row=i//2)
+                async def cb(interaction, wn=wname):
+                    p=self.store.get(self.user_id)
+                    msgs=buy_item(p, wn)
+                    self.store.save()
+                    await interaction.response.edit_message(content="\n".join(msgs)+"\n\n"+status(p), view=ShopView(self.user_id, self.store))
+                btn.callback = cb
+                self.add_item(btn)
+
+    @discord.ui.button(label="📦 Ammo box", style=discord.ButtonStyle.primary, row=2)
     async def ammo(self, interaction: discord.Interaction, _b):
-        p=self.store.get(self.user_id); msgs=buy_item(p,"ammo"); self.store.save()
+        p=self.store.get(self.user_id)
+        msgs=buy_item(p,"ammo")
+        self.store.save()
         await interaction.response.edit_message(content="\n".join(msgs)+"\n\n"+status(p), view=ShopView(self.user_id, self.store))
-    @discord.ui.button(label="💊 Painkillers", style=discord.ButtonStyle.primary, row=0)
+    @discord.ui.button(label="💊 Painkillers $15", style=discord.ButtonStyle.success, row=2)
     async def pk(self, interaction: discord.Interaction, _b):
-        p=self.store.get(self.user_id); msgs=buy_item(p,"painkillers"); self.store.save()
+        p=self.store.get(self.user_id)
+        msgs=buy_item(p,"painkillers")
+        self.store.save()
         await interaction.response.edit_message(content="\n".join(msgs)+"\n\n"+status(p), view=ShopView(self.user_id, self.store))
-    @discord.ui.button(label="✨ Full restore", style=discord.ButtonStyle.primary, row=0)
+    @discord.ui.button(label="✨ Full restore $80", style=discord.ButtonStyle.success, row=2)
     async def fr(self, interaction: discord.Interaction, _b):
-        p=self.store.get(self.user_id); msgs=buy_item(p,"full_restore"); self.store.save()
+        p=self.store.get(self.user_id)
+        msgs=buy_item(p,"full_restore")
+        self.store.save()
         await interaction.response.edit_message(content="\n".join(msgs)+"\n\n"+status(p), view=ShopView(self.user_id, self.store))
-    @discord.ui.button(label="🏠 Main menu", style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(label="🏠 Main menu", style=discord.ButtonStyle.secondary, row=3)
     async def main(self, interaction: discord.Interaction, _b):
-        await interaction.response.edit_message(content=status(self.store.get(self.user_id)), view=ZombieMenuView(self.user_id, self.store))
+        await interaction.response.edit_message(content=status(self.store.get(self.user_id)), embed=None, view=ZombieMenuView(self.user_id, self.store))
+
+
 
 class ZoneView(PlayerView):
     def __init__(self, user_id, store):
