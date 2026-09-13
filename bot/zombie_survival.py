@@ -232,7 +232,7 @@ def _enemy_damage(player: Survivor) -> list[str]:
         player.spare_ammo[player.ammo_name] = player.spare_ammo.get(player.ammo_name, 0) + player.magazine
         player.magazine = 0
         result.append(f"💀 **You died!** {get_cocky_line()} Rewards saved.")
-        result.extend(_grant_random_elemental_drop(player))
+        result.extend(_grant_end_of_run_rewards(player))
     return result
 
 def _apply_damage_over_time(player: Survivor) -> list[str]:
@@ -298,7 +298,7 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
                 f"🧟‍♂️ {get_no_ammo_line()}",
                 f"🏃 You limped back to safehouse with ${player.run_money_earned} and {player.run_xp_earned} XP from this run.",
             ]
-            msgs.extend(_grant_random_elemental_drop(player))
+            msgs.extend(_grant_end_of_run_rewards(player))
             return msgs
         return None
 
@@ -350,7 +350,7 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
                     "💀 **CLICK... CLICK... OUT OF AMMO!**",
                     f"🧟‍♂️ {get_no_ammo_line()}",
                     f"💰 You kept ${player.run_money_earned} • {player.run_xp_earned} XP from this run.",
-                ] + _grant_random_elemental_drop(player)
+                ] + _grant_end_of_run_rewards(player)
             return [f"❌ Need {cost} {player.ammo_name} ammo! Have {player.magazine}/{player.magazine_size}", f"🔄 Reload (you have {spare} spare)"]
         player.magazine -= cost
         mod = ammo_modifier(player, player.ammo_name)
@@ -379,7 +379,7 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
                 "💀 **No spare ammo left!**",
                 f"🧟‍♂️ {get_no_ammo_line()}",
                 f"💰 You escaped with ${player.run_money_earned} • {player.run_xp_earned} XP.",
-            ] + _grant_random_elemental_drop(player)
+            ] + _grant_end_of_run_rewards(player)
         amount = min(player.magazine_size - player.magazine, spare)
         player.magazine += amount
         player.spare_ammo[player.ammo_name] = spare - amount
@@ -392,7 +392,7 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
         player.enemy = None
         player.health = player.max_health
         messages.append(f"🏃 You fled like a legend! Kept ${player.run_money_earned} • {player.run_xp_earned} XP this run. Full healed!")
-        messages.extend(_grant_random_elemental_drop(player))
+        messages.extend(_grant_end_of_run_rewards(player))
         return messages
     else:
         return ["Attack, reload, heal, or flee."]
@@ -507,6 +507,54 @@ def upgrade(player: Survivor, stat: str) -> list[str]:
         player.stars -= 1
         return [f"📦 Mag size → **{player.magazine_size}**. Stars: {player.stars}"]
     return [f"Unknown upgrade. Stars: {player.stars}"]
+
+
+def _grant_star_drop(player: Survivor) -> list[str]:
+    """RARE star drop: 0-2 stars normally, 3 stars ONLY after wave 20+"""
+    wave = max(1, player.wave)
+    
+    # 3 stars impossible before wave 20
+    if wave < 20:
+        if wave <= 2:
+            weights = [92, 8, 0, 0]   # 0,1,2,3 - no 2 or 3
+        elif wave <= 5:
+            weights = [80, 16, 4, 0]  # no 3
+        elif wave <= 9:
+            weights = [65, 25, 10, 0] # no 3
+        elif wave <= 14:
+            weights = [50, 32, 18, 0] # no 3
+        else:  # 15-19 - best before mythic
+            weights = [40, 35, 25, 0] # still no 3, but good 2-star chance
+    else:
+        # Wave 20+ - MYTHIC unlocked
+        weights = [35, 33, 24, 8]  # 8% chance for 3 stars, 32% for 1-2
+    
+    import random
+    r = random.random() * 100
+    cumulative = 0
+    stars = 0
+    for i, w in enumerate(weights):
+        cumulative += w
+        if r <= cumulative:
+            stars = i
+            break
+    
+    if stars > 0:
+        player.stars += stars
+        if stars == 1:
+            return [f"⭐ **RARE!** +{stars} star found! (Wave {wave})"]
+        elif stars == 2:
+            return [f"⭐⭐ **ULTRA RARE!** +{stars} stars! (Wave {wave})"]
+        else:  # 3 stars - wave 20+ only
+            return [f"⭐⭐⭐ **MYTHIC HAUL!** +{stars} STARS! WAVE {wave} LEGEND! First time ever?"]
+    else:
+        return []
+
+def _grant_end_of_run_rewards(player: Survivor) -> list[str]:
+    msgs = []
+    msgs.extend(_grant_random_elemental_drop(player))
+    msgs.extend(_grant_star_drop(player))
+    return msgs
 
 def _grant_random_elemental_drop(player: Survivor) -> list[str]:
     elemental_owned = [a for a in player.owned_ammo if a != "Standard"]
