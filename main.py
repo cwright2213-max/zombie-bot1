@@ -370,13 +370,28 @@ def _enemy_damage(player: Survivor) -> list[str]:
         result = [f"💥 {enemy.name} hits for {damage} dmg."]
     if player.health == 0:
         player.health = player.max_health
-        msgs = build_run_summary(player, "died")
+        # CLEAN: only summary, no "Walker hits for X" clutter
+        data = build_run_summary(player, "died")
+        # build_run_summary now returns dict, convert to pretty list
+        if isinstance(data, dict):
+            msgs = [
+                f"💀 **You died!** {get_cocky_line()}",
+                "",
+                f"🌊 **Waves survived:** {data['waves_survived']} (reached Wave {data['reached_wave']})",
+                f"🧟 **Zombies killed:** {data['zombies_killed']}",
+                f"💰 **Money earned:** +${data['money']}",
+                f"✨ **XP earned:** +{data['xp']} XP",
+                "",
+                f"❤️ **HP restored:** {data['max_hp']}/{data['max_hp']}"
+            ]
+        else:
+            msgs = data
         player.run_active = False
         player.enemy = None
         player.spare_ammo[player.ammo_name] = player.spare_ammo.get(player.ammo_name, 0) + player.magazine
         player.magazine = 0
         msgs.extend(_grant_end_of_run_rewards(player))
-        return result + msgs
+        return msgs
     return result
 
 def _apply_damage_over_time(player: Survivor) -> list[str]:
@@ -816,16 +831,16 @@ def build_run_summary(player: Survivor, cause: str) -> list[str]:
     if cause=="died":
         lines.append(f"💀 **You died!** {get_cocky_line()}")
     elif cause=="fled":
-        lines.append(f"🏃 **You fled!**")
+        lines.append(f"🏃 **You escaped alive!**")
     else:
         lines.append(f"💀 **Out of ammo!** {get_no_ammo_line()}")
     lines.append("")
-    lines.append(f"🌊 **Waves survived:** {waves_survived} (reached Wave {player.wave})")
-    lines.append(f"🧟 **Zombies killed:** {player.run_zombies_killed}")
-    lines.append(f"💰 **Money earned:** +${player.run_money_earned}")
-    lines.append(f"✨ **XP earned:** +{player.run_xp_earned} XP")
+    lines.append(f"🌊 Waves survived: {waves_survived} (reached Wave {player.wave})")
+    lines.append(f"🧟 Zombies killed: {player.run_zombies_killed}")
+    lines.append(f"💰 Money earned: +${player.run_money_earned}")
+    lines.append(f"✨ XP earned: +{player.run_xp_earned} XP")
     lines.append("")
-    lines.append(f"❤️ **HP restored:** {player.max_health}/{player.max_health}")
+    lines.append(f"❤️ HP restored: {player.max_health}/{player.max_health}")
     return lines
 
 def _grant_end_of_run_rewards(player: Survivor) -> list[str]:
@@ -983,6 +998,7 @@ class ZombieMenuView(PlayerView):
     async def refresh(self, interaction: discord.Interaction, _b):
         await interaction.response.edit_message(content=status(self.store.get(self.user_id)), view=ZombieMenuView(self.user_id, self.store))
 
+
 class CombatView(PlayerView):
     @discord.ui.button(label="🔫 Attack", style=discord.ButtonStyle.danger, row=0)
     async def attack(self, interaction: discord.Interaction, _b):
@@ -990,27 +1006,59 @@ class CombatView(PlayerView):
         msgs = take_action(player, "attack")
         self.store.save()
         if not player.run_active:
-            await interaction.response.edit_message(content="☠️ **Run Ended**\n\n" + "\n".join(msgs), view=ZombieMenuView(self.user_id, self.store))
+            # PRETTY EMBED for death/flee
+            embed = discord.Embed(
+                title="☠️ Run Ended" if "died" in "\n".join(msgs).lower() or "out of ammo" in "\n".join(msgs).lower() else "🏃 Run Ended - Fled",
+                description="\n".join(msgs),
+                color=discord.Color.red() if "died" in "\n".join(msgs).lower() else discord.Color.green()
+            )
+            # Add stats as fields for readability
+            embed.add_field(name="🌊 Waves", value=f"{player.wave - 1 if player.run_zombies_killed>0 else 0} survived\nReached Wave {player.wave}", inline=True)
+            embed.add_field(name="🧟 Kills", value=f"{player.run_zombies_killed} zombies", inline=True)
+            embed.add_field(name="💰 Rewards", value=f"+${player.run_money_earned}\n+{player.run_xp_earned} XP", inline=True)
+            embed.set_footer(text=f"HP restored to {player.max_health}/{player.max_health} • Use Start run for another go")
+            await interaction.response.edit_message(content=None, embed=embed, view=ZombieMenuView(self.user_id, self.store))
         else:
             await interaction.response.edit_message(content="\n".join(msgs) + "\n\n" + status(player) + "\n\n" + action_help(player), view=CombatView(self.user_id, self.store))
+
     @discord.ui.button(label="🔄 Reload", style=discord.ButtonStyle.primary, row=0)
     async def reload(self, interaction: discord.Interaction, _b):
         player = self.store.get(self.user_id)
         msgs = take_action(player, "reload")
         self.store.save()
         if not player.run_active:
-            await interaction.response.edit_message(content="☠️ **Run Ended**\n\n" + "\n".join(msgs), view=ZombieMenuView(self.user_id, self.store))
+            embed = discord.Embed(
+                title="☠️ Run Ended",
+                description="\n".join(msgs),
+                color=discord.Color.red()
+            )
+            embed.add_field(name="🌊 Waves", value=f"{player.wave - 1 if player.run_zombies_killed>0 else 0} survived\nReached Wave {player.wave}", inline=True)
+            embed.add_field(name="🧟 Kills", value=f"{player.run_zombies_killed} zombies", inline=True)
+            embed.add_field(name="💰 Rewards", value=f"+${player.run_money_earned}\n+{player.run_xp_earned} XP", inline=True)
+            embed.set_footer(text=f"HP restored to {player.max_health}/{player.max_health}")
+            await interaction.response.edit_message(content=None, embed=embed, view=ZombieMenuView(self.user_id, self.store))
         else:
             await interaction.response.edit_message(content="\n".join(msgs) + "\n\n" + status(player) + "\n\n" + action_help(player), view=CombatView(self.user_id, self.store))
+
     @discord.ui.button(label="💊 Heal", style=discord.ButtonStyle.success, row=0)
     async def heal(self, interaction: discord.Interaction, _b):
         await interaction.response.edit_message(content=status(self.store.get(self.user_id)) + "\nChoose heal:", view=HealView(self.user_id, self.store))
+
     @discord.ui.button(label="🏃 Flee", style=discord.ButtonStyle.secondary, row=0)
     async def flee(self, interaction: discord.Interaction, _b):
         player = self.store.get(self.user_id)
         msgs = take_action(player, "flee")
         self.store.save()
-        await interaction.response.edit_message(content="🏃 **Fled**\n\n" + "\n".join(msgs), view=ZombieMenuView(self.user_id, self.store))
+        embed = discord.Embed(
+            title="🏃 You Fled!",
+            description="\n".join(msgs),
+            color=discord.Color.green()
+        )
+        embed.add_field(name="🌊 Waves", value=f"{player.wave} survived\nReached Wave {player.wave}", inline=True)
+        embed.add_field(name="🧟 Kills", value=f"{player.run_zombies_killed} zombies", inline=True)
+        embed.add_field(name="💰 Kept", value=f"+${player.run_money_earned}\n+{player.run_xp_earned} XP", inline=True)
+        embed.set_footer(text=f"HP restored to {player.max_health}/{player.max_health} • Fleeing keeps all rewards")
+        await interaction.response.edit_message(content=None, embed=embed, view=ZombieMenuView(self.user_id, self.store))
 
 class HealView(PlayerView):
     @discord.ui.button(label="💊 Painkillers", style=discord.ButtonStyle.success, row=0)
