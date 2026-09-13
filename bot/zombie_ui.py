@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import discord
 
-from bot.zombie_survival import (
+try:
+    from bot.zombie_survival import (
     AMMO,
     MAX_FULL_RESTORES_PER_RUN,
     MAX_PAINKILLERS_PER_RUN,
@@ -23,6 +24,26 @@ from bot.zombie_survival import (
     upgrade,
     upgrade_star,
 )
+except ImportError:
+    from zombie_survival import (
+        AMMO,
+        MAX_FULL_RESTORES_PER_RUN,
+        MAX_PAINKILLERS_PER_RUN,
+        WEAPONS,
+        ZONES,
+        GameStore,
+        ammo_effectiveness_text,
+        buy_item,
+        change_zone,
+        equip_ammo,
+        get_upgrade_cost,
+        get_star_upgrade_cost,
+        start_run,
+        status,
+        take_action,
+        upgrade,
+        upgrade_star,
+    )
 
 def _health_bar(current: int, maximum: int, width: int = 12) -> str:
     if not maximum:

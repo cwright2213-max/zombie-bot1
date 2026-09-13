@@ -11,21 +11,60 @@ from typing import Any
 import discord
 from discord import app_commands
 
-from bot.zombie_survival import (
-    AMMO,
-    WEAPONS,
-    GameStore,
-    buy_item,
-    change_zone,
-    equip_ammo,
-    get_star_upgrade_cost,
-    start_run,
-    status,
-    take_action,
-    upgrade,
-    upgrade_star,
-)
-from bot.zombie_ui import CombatView, ZombieMenuView, combat_embed
+# Flexible imports - works whether files are in bot/ or root
+try:
+    from bot.zombie_survival import (
+        AMMO,
+        WEAPONS,
+        GameStore,
+        buy_item,
+        change_zone,
+        equip_ammo,
+        get_star_upgrade_cost,
+        start_run,
+        status,
+        take_action,
+        upgrade,
+        upgrade_star,
+    )
+    from bot.zombie_ui import CombatView, ZombieMenuView, combat_embed
+except ImportError:
+    try:
+        from zombie_survival import (
+            AMMO,
+            WEAPONS,
+            GameStore,
+            buy_item,
+            change_zone,
+            equip_ammo,
+            get_star_upgrade_cost,
+            start_run,
+            status,
+            take_action,
+            upgrade,
+            upgrade_star,
+        )
+        from zombie_ui import CombatView, ZombieMenuView, combat_embed
+    except ImportError:
+        # Last fallback - try bot.zombie_survival_FINAL
+        from zombie_survival import (
+            AMMO,
+            WEAPONS,
+            GameStore,
+            buy_item,
+            change_zone,
+            equip_ammo,
+            get_star_upgrade_cost,
+            start_run,
+            status,
+            take_action,
+            upgrade,
+            upgrade_star,
+        )
+        try:
+            from zombie_ui import CombatView, ZombieMenuView, combat_embed
+        except ImportError:
+            from bot.zombie_ui import CombatView, ZombieMenuView, combat_embed
 
 
 logging.basicConfig(
