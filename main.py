@@ -1486,36 +1486,26 @@ async def resetme(interaction: discord.Interaction):
     if not is_admin(interaction):
         await interaction.response.send_message("❌ Admin-only.", ephemeral=True)
         return
-    from bot.zombie_survival import Survivor
     game_store.players[str(interaction.user.id)] = Survivor()
     game_store.save()
     await interaction.response.send_message("🔄 **Reset to level 1!** Use /addmoney to test again.", ephemeral=True)
 # --- END ADMIN COMMANDS ---
 
 
-def main() -> None:
-    """Start the bot using the project secret."""
-    token = os.getenv("DISCORD_BOT_TOKEN")
-    if not token:
-        logger.error(
-            "DISCORD_BOT_TOKEN is not set. Add it in the project's Secrets "
-            "panel before starting the bot."
-        )
-        sys.exit(1)
-
-    bot.run(token, log_handler=None)
-
-
-if __name__ == "__main__":
-    main()
-
-
 def main():
     token = os.getenv("DISCORD_BOT_TOKEN")
     if not token:
-        logging.error("DISCORD_BOT_TOKEN not set")
+        print("❌ DISCORD_BOT_TOKEN not set in Railway Variables!")
+        print("Go to Railway -> Variables -> Add DISCORD_BOT_TOKEN")
         sys.exit(1)
-    bot.run(token, log_handler=None)
+    print(f"✅ Token found: {token[:10]}... Starting bot...")
+    try:
+        bot.run(token, log_handler=None)
+    except Exception as e:
+        print(f"❌ Bot failed to start: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
