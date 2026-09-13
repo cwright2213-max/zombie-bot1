@@ -16,10 +16,10 @@ MAX_PAINKILLERS_PER_RUN = 3
 MAX_FULL_RESTORES_PER_RUN = 1
 ZONES: dict[str, dict[str, Any]] = {
     "Graveyard": {"min_level": 1, "hp_mult": 1.0, "dmg_mult": 1.0, "money_mult": 1.0, "xp_mult": 1.0, "desc": "Foggy, quiet, and good for learning.", "weights": [60, 25, 12, 3], "ammo_mods": {"Standard": 1.00, "Bleed": 1.00, "Incendiary": 1.00, "Frostbite": 1.00, "Toxic": 1.00, "Shock": 1.00}},
-    "Mega Death City": {"min_level": 50, "hp_mult": 2.2, "dmg_mult": 1.4, "money_mult": 2.5, "xp_mult": 2.0, "desc": "A concrete jungle with tougher, richer zombies.", "weights": [30, 30, 25, 15], "ammo_mods": {"Standard": 1.00, "Bleed": 1.00, "Incendiary": 1.20, "Frostbite": 0.90, "Toxic": 1.00, "Shock": 1.15}},
-    "Frostbitten Outskirts": {"min_level": 100, "hp_mult": 3.8, "dmg_mult": 1.8, "money_mult": 4.0, "xp_mult": 3.5, "desc": "Freezing rain and frost armor.", "weights": [20, 20, 35, 25], "ammo_mods": {"Standard": 1.00, "Bleed": 0.90, "Incendiary": 1.40, "Frostbite": 0.70, "Toxic": 1.00, "Shock": 1.15}},
-    "Toxic Wasteland": {"min_level": 150, "hp_mult": 6.0, "dmg_mult": 2.3, "money_mult": 6.5, "xp_mult": 5.5, "desc": "A green haze where toxic rounds shine.", "weights": [15, 15, 35, 35], "ammo_mods": {"Standard": 1.00, "Bleed": 1.00, "Incendiary": 1.10, "Frostbite": 1.00, "Toxic": 1.50, "Shock": 0.90}},
-    "The Void": {"min_level": 200, "hp_mult": 10.0, "dmg_mult": 3.0, "money_mult": 10.0, "xp_mult": 8.0, "desc": "Endgame. Everything wants you dead.", "weights": [10, 10, 30, 50], "ammo_mods": {"Standard": 1.00, "Bleed": 1.10, "Incendiary": 1.15, "Frostbite": 1.10, "Toxic": 1.25, "Shock": 1.50}},
+    "Mega Death City": {"min_level": 50, "hp_mult": 2.2, "dmg_mult": 1.4, "money_mult": 1.6, "xp_mult": 1.6, "desc": "A concrete jungle with tougher, richer zombies.", "weights": [30, 30, 25, 15], "ammo_mods": {"Standard": 1.00, "Bleed": 1.00, "Incendiary": 1.20, "Frostbite": 0.90, "Toxic": 1.00, "Shock": 1.15}},
+    "Frostbitten Outskirts": {"min_level": 100, "hp_mult": 3.8, "dmg_mult": 1.8, "money_mult": 2.2, "xp_mult": 2.4, "desc": "Freezing rain and frost armor.", "weights": [20, 20, 35, 25], "ammo_mods": {"Standard": 1.00, "Bleed": 0.90, "Incendiary": 1.40, "Frostbite": 0.70, "Toxic": 1.00, "Shock": 1.15}},
+    "Toxic Wasteland": {"min_level": 150, "hp_mult": 6.0, "dmg_mult": 2.3, "money_mult": 3.0, "xp_mult": 3.2, "desc": "A green haze where toxic rounds shine.", "weights": [15, 15, 35, 35], "ammo_mods": {"Standard": 1.00, "Bleed": 1.00, "Incendiary": 1.10, "Frostbite": 1.00, "Toxic": 1.50, "Shock": 0.90}},
+    "The Void": {"min_level": 200, "hp_mult": 10.0, "dmg_mult": 3.0, "money_mult": 4.0, "xp_mult": 4.5, "desc": "Endgame. Everything wants you dead.", "weights": [10, 10, 30, 50], "ammo_mods": {"Standard": 1.00, "Bleed": 1.10, "Incendiary": 1.15, "Frostbite": 1.10, "Toxic": 1.25, "Shock": 1.50}},
 }
 AMMO: dict[str, dict[str, Any]] = {
     "Standard": {"unlock_level": 1, "price": 0, "desc": "Reliable regular lead.", "effect": None, "cost_per_attack": 1, "box_price": 30, "box_amount": 24},
@@ -89,6 +89,7 @@ class Survivor:
     run_active: bool = False; wave: int = 0; zombies_remaining: int = 0; enemy: Enemy | None = None
     # --- NEW: permanent upgrade counters ---
     damage_upgrades: int = 0; health_upgrades: int = 0; mag_upgrades: int = 0
+    crit_upgrades: int = 0; armor_upgrades: int = 0; scavenger_upgrades: int = 0
     @property
     def level(self) -> int: return level_for_xp(self.xp)
     def get_spare(self, ammo_type: str | None = None) -> int: return self.spare_ammo.get(ammo_type or self.ammo_name, 0)
@@ -97,6 +98,16 @@ class Survivor:
         base = WEAPONS.get(self.weapon_name, WEAPONS["Pistol"])
         self.weapon_damage = base["damage"] + self.damage_upgrades * 3
         self.magazine_size = base["mag"] + self.mag_upgrades * 1
+        self.max_health = 100 + self.health_upgrades * 20
+    @property
+    def crit_chance(self) -> float:
+        return self.crit_upgrades * 0.02  # 2% per upgrade
+    @property
+    def armor_reduction(self) -> int:
+        return self.armor_upgrades * 2  # -2 dmg per upgrade
+    @property
+    def scavenger_bonus(self) -> float:
+        return 1.0 + self.scavenger_upgrades * 0.05
         # max health: 100 base + 20 per health upgrade
         self.max_health = 100 + self.health_upgrades * 20
     def to_dict(self) -> dict[str, Any]:
@@ -119,6 +130,12 @@ class Survivor:
             base_mag = WEAPONS.get(data.get("weapon_name","Pistol"), WEAPONS["Pistol"])["mag"]
             old_mag_bonus = max(0, data.get("magazine_size", base_mag) - base_mag)
             data["mag_upgrades"] = old_mag_bonus // 4
+        if "crit_upgrades" not in data:
+            data["crit_upgrades"] = 0
+        if "armor_upgrades" not in data:
+            data["armor_upgrades"] = 0
+        if "scavenger_upgrades" not in data:
+            data["scavenger_upgrades"] = 0
         enemy_data = data.get("enemy")
         enemy = Enemy(**enemy_data) if isinstance(enemy_data, dict) else None
         spare = data.get("spare_ammo", {"Standard": 36})
@@ -238,7 +255,8 @@ def _enemy_damage(player: Survivor) -> list[str]:
         return []
     if enemy.effects.pop("shock", 0):
         return [f"⚡ **{enemy.name} stunned!** Misses."]
-    damage = enemy.damage // 2 if enemy.effects.get("freeze", 0) else enemy.damage
+    base_dmg = enemy.damage // 2 if enemy.effects.get("freeze", 0) else enemy.damage
+    damage = max(1, base_dmg - player.armor_reduction)
     player.health = max(0, player.health - damage)
     if enemy.effects.get("freeze", 0):
         enemy.effects["freeze"] -= 1
@@ -278,9 +296,10 @@ def _finish_enemy(player: Survivor) -> list[str]:
     enemy = player.enemy
     if enemy is None or enemy.health > 0:
         return []
-    player.money += enemy.money_reward
+    money_gain = int(enemy.money_reward * player.scavenger_bonus)
+    player.money += money_gain
     player.xp += enemy.xp_reward
-    player.run_money_earned += enemy.money_reward
+    player.run_money_earned += money_gain
     player.run_xp_earned += enemy.xp_reward
     player.zombies_remaining -= 1
     messages = [f"✅ **{enemy.name} defeated!** +${enemy.money_reward} • +{enemy.xp_reward} XP"]
@@ -290,7 +309,7 @@ def _finish_enemy(player: Survivor) -> list[str]:
             player.stars += ups
             messages.append(f"🎉 **LEVEL UP!** Level {player.level}! +{ups} ⭐")
     if player.zombies_remaining <= 0:
-        bonus = int(15 * player.wave * zone_for(player)["money_mult"])
+        bonus = int(10 * player.wave * zone_for(player)["money_mult"])
         player.money += bonus
         player.run_money_earned += bonus
         player.spare_ammo[player.ammo_name] = player.spare_ammo.get(player.ammo_name, 0) + 5
@@ -377,9 +396,13 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
         player.magazine -= cost
         mod = ammo_modifier(player, player.ammo_name)
         dmg = int(player.weapon_damage * mod)
+        is_crit = random.random() < player.crit_chance
+        if is_crit:
+            dmg = int(dmg * 2)
         enemy.health = max(0, enemy.health - dmg)
         mod_txt = f" (Zone {int(mod*100)}%)" if mod != 1.0 else ""
-        messages.append(f"🔫 Hit **{enemy.name} for {dmg}** using {player.ammo_name} ({cost}/shot){mod_txt}")
+        crit_txt = " **CRIT!**" if 'is_crit' in locals() and is_crit else ""
+        messages.append(f"🔫 Hit **{enemy.name} for {dmg}**{crit_txt} using {player.ammo_name} ({cost}/shot){mod_txt}")
         effect = ammo_data["effect"]
         chances = {"bleed": 0.25, "burn": 0.30, "freeze": 0.20, "poison": 0.35, "shock": 0.15}
         if effect and random.random() < chances[effect]:
@@ -507,29 +530,84 @@ def change_zone(player: Survivor, zone_name: str) -> list[str]:
     player.zone_name = zone_name
     return [f"🗺️ Travelled to **{zone_name}**.", ammo_effectiveness_text(player)]
 
+def get_upgrade_cost(player: Survivor, stat: str) -> int:
+    """Balanced exponential scaling costs"""
+    stat = stat.lower()
+    # Base costs
+    bases = {
+        "damage": 350,
+        "health": 300,
+        "mag": 500,
+        "crit": 700,
+        "armor": 600,
+        "scavenger": 900,
+    }
+    # Multipliers per level (how fast it gets expensive)
+    mults = {
+        "damage": 1.35,
+        "health": 1.30,
+        "mag": 1.45,
+        "crit": 1.50,
+        "armor": 1.40,
+        "scavenger": 1.60,
+    }
+    if stat not in bases:
+        return 999999
+    count = 0
+    if stat == "damage": count = player.damage_upgrades
+    elif stat == "health": count = player.health_upgrades
+    elif stat == "mag": count = player.mag_upgrades
+    elif stat == "crit": count = player.crit_upgrades
+    elif stat == "armor": count = player.armor_upgrades
+    elif stat == "scavenger": count = player.scavenger_upgrades
+    # cost = base * mult^count
+    return int(bases[stat] * (mults[stat] ** count))
+
 def upgrade(player: Survivor, stat: str) -> list[str]:
     if player.run_active:
         return ["Can't upgrade in a run!"]
-    if player.stars <= 0:
-        return ["No stars! Level up."]
     stat = stat.lower().strip()
-    if stat in ("health", "hp", "max_health"):
+    # Map aliases to canonical
+    alias_map = {
+        "health": "health", "hp": "health", "max_health": "health",
+        "damage": "damage", "weapon": "damage", "dmg": "damage",
+        "mag": "mag", "magazine": "mag", "ammo": "mag",
+        "crit": "crit", "critical": "crit", "crit_chance": "crit",
+        "armor": "armor", "armour": "armor", "def": "armor", "defense": "armor", "tank": "armor",
+        "scavenger": "scavenger", "scav": "scavenger", "money": "scavenger", "loot": "scavenger", "economy": "scavenger",
+    }
+    canonical = alias_map.get(stat)
+    if not canonical:
+        return [f"Unknown upgrade '{stat}'. Options: health(${get_upgrade_cost(player,'health')}) / damage(${get_upgrade_cost(player,'damage')}) / mag(${get_upgrade_cost(player,'mag')}) / crit(${get_upgrade_cost(player,'crit')}) / armor(${get_upgrade_cost(player,'armor')}) / scavenger(${get_upgrade_cost(player,'scavenger')}) | 💰 ${player.money} | ⭐ {player.stars} flex"]
+    
+    cost = get_upgrade_cost(player, canonical)
+    if player.money < cost:
+        return [f"Need ${cost} for {canonical} upgrade, you have ${player.money}. Grind more waves!"]
+    
+    player.money -= cost
+    if canonical == "health":
         player.health_upgrades += 1
         player.recalc_stats()
         player.health = player.max_health
-        player.stars -= 1
-        return [f"❤️ Max HP → **{player.max_health}** ( +{player.health_upgrades*20} from upgrades ). Stars: {player.stars}"]
-    if stat in ("damage", "weapon", "dmg"):
+        return [f"❤️ Max HP → **{player.max_health}** (+{player.health_upgrades*20}) | Paid ${cost} | 💰 ${player.money} left | Next: ${get_upgrade_cost(player,'health')}"]
+    if canonical == "damage":
         player.damage_upgrades += 1
         player.recalc_stats()
-        player.stars -= 1
-        return [f"💥 Damage → **{player.weapon_damage}** ( base + {player.damage_upgrades*3} from {player.damage_upgrades} upgrades ). Stars: {player.stars}"]
-    if stat in ("mag", "magazine", "ammo"):
+        return [f"💥 Damage → **{player.weapon_damage}** (base + {player.damage_upgrades*3} from {player.damage_upgrades} upgrades) | Paid ${cost} | 💰 ${player.money} left | Next: ${get_upgrade_cost(player,'damage')}"]
+    if canonical == "mag":
         player.mag_upgrades += 1
         player.recalc_stats()
-        player.stars -= 1
-        return [f"📦 Mag size → **{player.magazine_size}** ( +{player.mag_upgrades*1} from upgrades ). Stars: {player.stars}"]
-    return [f"Unknown upgrade. Use health/damage/mag. Stars: {player.stars}"]
+        return [f"📦 Mag → **{player.magazine_size}** (+{player.mag_upgrades*1}) | Paid ${cost} | 💰 ${player.money} left | Next: ${get_upgrade_cost(player,'mag')}"]
+    if canonical == "crit":
+        player.crit_upgrades += 1
+        return [f"🎯 Crit → **{int(player.crit_chance*100)}%** (+2% per level, 2x dmg) | Paid ${cost} | 💰 ${player.money} left | Next: ${get_upgrade_cost(player,'crit')}"]
+    if canonical == "armor":
+        player.armor_upgrades += 1
+        return [f"🛡️ Armor → **-{player.armor_reduction} dmg taken** (-2 per level) | Paid ${cost} | 💰 ${player.money} left | Next: ${get_upgrade_cost(player,'armor')}"]
+    if canonical == "scavenger":
+        player.scavenger_upgrades += 1
+        return [f"💰 Scavenger → **+{int((player.scavenger_bonus-1)*100)}% money** per kill | Paid ${cost} | 💰 ${player.money} left | Next: ${get_upgrade_cost(player,'scavenger')}"]
+    return [f"Unknown error"]
 
 
 def _grant_star_drop(player: Survivor) -> list[str]:
@@ -597,7 +675,7 @@ def status(player: Survivor) -> str:
     spare = player.get_spare()
     lines = [
         f"**🧟 {player.zone_name} | Lvl {player.level}** {earned}/{needed} XP | ⭐ {player.stars} | 💰 ${player.money}",
-        f"❤️ {player.health}/{player.max_health} | 🔫 {player.weapon_name} ({player.weapon_damage} dmg) {player.magazine}/{player.magazine_size}+{spare} [{player.ammo_name} {cost}/shot]",
+        f"❤️ {player.health}/{player.max_health} | 🔫 {player.weapon_name} ({player.weapon_damage} dmg) {player.magazine}/{player.magazine_size}+{spare} [{player.ammo_name} {cost}/shot] | 🎯 {int(player.crit_chance*100)}% crit | 🛡️ -{player.armor_reduction} dmg | 💰 +{int((player.scavenger_bonus-1)*100)}% loot",
     ]
     if player.run_active and player.enemy:
         lines.append(f"⚔️ Wave {player.wave} • {player.zombies_remaining} left • Fighting {player.enemy.name} {player.enemy.health}/{player.enemy.max_health} HP • 💵 Run: ${player.run_money_earned} | ✨ {player.run_xp_earned} XP")
