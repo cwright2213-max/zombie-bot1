@@ -751,6 +751,58 @@ def get_upgrade_cost(player: Survivor, stat: str) -> int:
     return int(bases[stat] * (mults[stat] ** count))
 
 
+
+def upgrade(player: Survivor, stat: str) -> list[str]:
+    """Money upgrades: health, damage, mag, crit, armor, scavenger"""
+    if player.run_active:
+        return ["⚠️ Can't upgrade during a run! Flee first."]
+    stat = stat.lower().strip()
+    # Map aliases
+    alias = {
+        "health": "health", "hp": "health", "max_health": "health",
+        "damage": "damage", "dmg": "damage", "weapon": "damage",
+        "mag": "mag", "magazine": "mag", "ammo": "mag",
+        "crit": "crit", "critical": "crit", "crit_chance": "crit",
+        "armor": "armor", "armour": "armor", "defense": "armor",
+        "scavenger": "scavenger", "loot": "scavenger", "money": "scavenger"
+    }
+    canonical = alias.get(stat, stat)
+    cost = get_upgrade_cost(player, canonical)
+    if player.money < cost:
+        return [f"❌ Need ${cost} for {canonical}, you have ${player.money}"]
+    player.money -= cost
+    if canonical == "health":
+        player.max_health += 20
+        player.health_upgrades += 1
+        player.health = player.max_health
+        return [f"❤️ Max HP → **{player.max_health}** (+20). ${player.money} left. Lvl {player.health_upgrades}"]
+    elif canonical == "damage":
+        player.weapon_damage += 3
+        player.damage_upgrades += 1
+        return [f"💥 Damage → **{player.weapon_damage}** (+3). ${player.money} left. Lvl {player.damage_upgrades}"]
+    elif canonical == "mag":
+        player.magazine_size += 1
+        player.mag_upgrades += 1
+        return [f"📦 Mag size → **{player.magazine_size}** (+1). ${player.money} left. Lvl {player.mag_upgrades}"]
+    elif canonical == "crit":
+        player.crit_chance = min(0.5, player.crit_chance + 0.02)
+        player.crit_upgrades += 1
+        return [f"🎯 Crit chance → **{int(player.crit_chance*100)}%** (+2%). ${player.money} left. Lvl {player.crit_upgrades}"]
+    elif canonical == "armor":
+        player.armor_reduction += 2
+        player.armor_upgrades += 1
+        return [f"🛡️ Armor → **-{player.armor_reduction} dmg**. ${player.money} left. Lvl {player.armor_upgrades}"]
+    elif canonical == "scavenger":
+        player.scavenger_bonus += 0.05
+        player.scavenger_upgrades += 1
+        return [f"💰 Loot bonus → **+{int((player.scavenger_bonus-1)*100)}%**. ${player.money} left. Lvl {player.scavenger_upgrades}"]
+    else:
+        # Refund if unknown
+        player.money += cost
+        return [f"❓ Unknown upgrade '{stat}'. Try: health, damage, mag, crit, armor, scavenger"]
+
+
+
 def get_star_upgrade_cost(player: Survivor, stat: str) -> int:
     """Custom star costs: 5 to unlock, then 1 or 3 per level"""
     stat = stat.lower().strip()
@@ -1154,10 +1206,12 @@ class HealView(PlayerView):
 
 
 
+
 class ShopView(PlayerView):
     def __init__(self, user_id: int, store, timeout: float = 180):
         super().__init__(user_id, store, timeout)
         player = self.store.get(user_id)
+        # Weapon buttons with cost and level
         for i, wname in enumerate(["Shotgun", "Rifle", "SMG", "Sawed-Of"]):
             if wname in WEAPONS:
                 w = WEAPONS[wname]
@@ -1180,21 +1234,41 @@ class ShopView(PlayerView):
     @discord.ui.button(label="📦 Ammo box", style=discord.ButtonStyle.primary, row=2)
     async def ammo(self, interaction: discord.Interaction, _b):
         p=self.store.get(self.user_id)
+        # Show box cost before buying
+        cur_ammo = p.ammo_name
+        box_price = AMMO[cur_ammo]["box_price"]
+        box_amount = AMMO[cur_ammo]["box_amount"]
         msgs=buy_item(p,"ammo")
         self.store.save()
-        await interaction.response.edit_message(content="\n".join(msgs)+"\n\n"+status(p), view=ShopView(self.user_id, self.store))
+        # Add cost info
+        info = f"📦 {cur_ammo} crate: ${box_price} for {box_amount} rounds"
+        await interaction.response.edit_message(content="\n".join(msgs)+"\n"+info+"\n\n"+status(p), view=ShopView(self.user_id, self.store))
+    
     @discord.ui.button(label="💊 Painkillers $15", style=discord.ButtonStyle.success, row=2)
     async def pk(self, interaction: discord.Interaction, _b):
         p=self.store.get(self.user_id)
         msgs=buy_item(p,"painkillers")
         self.store.save()
         await interaction.response.edit_message(content="\n".join(msgs)+"\n\n"+status(p), view=ShopView(self.user_id, self.store))
+    
     @discord.ui.button(label="✨ Full restore $80", style=discord.ButtonStyle.success, row=2)
     async def fr(self, interaction: discord.Interaction, _b):
         p=self.store.get(self.user_id)
         msgs=buy_item(p,"full_restore")
         self.store.save()
         await interaction.response.edit_message(content="\n".join(msgs)+"\n\n"+status(p), view=ShopView(self.user_id, self.store))
+    
+    @discord.ui.button(label="🧪 Ammo prices", style=discord.ButtonStyle.primary, row=3)
+    async def ammo_prices(self, interaction: discord.Interaction, _b):
+        p=self.store.get(self.user_id)
+        # Show all ammo crate costs
+        lines = ["**📦 Ammo Crate Costs:**"]
+        for aname, adata in AMMO.items():
+            lines.append(f"{aname}: ${adata['box_price']} for {adata['box_amount']} rounds ({adata['cost_per_attack']}/shot) - {adata['desc']}")
+        lines.append("")
+        lines.append(status(p))
+        await interaction.response.edit_message(content="\n".join(lines), view=ShopView(self.user_id, self.store))
+    
     @discord.ui.button(label="🏠 Main menu", style=discord.ButtonStyle.secondary, row=3)
     async def main(self, interaction: discord.Interaction, _b):
         await interaction.response.edit_message(content=status(self.store.get(self.user_id)), embed=None, view=ZombieMenuView(self.user_id, self.store))
@@ -1215,19 +1289,50 @@ class ZoneView(PlayerView):
     async def main(self, interaction: discord.Interaction, _b):
         await interaction.response.edit_message(content=status(self.store.get(self.user_id)), view=ZombieMenuView(self.user_id, self.store))
 
+
 class AmmoView(PlayerView):
     def __init__(self, user_id, store):
         super().__init__(user_id, store)
+        player = self.store.get(user_id)
         for i, ammo_name in enumerate(AMMO):
-            btn = discord.ui.Button(label=ammo_name, style=discord.ButtonStyle.primary, row=i//3)
+            ammo = AMMO[ammo_name]
+            owned = ammo_name in player.owned_ammo
+            cost_per = ammo["cost_per_attack"]
+            price = ammo["price"]
+            lvl = ammo["unlock_level"]
+            desc = ammo["desc"]
+            spare = player.spare_ammo.get(ammo_name, 0)
+            if ammo_name == "Standard":
+                label = f"Standard {cost_per}/shot (Free) {spare} spare"
+            else:
+                if owned:
+                    label = f"{ammo_name} {cost_per}/shot {spare} spare {desc}"
+                else:
+                    label = f"{ammo_name} {cost_per}/shot ${price} Lvl {lvl} {desc}"
+            btn = discord.ui.Button(label=label[:80], style=discord.ButtonStyle.primary if not owned else discord.ButtonStyle.success, row=i//2)
             async def cb(interaction, an=ammo_name):
-                p=self.store.get(self.user_id); msgs=equip_ammo(p,an); self.store.save()
-                await interaction.response.edit_message(content="\n".join(msgs)+"\n\n"+status(p), view=AmmoView(self.user_id, self.store))
+                p=self.store.get(self.user_id)
+                msgs=equip_ammo(p,an)
+                self.store.save()
+                ammo_info = AMMO[an]
+                # Build details with explicit newline via \n in file
+                details = f"**{an}** | Cost: {ammo_info['cost_per_attack']}/shot | Effect: {ammo_info['desc']} | Box: ${ammo_info['box_price']} for {ammo_info['box_amount']} | Spare: {p.spare_ammo.get(an,0)}"
+                await interaction.response.edit_message(content="\n".join(msgs)+"\n\n"+details+"\n\n"+status(p), view=AmmoView(self.user_id, self.store))
             btn.callback = cb
             self.add_item(btn)
-    @discord.ui.button(label="🏠 Main menu", style=discord.ButtonStyle.secondary, row=3)
+    
+    @discord.ui.button(label="Buy ammo box $30-200", style=discord.ButtonStyle.primary, row=3)
+    async def buy_box(self, interaction: discord.Interaction, _b):
+        p=self.store.get(self.user_id)
+        msgs=buy_item(p,"ammo")
+        self.store.save()
+        await interaction.response.edit_message(content="\n".join(msgs)+"\n\n"+status(p), view=AmmoView(self.user_id, self.store))
+    
+    @discord.ui.button(label="Main menu", style=discord.ButtonStyle.secondary, row=3)
     async def main(self, interaction: discord.Interaction, _b):
-        await interaction.response.edit_message(content=status(self.store.get(self.user_id)), view=ZombieMenuView(self.user_id, self.store))
+        await interaction.response.edit_message(content=status(self.store.get(self.user_id)), embed=None, view=ZombieMenuView(self.user_id, self.store))
+
+
 
 class UpgradeView(PlayerView):
     def __init__(self, user_id: int, store):
