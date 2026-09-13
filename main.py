@@ -981,22 +981,22 @@ class ZombieMenuView(PlayerView):
         if not player.run_active:
             await interaction.response.send_message("❌ Not in a run. Tap Start run first.", ephemeral=True)
             return
-        await interaction.response.edit_message(content=status(player) + "\n\n" + action_help(player), view=CombatView(self.user_id, self.store))
+        await interaction.response.edit_message(content=status(player) + "\n\n" + action_help(player), embed=None, view=CombatView(self.user_id, self.store))
     @discord.ui.button(label="🛒 Shop", style=discord.ButtonStyle.primary, row=0)
     async def shop(self, interaction: discord.Interaction, _b):
-        await interaction.response.edit_message(content=status(self.store.get(self.user_id)), view=ShopView(self.user_id, self.store))
+        await interaction.response.edit_message(content=status(self.store.get(self.user_id)), embed=None, view=ShopView(self.user_id, self.store))
     @discord.ui.button(label="🗺️ Zones", style=discord.ButtonStyle.primary, row=1)
     async def zones(self, interaction: discord.Interaction, _b):
-        await interaction.response.edit_message(content=status(self.store.get(self.user_id)), view=ZoneView(self.user_id, self.store))
+        await interaction.response.edit_message(content=status(self.store.get(self.user_id)), embed=None, view=ZoneView(self.user_id, self.store))
     @discord.ui.button(label="🧪 Ammo lab", style=discord.ButtonStyle.primary, row=1)
     async def ammo(self, interaction: discord.Interaction, _b):
-        await interaction.response.edit_message(content=status(self.store.get(self.user_id)), view=AmmoView(self.user_id, self.store))
+        await interaction.response.edit_message(content=status(self.store.get(self.user_id)), embed=None, view=AmmoView(self.user_id, self.store))
     @discord.ui.button(label="⬆️ Upgrades", style=discord.ButtonStyle.success, row=1)
     async def upgrades(self, interaction: discord.Interaction, _b):
         await interaction.response.edit_message(content=status(self.store.get(self.user_id)) + f"\n💰 ${self.store.get(self.user_id).money} | ⭐ {self.store.get(self.user_id).stars} flex", view=UpgradeView(self.user_id, self.store))
     @discord.ui.button(label="🔄 Refresh status", style=discord.ButtonStyle.secondary, row=2)
     async def refresh(self, interaction: discord.Interaction, _b):
-        await interaction.response.edit_message(content=status(self.store.get(self.user_id)), view=ZombieMenuView(self.user_id, self.store))
+        await interaction.response.edit_message(content=status(self.store.get(self.user_id)), embed=None, view=ZombieMenuView(self.user_id, self.store))
 
 
 class CombatView(PlayerView):
@@ -1075,7 +1075,7 @@ class HealView(PlayerView):
         await interaction.response.edit_message(content="\n".join(msgs)+"\n\n"+status(p), view=CombatView(self.user_id, self.store))
     @discord.ui.button(label="⬅️ Back", style=discord.ButtonStyle.secondary, row=1)
     async def back(self, interaction: discord.Interaction, _b):
-        await interaction.response.edit_message(content=status(self.store.get(self.user_id))+"\n\n"+action_help(self.store.get(self.user_id)), view=CombatView(self.user_id, self.store))
+        await interaction.response.edit_message(content=status(self.store.get(self.user_id))+"\n\n"+action_help(self.store.get(self.user_id)), embed=None, view=CombatView(self.user_id, self.store))
 
 class ShopView(PlayerView):
     @discord.ui.button(label="📦 Ammo box", style=discord.ButtonStyle.primary, row=0)
