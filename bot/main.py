@@ -232,7 +232,7 @@ async def zombie_ammo(interaction: discord.Interaction, ammo_name: app_commands.
         app_commands.Choice(name="Max health +20", value="health"),
         app_commands.Choice(name="Weapon damage +3", value="damage"),
         app_commands.Choice(name="Magazine size +1", value="mag"),
-        app_commands.Choice(name="Crit chance +2%", value="crit"),
+        app_commands.Choice(name="Crit chance +0.5% (2% first) max 40%", value="crit"),
         app_commands.Choice(name="Armor -2 dmg", value="armor"),
         app_commands.Choice(name="Loot +5% money", value="scavenger"),
     ]

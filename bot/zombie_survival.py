@@ -15,7 +15,7 @@ SAVE_FILE = DB_PATH
 MAX_PAINKILLERS_PER_RUN = 3
 MAX_FULL_RESTORES_PER_RUN = 1
 ZONES: dict[str, dict[str, Any]] = {
-    "Graveyard": {"min_level": 1, "hp_mult": 1.0, "dmg_mult": 1.0, "money_mult": 1.0, "xp_mult": 1.0, "desc": "Foggy, quiet, and good for learning.", "weights": [60, 25, 12, 3], "ammo_mods": {"Standard": 1.00, "Bleed": 1.00, "Incendiary": 1.00, "Frostbite": 1.00, "Toxic": 1.00, "Shock": 1.00}},
+    "Graveyard": {"min_level": 1, "hp_mult": 0.9, "dmg_mult": 0.9, "money_mult": 1.5, "xp_mult": 1.6, "desc": "Foggy, quiet, and good for learning.", "weights": [60, 25, 12, 3], "ammo_mods": {"Standard": 1.00, "Bleed": 1.00, "Incendiary": 1.00, "Frostbite": 1.00, "Toxic": 1.00, "Shock": 1.00}},
     "Mega Death City": {"min_level": 50, "hp_mult": 2.2, "dmg_mult": 1.4, "money_mult": 1.6, "xp_mult": 1.6, "desc": "A concrete jungle with tougher, richer zombies.", "weights": [30, 30, 25, 15], "ammo_mods": {"Standard": 1.00, "Bleed": 1.00, "Incendiary": 1.20, "Frostbite": 0.90, "Toxic": 1.00, "Shock": 1.15}},
     "Frostbitten Outskirts": {"min_level": 100, "hp_mult": 3.8, "dmg_mult": 1.8, "money_mult": 2.2, "xp_mult": 2.4, "desc": "Freezing rain and frost armor.", "weights": [20, 20, 35, 25], "ammo_mods": {"Standard": 1.00, "Bleed": 0.90, "Incendiary": 1.40, "Frostbite": 0.70, "Toxic": 1.00, "Shock": 1.15}},
     "Toxic Wasteland": {"min_level": 150, "hp_mult": 6.0, "dmg_mult": 2.3, "money_mult": 3.0, "xp_mult": 3.2, "desc": "A green haze where toxic rounds shine.", "weights": [15, 15, 35, 35], "ammo_mods": {"Standard": 1.00, "Bleed": 1.00, "Incendiary": 1.10, "Frostbite": 1.00, "Toxic": 1.50, "Shock": 0.90}},
@@ -70,10 +70,10 @@ def get_no_ammo_line() -> str:
 
 
 ZOMBIES: dict[str, dict[str, int]] = {
-    "Walker": {"health": 50, "damage": 10, "money": 10, "xp": 5},
-    "Runner": {"health": 35, "damage": 18, "money": 20, "xp": 10},
-    "Brute": {"health": 100, "damage": 15, "money": 40, "xp": 20},
-    "Mutant": {"health": 150, "damage": 25, "money": 100, "xp": 50},
+    "Walker": {"health": 50, "damage": 10, "money": 18, "xp": 10},
+    "Runner": {"health": 35, "damage": 18, "money": 32, "xp": 18},
+    "Brute": {"health": 100, "damage": 15, "money": 65, "xp": 30},
+    "Mutant": {"health": 150, "damage": 25, "money": 140, "xp": 70},
 }
 @dataclass
 class Enemy:
@@ -101,10 +101,15 @@ class Survivor:
         self.max_health = 100 + self.health_upgrades * 20
     @property
     def crit_chance(self) -> float:
-        return self.crit_upgrades * 0.02  # 2% per upgrade
+        if self.crit_upgrades <= 0:
+            return 0.0
+        # First upgrade = 2%, each extra = +0.5%, cap 40%
+        chance = 0.02 + (self.crit_upgrades - 1) * 0.005
+        return min(chance, 0.40)
     @property
     def armor_reduction(self) -> int:
-        return self.armor_upgrades * 2  # -2 dmg per upgrade
+        # Cap at 35 to prevent invincibility, -2 per level
+        return min(self.armor_upgrades * 2, 35)
     @property
     def scavenger_bonus(self) -> float:
         return 1.0 + self.scavenger_upgrades * 0.05
@@ -192,7 +197,14 @@ def ammo_effectiveness_text(player: Survivor) -> str:
     return f"**Bonus:** {bonus}\n**Penalty:** {penalty}"
 
 def xp_to_next_level(level: int) -> int:
-    return 100 + (level - 1) * 25
+    # FAST START: levels 1-10 are introduction - smooth and quick
+    if level <= 5:
+        return 50 + (level - 1) * 15  # 50,65,80,95,110 = 400 total to reach lvl6
+    elif level <= 10:
+        return 110 + (level - 5) * 20  # 130,150,170,190,210 = 850 more, 1250 total to reach 11
+    else:
+        # HILL CLIMB: after 10, grind kicks in
+        return 200 + (level - 10) * 35 + (level - 1) * 10
 
 def level_for_xp(total_xp: int) -> int:
     level = 1
@@ -535,12 +547,12 @@ def get_upgrade_cost(player: Survivor, stat: str) -> int:
     stat = stat.lower()
     # Base costs
     bases = {
-        "damage": 350,
-        "health": 300,
-        "mag": 500,
-        "crit": 700,
-        "armor": 600,
-        "scavenger": 900,
+        "damage": 250,
+        "health": 200,
+        "mag": 400,
+        "crit": 500,
+        "armor": 450,
+        "scavenger": 700,
     }
     # Multipliers per level (how fast it gets expensive)
     mults = {

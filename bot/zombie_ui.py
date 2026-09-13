@@ -343,7 +343,7 @@ class UpgradeView(PlayerView):
             (f"❤️ Health +20 · ${get_upgrade_cost(player,'health')}", "health", player.health_upgrades),
             (f"💥 Damage +3 · ${get_upgrade_cost(player,'damage')}", "damage", player.damage_upgrades),
             (f"📦 Mag +1 · ${get_upgrade_cost(player,'mag')}", "mag", player.mag_upgrades),
-            (f"🎯 Crit +2% · ${get_upgrade_cost(player,'crit')}", "crit", player.crit_upgrades),
+            (f"🎯 Crit +0.5% · ${get_upgrade_cost(player,'crit')}", "crit", player.crit_upgrades),
             (f"🛡️ Armor -2 dmg · ${get_upgrade_cost(player,'armor')}", "armor", player.armor_upgrades),
             (f"💰 Loot +5% · ${get_upgrade_cost(player,'scavenger')}", "scavenger", player.scavenger_upgrades),
         ]
