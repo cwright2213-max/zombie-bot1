@@ -138,46 +138,39 @@ class PlayerView(discord.ui.View):
             child.disabled = True
 
 class ZombieMenuView(PlayerView):
-    @discord.ui.button(label="▶️ Start run", style=discord.ButtonStyle.success, row=0)
+    """CLEAN 2-row main menu - no clutter"""
+    @discord.ui.button(label="▶️ Start Run", style=discord.ButtonStyle.success, row=0)
     async def start_run_btn(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
         player = self.store.get(self.user_id)
         messages = start_run(player)
         self.store.save()
         await interaction.response.edit_message(content=None, embed=combat_embed(messages, player), view=CombatView(self.user_id, self.store))
 
-    @discord.ui.button(label="⚔️ Combat", style=discord.ButtonStyle.danger, row=0)
-    async def combat(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
-        player = self.store.get(self.user_id)
-        if player.run_active:
-            await interaction.response.edit_message(content=None, embed=combat_embed([], player), view=CombatView(self.user_id, self.store))
-        else:
-            messages = start_run(player)
-            self.store.save()
-            await interaction.response.edit_message(content=None, embed=combat_embed(messages, player), view=CombatView(self.user_id, self.store))
-
     @discord.ui.button(label="🛒 Shop", style=discord.ButtonStyle.primary, row=0)
     async def shop(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
         player = self.store.get(self.user_id)
         await interaction.response.edit_message(content=None, embed=shop_embed(player), view=ShopView(self.user_id, self.store))
 
-    @discord.ui.button(label="🗺️ Zones", style=discord.ButtonStyle.primary, row=0)
+    @discord.ui.button(label="⬆️ Upgrades", style=discord.ButtonStyle.success, row=0)
+    async def upgrades(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
+        player = self.store.get(self.user_id)
+        await interaction.response.edit_message(content=None, embed=status_detail_embed(player), view=UpgradeView(self.user_id, self.store))
+
+    @discord.ui.button(label="🗺️ Zones", style=discord.ButtonStyle.secondary, row=1)
     async def zones(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
         player = self.store.get(self.user_id)
         await interaction.response.edit_message(content=status(player), view=ZoneView(self.user_id, self.store))
 
-    @discord.ui.button(label="🔬 Ammo lab", style=discord.ButtonStyle.primary, row=1)
+    @discord.ui.button(label="🔬 Ammo Lab", style=discord.ButtonStyle.secondary, row=1)
     async def ammo(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
         player = self.store.get(self.user_id)
-        await interaction.response.edit_message(content=status(player), view=AmmoView(self.user_id, self.store))
+        await interaction.response.edit_message(content=status(player) + "\n\n" + ammo_effectiveness_text(player), view=AmmoView(self.user_id, self.store))
 
-    @discord.ui.button(label="⬆️ Upgrades", style=discord.ButtonStyle.success, row=1)
-    async def upgrades(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
+    @discord.ui.button(label="📊 Stats", style=discord.ButtonStyle.secondary, row=1)
+    async def stats_btn(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
         player = self.store.get(self.user_id)
-        await interaction.response.edit_message(content=status(player), view=UpgradeView(self.user_id, self.store))
+        await interaction.response.edit_message(content=None, embed=status_detail_embed(player), view=ZombieMenuView(self.user_id, self.store))
 
-    @discord.ui.button(label="🔄 Refresh status", style=discord.ButtonStyle.secondary, row=1)
-    async def refresh_status(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
-        await interaction.response.edit_message(content=status(self.store.get(self.user_id)), view=ZombieMenuView(self.user_id, self.store))
 
 class CombatView(PlayerView):
     def __init__(self, user_id: int, store: GameStore) -> None:
