@@ -87,16 +87,38 @@ class Survivor:
     run_money_earned: int = 0; run_xp_earned: int = 0; zone_name: str = "Graveyard"; ammo_name: str = "Standard"
     owned_ammo: list[str] = field(default_factory=lambda: ["Standard"]); owned_weapons: list[str] = field(default_factory=lambda: ["Pistol"])
     run_active: bool = False; wave: int = 0; zombies_remaining: int = 0; enemy: Enemy | None = None
+    # --- NEW: permanent upgrade counters ---
+    damage_upgrades: int = 0; health_upgrades: int = 0; mag_upgrades: int = 0
     @property
     def level(self) -> int: return level_for_xp(self.xp)
     def get_spare(self, ammo_type: str | None = None) -> int: return self.spare_ammo.get(ammo_type or self.ammo_name, 0)
+    def recalc_stats(self):
+        """Recalculate weapon damage / max_health / mag size based on permanent upgrades"""
+        base = WEAPONS.get(self.weapon_name, WEAPONS["Pistol"])
+        self.weapon_damage = base["damage"] + self.damage_upgrades * 3
+        self.magazine_size = base["mag"] + self.mag_upgrades * 1
+        # max health: 100 base + 20 per health upgrade
+        self.max_health = 100 + self.health_upgrades * 20
     def to_dict(self) -> dict[str, Any]:
-        d = asdict(self); d["__version"] = 2; return d
+        d = asdict(self); d["__version"] = 3; return d
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Survivor":
         if data.get("zone_name") not in ZONES: data["zone_name"] = "Graveyard"
         if data.get("ammo_name") not in AMMO: data["ammo_name"] = "Standard"
         if data.get("weapon_name") not in WEAPONS: data["weapon_name"] = "Pistol"
+        # Migration: ensure upgrade counters exist
+        if "damage_upgrades" not in data:
+            # Estimate from old saves: if weapon_damage higher than base, convert to upgrades
+            base_dmg = WEAPONS.get(data.get("weapon_name","Pistol"), WEAPONS["Pistol"])["damage"]
+            old_bonus = max(0, data.get("weapon_damage", base_dmg) - base_dmg)
+            # Old system was +5 per upgrade, new is +3 - approximate
+            data["damage_upgrades"] = old_bonus // 5
+        if "health_upgrades" not in data:
+            data["health_upgrades"] = max(0, (data.get("max_health",100)-100)//20)
+        if "mag_upgrades" not in data:
+            base_mag = WEAPONS.get(data.get("weapon_name","Pistol"), WEAPONS["Pistol"])["mag"]
+            old_mag_bonus = max(0, data.get("magazine_size", base_mag) - base_mag)
+            data["mag_upgrades"] = old_mag_bonus // 4
         enemy_data = data.get("enemy")
         enemy = Enemy(**enemy_data) if isinstance(enemy_data, dict) else None
         spare = data.get("spare_ammo", {"Standard": 36})
@@ -433,22 +455,20 @@ def buy_item(player: Survivor, item: str) -> list[str]:
         return [f"{item} unlocks at level {weapon['unlock_level']}."]
     if item in player.owned_weapons:
         player.weapon_name = item
-        player.weapon_damage = weapon["damage"]
-        player.magazine_size = weapon["mag"]
+        player.recalc_stats()
         player.spare_ammo[player.ammo_name] = player.spare_ammo.get(player.ammo_name, 0) + player.magazine
         player.magazine = 0
-        return [f"🔫 Re-equipped **{item}** for free."]
+        return [f"🔫 Re-equipped **{item}** for free (+{player.damage_upgrades*3} dmg from upgrades)."]
     if player.money < weapon["price"]:
         return [f"Need ${weapon['price']} for {item}, you have ${player.money}"]
     player.money -= weapon["price"]
     player.weapon_name = item
-    player.weapon_damage = weapon["damage"]
-    player.magazine_size = weapon["mag"]
+    player.recalc_stats()
     if item not in player.owned_weapons:
         player.owned_weapons.append(item)
     player.spare_ammo[player.ammo_name] = player.spare_ammo.get(player.ammo_name, 0) + player.magazine
     player.magazine = 0
-    return [f"🔫 Equipped **{item}**. ${player.money} left."]
+    return [f"🔫 Equipped **{item}** (+{player.damage_upgrades*3} dmg from upgrades). ${player.money} left."]
 
 def equip_ammo(player: Survivor, ammo_name: str) -> list[str]:
     if ammo_name not in AMMO:
@@ -494,19 +514,22 @@ def upgrade(player: Survivor, stat: str) -> list[str]:
         return ["No stars! Level up."]
     stat = stat.lower().strip()
     if stat in ("health", "hp", "max_health"):
-        player.max_health += 20
+        player.health_upgrades += 1
+        player.recalc_stats()
         player.health = player.max_health
         player.stars -= 1
-        return [f"❤️ Max HP → **{player.max_health}**. Stars: {player.stars}"]
+        return [f"❤️ Max HP → **{player.max_health}** ( +{player.health_upgrades*20} from upgrades ). Stars: {player.stars}"]
     if stat in ("damage", "weapon", "dmg"):
-        player.weapon_damage += 5
+        player.damage_upgrades += 1
+        player.recalc_stats()
         player.stars -= 1
-        return [f"💥 Damage → **{player.weapon_damage}**. Stars: {player.stars}"]
+        return [f"💥 Damage → **{player.weapon_damage}** ( base + {player.damage_upgrades*3} from {player.damage_upgrades} upgrades ). Stars: {player.stars}"]
     if stat in ("mag", "magazine", "ammo"):
-        player.magazine_size += 4
+        player.mag_upgrades += 1
+        player.recalc_stats()
         player.stars -= 1
-        return [f"📦 Mag size → **{player.magazine_size}**. Stars: {player.stars}"]
-    return [f"Unknown upgrade. Stars: {player.stars}"]
+        return [f"📦 Mag size → **{player.magazine_size}** ( +{player.mag_upgrades*1} from upgrades ). Stars: {player.stars}"]
+    return [f"Unknown upgrade. Use health/damage/mag. Stars: {player.stars}"]
 
 
 def _grant_star_drop(player: Survivor) -> list[str]:
@@ -530,7 +553,7 @@ def _grant_star_drop(player: Survivor) -> list[str]:
         weights = [35, 33, 24, 8]  # 8% chance for 3 stars, 32% for 1-2
     
     import random
-    r = random.random() * 1000
+    r = random.random() * 100
     cumulative = 0
     stars = 0
     for i, w in enumerate(weights):
