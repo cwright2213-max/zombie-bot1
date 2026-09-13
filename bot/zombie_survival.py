@@ -530,7 +530,7 @@ def _grant_star_drop(player: Survivor) -> list[str]:
         weights = [35, 33, 24, 8]  # 8% chance for 3 stars, 32% for 1-2
     
     import random
-    r = random.random() * 100
+    r = random.random() * 1000
     cumulative = 0
     stars = 0
     for i, w in enumerate(weights):
