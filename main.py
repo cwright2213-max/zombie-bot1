@@ -62,7 +62,6 @@ SAVE_FILE = DB_PATH
 
 # === ZOMBIE SURVIVAL - RESTORED ===
 """Turn-based Discord zombie survival - FIXED H-01 profiles never silently lost"""
-from __future__ import annotations
 import json, random, logging
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
