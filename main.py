@@ -1,19 +1,22 @@
-"""Persistent player storage - FIX for Railway volume"""
-from __future__ import annotations
-import json, os, sqlite3, logging
+"""Monolithic zombie bot - single file, no bot/ folder needed - FIXES ModuleNotFoundError"""
+import os, sys, json, random, logging
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Dict, Any
+from typing import Any, Dict
+from datetime import datetime, timezone
 
-# Railway persistent volume should be mounted at /data
-# Fallback to ./data for local/Replit
+import discord
+from discord import app_commands
+
+# === STORAGE (from storage.py) ===
 if Path("/data").exists():
     DB_PATH = Path("/data/players.db")
 else:
     DB_PATH = Path("data/players.db")
-
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 def _get_conn():
+    import sqlite3
     conn = sqlite3.connect(str(DB_PATH))
     conn.execute("""
         CREATE TABLE IF NOT EXISTS players (
@@ -26,7 +29,6 @@ def _get_conn():
     return conn
 
 def load_all_players() -> Dict[str, Any]:
-    """Load all players from SQLite - survives deploys if /data volume exists"""
     try:
         conn = _get_conn()
         cur = conn.execute("SELECT user_id, data FROM players")
@@ -35,7 +37,7 @@ def load_all_players() -> Dict[str, Any]:
             try:
                 result[uid] = json.loads(jdata)
             except:
-                logging.warning(f"Corrupt data for {uid}, skipping")
+                logging.warning(f"Corrupt data for {uid}")
         conn.close()
         print(f"[STORAGE] Loaded {len(result)} players from {DB_PATH}")
         return result
@@ -44,7 +46,6 @@ def load_all_players() -> Dict[str, Any]:
         return {}
 
 def save_player(user_id: str, player_dict: dict):
-    """Save single player immediately"""
     try:
         conn = _get_conn()
         conn.execute(
@@ -54,14 +55,14 @@ def save_player(user_id: str, player_dict: dict):
         conn.commit()
         conn.close()
     except Exception as e:
-        print(f"[STORAGE] Save failed for {user_id}: {e}")
-        logging.exception("save failed")
+        print(f"[STORAGE] Save failed: {e}")
 
-# Legacy compatibility - if you had old SAVE_FILE json
 SAVE_FILE = DB_PATH
 
 
+# === ZOMBIE SURVIVAL - RESTORED ===
 """Turn-based Discord zombie survival - FIXED H-01 profiles never silently lost"""
+from __future__ import annotations
 import json, random, logging
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -1885,13 +1886,13 @@ class StarterBot(discord.Client):
     async def setup_hook(self) -> None:
         """Register application commands with Discord."""
         synced_commands = await self.tree.sync()
-        print("Synced %d application command(s)", len(synced_commands))
+        logger.info("Synced %d application command(s)", len(synced_commands))
 
     async def on_ready(self) -> None:
         """Log a useful startup message once the bot is connected."""
         if self.user is not None:
-            print("Logged in as %s (id=%s)", self.user, self.user.id)
-            print("Connected to %d server(s)", len(self.guilds))
+            logger.info("Logged in as %s (id=%s)", self.user, self.user.id)
+            logger.info("Connected to %d server(s)", len(self.guilds))
 
 
 bot = StarterBot()
@@ -2137,24 +2138,13 @@ async def resetme(interaction: discord.Interaction):
     if not is_admin(interaction):
         await interaction.response.send_message("❌ Admin-only.", ephemeral=True)
         return
-    # Survivor already defined in this file
+    from bot.zombie_survival import Survivor
     game_store.players[str(interaction.user.id)] = Survivor()
     game_store.save()
     await interaction.response.send_message("🔄 **Reset to level 1!** Use /addmoney to test again.", ephemeral=True)
 # --- END ADMIN COMMANDS ---
 
 
-def main() -> None:
-    """Start the bot using the project secret."""
-    token = os.getenv("DISCORD_BOT_TOKEN")
-    if not token:
-        print(
-            "DISCORD_BOT_TOKEN is not set. Add it in the project's Secrets "
-            "panel before starting the bot."
-        )
-        sys.exit(1)
-
-    bot.run(token, log_handler=None)
 
 
 
@@ -2162,15 +2152,10 @@ def main():
     import os, sys
     token = os.getenv("DISCORD_BOT_TOKEN")
     if not token:
-        print("❌ DISCORD_BOT_TOKEN not set in Railway Variables")
+        print("DISCORD_BOT_TOKEN not set")
         sys.exit(1)
-    print(f"✅ Token found: {token[:12]}... Starting bot...")
-    try:
-        bot.run(token, log_handler=None)
-    except Exception as e:
-        print(f"❌ Bot failed: {e}")
-        import traceback; traceback.print_exc()
-        sys.exit(1)
+    print(f"Token found {token[:12]}... Starting")
+    bot.run(token, log_handler=None)
 
 if __name__ == "__main__":
     main()
