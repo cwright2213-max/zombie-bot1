@@ -6,6 +6,9 @@ from typing import Any, Dict
 from datetime import datetime, timezone
 
 import discord
+import logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger('discord_bot')
 from discord import app_commands
 
 # === STORAGE (from storage.py) ===
@@ -1234,13 +1237,13 @@ class StarterBot(discord.Client):
     async def setup_hook(self) -> None:
         """Register application commands with Discord."""
         synced_commands = await self.tree.sync()
-        logger.info("Synced %d application command(s)", len(synced_commands))
+        print(f"Synced {len(synced_commands)} application command(s)")
 
     async def on_ready(self) -> None:
         """Log a useful startup message once the bot is connected."""
         if self.user is not None:
-            logger.info("Logged in as %s (id=%s)", self.user, self.user.id)
-            logger.info("Connected to %d server(s)", len(self.guilds))
+            print(f"Logged in as {self.user} (id={self.user.id})")
+            print(f"Connected to {len(self.guilds)} server(s)")
 
 
 bot = StarterBot()
