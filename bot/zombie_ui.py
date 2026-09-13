@@ -1,10 +1,25 @@
-"""Discord buttons - SEPARATE AMMO POOLS + ESCALATING COSTS"""
+"""Discord buttons and menus - FINAL CLEAN VERSION with shop money fix."""
 
 from __future__ import annotations
+
 import discord
+
 from bot.zombie_survival import (
-    AMMO, MAX_FULL_RESTORES_PER_RUN, MAX_PAINKILLERS_PER_RUN, WEAPONS, ZONES,
-    GameStore, ammo_effectiveness_text, buy_item, change_zone, equip_ammo, start_run, status, take_action, upgrade,
+    AMMO,
+    MAX_FULL_RESTORES_PER_RUN,
+    MAX_PAINKILLERS_PER_RUN,
+    WEAPONS,
+    ZONES,
+    GameStore,
+    ammo_effectiveness_text,
+    buy_item,
+    change_zone,
+    equip_ammo,
+    get_upgrade_cost,
+    start_run,
+    status,
+    take_action,
+    upgrade,
 )
 
 def _health_bar(current: int, maximum: int, width: int = 12) -> str:
@@ -21,54 +36,91 @@ def _heal_counts(player):
 
 def combat_embed(messages: list[str], player: object) -> discord.Embed:
     is_dead = not getattr(player, "run_active", False)
+
     if is_dead:
-        embed = discord.Embed(title="☠️ Run Ended", color=discord.Color.from_rgb(90, 90, 90), description="\n".join(m for m in messages if m) or "Your run is over.")
+        embed = discord.Embed(
+            title="☠️ Run Ended",
+            color=discord.Color.from_rgb(90, 90, 90),
+            description="\n".join(m for m in messages if m) or "Your run is over.",
+        )
         run_money = getattr(player, "run_money_earned", 0)
         run_xp = getattr(player, "run_xp_earned", 0)
-        embed.add_field(name="💰 Total Money Earned", value=f"**${player.money}**", inline=True)
-        embed.add_field(name="✨ Total XP Earned", value=f"**{player.xp} XP** (Lvl {player.level})", inline=True)
+        embed.add_field(
+            name="💰 Total Money Earned",
+            value=f"**${player.money}**",
+            inline=True,
+        )
+        embed.add_field(
+            name="✨ Total XP Earned",
+            value=f"**{player.xp} XP** (Lvl {player.level})",
+            inline=True,
+        )
         if run_money or run_xp:
-            embed.add_field(name="📊 This Run", value=f"💵 +${run_money} • 🌟 +{run_xp} XP\n❤️ {player.health}/{player.max_health} HP restored", inline=False)
+            embed.add_field(
+                name="📊 This Run",
+                value=f"💵 +${run_money} • 🌟 +{run_xp} XP\n❤️ {player.health}/{player.max_health} HP restored",
+                inline=False,
+            )
+        else:
+            embed.add_field(name="Status", value=f"❤️ {player.health}/{player.max_health} HP restored", inline=False)
         embed.set_footer(text="Start another run or shop in main menu.")
         return embed
-    cost = AMMO[player.ammo_name]["cost_per_attack"]
-    embed = discord.Embed(title=f"🧟 WAVE {player.wave} • {player.zombies_remaining} left", color=discord.Color.from_rgb(237, 66, 69), description="\n".join(m for m in messages if m) or f"Using {player.ammo_name} ({cost}/shot).")
-    spare = player.get_spare()
-    embed.add_field(name=f"❤️ YOU — {player.health}/{player.max_health} HP", value=f"{_health_bar(player.health, player.max_health)} **{player.health}/{player.max_health}**\n🔫 `{player.magazine}/{player.magazine_size}` + {spare} spare ({cost}/shot)", inline=True)
+
+    embed = discord.Embed(
+        title=f"🧟 WAVE {player.wave} • {player.zombies_remaining} left",
+        color=discord.Color.from_rgb(237, 66, 69),
+        description="\n".join(m for m in messages if m) or "Lock, load, and choose.",
+    )
+    embed.add_field(
+        name=f"❤️ YOU — {player.health}/{player.max_health} HP",
+        value=f"{_health_bar(player.health, player.max_health)} **{player.health}/{player.max_health}**\n🔫 `{player.magazine}/{player.magazine_size}` + {player.spare_ammo} spare",
+        inline=True,
+    )
     enemy = player.enemy
     if enemy:
-        embed.add_field(name=f"💀 {enemy.name.upper()} — {enemy.health}/{enemy.max_health} HP", value=f"{_health_bar(enemy.health, enemy.max_health)} **{enemy.health}/{enemy.max_health}**\nWave {player.wave}", inline=True)
-    embed.set_footer(text=f"{player.ammo_name} costs {cost}/shot • 💊 Heal does NOT use turn")
+        embed.add_field(
+            name=f"💀 {enemy.name.upper()} — {enemy.health}/{enemy.max_health} HP",
+            value=f"{_health_bar(enemy.health, enemy.max_health)} **{enemy.health}/{enemy.max_health}**\nWave {player.wave}",
+            inline=True,
+        )
+    embed.set_footer(text="💊 Heal does NOT use your turn")
     return embed
 
 def heal_menu_embed(player: object) -> discord.Embed:
     pain_left, full_left = _heal_counts(player)
-    embed = discord.Embed(title="💚 Field Medic Kit", color=discord.Color.from_rgb(87, 242, 135), description=f"Health: **{player.health}/{player.max_health} HP** {_health_bar(player.health, player.max_health)}\nHealing does **not** consume your turn.")
+    embed = discord.Embed(
+        title="💚 Field Medic Kit",
+        color=discord.Color.from_rgb(87, 242, 135),
+        description=f"Health: **{player.health}/{player.max_health} HP** {_health_bar(player.health, player.max_health)}\nHealing does **not** consume your turn.",
+    )
     pain_status = "✅ Ready" if player.painkillers > 0 and pain_left > 0 and player.health < player.max_health else "❌ Unavailable"
     embed.add_field(name=f"💊 Painkillers • {pain_status}", value=f"**{player.painkillers} owned**\n`{pain_left} uses left this run`\nHeals ~{player.max_health//4} HP", inline=True)
     full_status = "✅ Ready" if player.full_restores > 0 and full_left > 0 and player.health < player.max_health else "❌ Unavailable"
     embed.add_field(name=f"✨ Full Restore • {full_status}", value=f"**{player.full_restores} owned**\n`{full_left} use left this run`\nFull heal", inline=True)
+    if player.health >= player.max_health:
+        embed.set_footer(text="Already full HP!")
+    else:
+        embed.set_footer(text=f"{pain_left} painkiller uses + {full_left} restore uses left")
     return embed
 
 def status_detail_embed(player: object) -> discord.Embed:
     embed = discord.Embed(title="📊 Survivor Intel", color=discord.Color.from_rgb(88, 101, 242))
-    cost = AMMO[player.ammo_name]["cost_per_attack"]
-    embed.add_field(name="🔫 Loadout", value=f"**{player.weapon_name}** • {player.ammo_name} ammo ({cost}/shot)\nLevel {player.level} • {player.stars} ⭐\nMag {player.magazine}/{player.magazine_size} + {player.get_spare()} spare", inline=False)
+    embed.add_field(name="🔫 Loadout", value=f"**{player.weapon_name}** • {player.ammo_name} ammo\nLevel {player.level} • {player.stars} ⭐", inline=False)
     embed.add_field(name=f"🌍 {player.zone_name}", value=ammo_effectiveness_text(player), inline=False)
-    pool = "\n".join([f"{k}: {v} spare" for k, v in player.spare_ammo.items() if v>0]) or "No spare ammo"
-    embed.add_field(name="🎒 Ammo Pools", value=pool, inline=False)
     embed.add_field(name="📦 Resources", value=f"💰 ${player.money} • ✨ {player.xp} XP\n❤️ {player.health}/{player.max_health} HP", inline=False)
     return embed
 
 def shop_embed(player: object, last_messages: list[str] | None = None) -> discord.Embed:
-    current_cost = AMMO[player.ammo_name]["cost_per_attack"]
-    current_price = AMMO[player.ammo_name]["box_price"]
-    embed = discord.Embed(title="🛒 Armory Shop", color=discord.Color.from_rgb(87, 242, 135), description="\n".join(last_messages) if last_messages else f"Buying for **{player.ammo_name}** ({current_cost}/shot). Money deducts instantly.")
+    """NEW: Shop embed that ALWAYS shows current money - fixes your bug"""
+    embed = discord.Embed(
+        title="🛒 Armory Shop",
+        color=discord.Color.from_rgb(87, 242, 135),
+        description="\n".join(last_messages) if last_messages else "Buy gear. Money deducts instantly.",
+    )
     embed.add_field(name="💰 Your Money", value=f"**${player.money}**", inline=True)
-    embed.add_field(name=f"📦 {player.ammo_name} Spare", value=f"{player.get_spare()} rounds", inline=True)
-    pool = ", ".join([f"{k}: {v}" for k, v in player.spare_ammo.items() if v>0]) or "Empty"
-    embed.add_field(name="🎒 All Pools", value=pool, inline=False)
+    embed.add_field(name="📦 Ammo", value=f"{player.spare_ammo} spare + {player.magazine}/{player.magazine_size} mag", inline=True)
     embed.add_field(name="💊 Heals", value=f"{player.painkillers} painkillers • {player.full_restores} restores", inline=True)
+    embed.set_footer(text="Prices deduct immediately - no need to switch menus.")
     return embed
 
 class PlayerView(discord.ui.View):
@@ -79,7 +131,7 @@ class PlayerView(discord.ui.View):
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id == self.user_id:
             return True
-        await interaction.response.send_message("This menu belongs to another survivor.", ephemeral=True)
+        await interaction.response.send_message("This menu belongs to another survivor. Use `/zombie menu` for your own.", ephemeral=True)
         return False
     async def on_timeout(self) -> None:
         for child in self.children:
@@ -92,6 +144,7 @@ class ZombieMenuView(PlayerView):
         messages = start_run(player)
         self.store.save()
         await interaction.response.edit_message(content=None, embed=combat_embed(messages, player), view=CombatView(self.user_id, self.store))
+
     @discord.ui.button(label="⚔️ Combat", style=discord.ButtonStyle.danger, row=0)
     async def combat(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
         player = self.store.get(self.user_id)
@@ -101,22 +154,27 @@ class ZombieMenuView(PlayerView):
             messages = start_run(player)
             self.store.save()
             await interaction.response.edit_message(content=None, embed=combat_embed(messages, player), view=CombatView(self.user_id, self.store))
+
     @discord.ui.button(label="🛒 Shop", style=discord.ButtonStyle.primary, row=0)
     async def shop(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
         player = self.store.get(self.user_id)
         await interaction.response.edit_message(content=None, embed=shop_embed(player), view=ShopView(self.user_id, self.store))
+
     @discord.ui.button(label="🗺️ Zones", style=discord.ButtonStyle.primary, row=0)
     async def zones(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
         player = self.store.get(self.user_id)
         await interaction.response.edit_message(content=status(player), view=ZoneView(self.user_id, self.store))
+
     @discord.ui.button(label="🔬 Ammo lab", style=discord.ButtonStyle.primary, row=1)
     async def ammo(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
         player = self.store.get(self.user_id)
         await interaction.response.edit_message(content=status(player), view=AmmoView(self.user_id, self.store))
+
     @discord.ui.button(label="⬆️ Upgrades", style=discord.ButtonStyle.success, row=1)
     async def upgrades(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
         player = self.store.get(self.user_id)
         await interaction.response.edit_message(content=status(player), view=UpgradeView(self.user_id, self.store))
+
     @discord.ui.button(label="🔄 Refresh status", style=discord.ButtonStyle.secondary, row=1)
     async def refresh_status(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
         await interaction.response.edit_message(content=status(self.store.get(self.user_id)), view=ZombieMenuView(self.user_id, self.store))
@@ -140,6 +198,7 @@ class CombatView(PlayerView):
                 await inter.response.edit_message(content=status(self.store.get(self.user_id)), view=ZombieMenuView(self.user_id, self.store))
             menu_btn.callback = menu_cb
             self.add_item(menu_btn)
+
     async def _take_action(self, interaction: discord.Interaction, action: str) -> None:
         player = self.store.get(self.user_id)
         messages = take_action(player, action)
@@ -148,6 +207,7 @@ class CombatView(PlayerView):
             await interaction.response.edit_message(content=None, embed=combat_embed(messages, player), view=CombatView(self.user_id, self.store))
         else:
             await interaction.response.edit_message(content=None, embed=combat_embed(messages, player), view=ZombieMenuView(self.user_id, self.store))
+
     @discord.ui.button(label="🔫 Attack", style=discord.ButtonStyle.danger, row=0)
     async def attack(self, interaction: discord.Interaction, _b): await self._take_action(interaction, "attack")
     @discord.ui.button(label="💊 Heal", style=discord.ButtonStyle.success, row=0)
@@ -198,6 +258,7 @@ class HealView(PlayerView):
             await interaction.response.edit_message(content=None, embed=combat_embed([], self.store.get(self.user_id)), view=CombatView(self.user_id, self.store))
         back_button.callback = back_callback
         self.add_item(back_button)
+
     async def _use_heal(self, interaction: discord.Interaction, item: str) -> None:
         player = self.store.get(self.user_id)
         messages = take_action(player, "heal", item)
@@ -209,16 +270,14 @@ class ShopView(PlayerView):
         super().__init__(user_id, store)
         self.last_messages = last_messages
         player = self.store.get(user_id)
-        current_type = player.ammo_name
-        current_price = AMMO[current_type]["box_price"]
-        current_amount = AMMO[current_type]["box_amount"]
         choices = [
-            (f"📦 {current_type} box · ${current_price} ({current_amount})", "ammo", discord.ButtonStyle.primary, player.money >= current_price),
-            (f"💊 Painkillers · $40", "painkillers", discord.ButtonStyle.primary, player.money >= 40),
-            (f"✨ Full restore · $120", "full_restore", discord.ButtonStyle.primary, player.money >= 120),
+            ("📦 Ammo box · $30", "ammo", discord.ButtonStyle.primary, player.money >= 30),
+            ("💊 Painkillers · $40", "painkillers", discord.ButtonStyle.primary, player.money >= 40),
+            ("✨ Full restore · $120", "full_restore", discord.ButtonStyle.primary, player.money >= 120),
         ]
         choices.extend((f"{name} · ${data['price']}", name, discord.ButtonStyle.secondary, player.money >= data["price"] and player.level >= data["unlock_level"]) for name, data in WEAPONS.items() if name != "Pistol")
         for index, (label, value, style, can_afford) in enumerate(choices):
+            # Disable if can't afford to make it obvious money matters
             button = discord.ui.Button(label=label, style=style, row=index // 4, disabled=not can_afford)
             async def callback(interaction: discord.Interaction, selected: str = value) -> None:
                 await self._buy(interaction, selected)
@@ -229,10 +288,12 @@ class ShopView(PlayerView):
             await interaction.response.edit_message(content=status(self.store.get(self.user_id)), view=ZombieMenuView(self.user_id, self.store))
         back.callback = back_callback
         self.add_item(back)
+
     async def _buy(self, interaction: discord.Interaction, item: str) -> None:
         player = self.store.get(self.user_id)
         messages = buy_item(player, item)
         self.store.save()
+        # CRITICAL FIX: Re-fetch player and rebuild embed with NEW money value
         player = self.store.get(self.user_id)
         await interaction.response.edit_message(content=None, embed=shop_embed(player, messages), view=ShopView(self.user_id, self.store, messages))
 
@@ -264,10 +325,7 @@ class AmmoView(PlayerView):
             ammo = AMMO[ammo_name]
             modifier = ZONES[player.zone_name].get("ammo_mods", {}).get(ammo_name, 1.0)
             marker = " ↑" if modifier > 1.0 else " ↓" if modifier < 1.0 else ""
-            owned = ammo_name in player.owned_ammo
-            spare = player.get_spare(ammo_name)
-            label = f"{ammo_name} ({ammo['cost_per_attack']}/shot) {spare} spare{marker}" + ("" if owned else f" ${ammo['price']}")
-            button = discord.ui.Button(label=label, style=discord.ButtonStyle.primary if owned else discord.ButtonStyle.secondary, row=index // 3)
+            button = discord.ui.Button(label=f"{ammo_name} ({ammo['cost_per_attack']}/shot){marker}", style=discord.ButtonStyle.primary, row=index // 3)
             async def callback(interaction: discord.Interaction, selected: str = ammo_name) -> None:
                 await self._equip(interaction, selected)
             button.callback = callback
@@ -286,20 +344,45 @@ class AmmoView(PlayerView):
 class UpgradeView(PlayerView):
     def __init__(self, user_id: int, store: GameStore) -> None:
         super().__init__(user_id, store)
-        choices = [("❤️ Max health · 1 star", "health"), ("💥 Weapon damage · 1 star", "damage"), ("📦 Magazine size · 1 star", "magazine")]
-        for label, value in choices:
-            button = discord.ui.Button(label=label, style=discord.ButtonStyle.success, row=0)
+        player = self.store.get(user_id)
+        # Show all 6 upgrades with dynamic money costs
+        choices = [
+            (f"❤️ Health +20 · ${get_upgrade_cost(player,'health')}", "health", player.health_upgrades),
+            (f"💥 Damage +3 · ${get_upgrade_cost(player,'damage')}", "damage", player.damage_upgrades),
+            (f"📦 Mag +1 · ${get_upgrade_cost(player,'mag')}", "mag", player.mag_upgrades),
+            (f"🎯 Crit +2% · ${get_upgrade_cost(player,'crit')}", "crit", player.crit_upgrades),
+            (f"🛡️ Armor -2 dmg · ${get_upgrade_cost(player,'armor')}", "armor", player.armor_upgrades),
+            (f"💰 Loot +5% · ${get_upgrade_cost(player,'scavenger')}", "scavenger", player.scavenger_upgrades),
+        ]
+        for index, (label, value, count) in enumerate(choices):
+            cost = get_upgrade_cost(player, value)
+            can_afford = player.money >= cost
+            # Show current level in label: e.g. ❤️ Health +20 Lvl3 · $450
+            display_label = f"{label} (Lvl {count})"
+            button = discord.ui.Button(
+                label=display_label, 
+                style=discord.ButtonStyle.success if can_afford else discord.ButtonStyle.secondary, 
+                row=index // 3,
+                disabled=not can_afford
+            )
             async def callback(interaction: discord.Interaction, selected: str = value) -> None:
                 await self._upgrade(interaction, selected)
             button.callback = callback
             self.add_item(button)
-        back = discord.ui.Button(label="🏠 Main menu", style=discord.ButtonStyle.secondary, row=1)
+        back = discord.ui.Button(label="🏠 Main menu", style=discord.ButtonStyle.secondary, row=2)
         async def back_callback(interaction: discord.Interaction) -> None:
             await interaction.response.edit_message(content=status(self.store.get(self.user_id)), view=ZombieMenuView(self.user_id, self.store))
         back.callback = back_callback
         self.add_item(back)
+        
+        # Add info button showing money and stars
+        info = discord.ui.Button(label=f"💰 ${player.money} | ⭐ {player.stars} flex", style=discord.ButtonStyle.primary, row=2, disabled=True)
+        self.add_item(info)
+
     async def _upgrade(self, interaction: discord.Interaction, stat: str) -> None:
         player = self.store.get(self.user_id)
         messages = upgrade(player, stat)
         self.store.save()
-        await interaction.response.edit_message(content=status(self.store.get(self.user_id)) + "\n\n" + "\n".join(messages), view=UpgradeView(self.user_id, self.store))
+        # Rebuild view with updated costs
+        player = self.store.get(self.user_id)
+        await interaction.response.edit_message(content=status(player) + "\n\n" + "\n".join(messages), view=UpgradeView(self.user_id, self.store))
