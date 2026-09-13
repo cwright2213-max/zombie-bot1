@@ -34,7 +34,7 @@ WEAPONS: dict[str, dict[str, int]] = {
     "Shotgun": {"damage": 45, "mag": 6, "price": 250, "unlock_level": 15},
     "Rifle": {"damage": 35, "mag": 30, "price": 500, "unlock_level": 30},
     "SMG": {"damage": 25, "mag": 40, "price": 900, "unlock_level": 60},
-    "Sawed-Off": {"damage": 70, "mag": 2, "price": 1800, "unlock_level": 90},
+    "Sawed-Of": {"damage": 70, "mag": 2, "price": 1800, "unlock_level": 90},
 }
 
 # --- DEATH LINES - SPLIT BY TYPE ---
@@ -295,7 +295,7 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
             player.health = player.max_health
             msgs = [
                 "💀 **OUT OF AMMO!**",
-                ff"🧟‍♂️ {get_no_ammo_line()}",
+                f"🧟‍♂️ {get_no_ammo_line()}",
                 f"🏃 You limped back to safehouse with ${player.run_money_earned} and {player.run_xp_earned} XP from this run.",
             ]
             msgs.extend(_grant_random_elemental_drop(player))
