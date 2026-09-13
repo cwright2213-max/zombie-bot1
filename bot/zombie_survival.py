@@ -1,52 +1,20 @@
-"""Turn-based Discord zombie survival - SEPARATE AMMO POOLS + RARITY COSTS"""
-
+"""Turn-based Discord zombie survival - FIXED H-01 profiles never silently lost"""
 from __future__ import annotations
-
-import json
-import random
+import json, random, logging
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
-
-SAVE_FILE = Path("zombie_saves.json")
-
+from .storage import load_all_players, save_player, DB_PATH
+SAVE_FILE = DB_PATH
 MAX_PAINKILLERS_PER_RUN = 3
 MAX_FULL_RESTORES_PER_RUN = 1
-
 ZONES: dict[str, dict[str, Any]] = {
-    "Graveyard": {
-        "min_level": 1, "hp_mult": 1.0, "dmg_mult": 1.0, "money_mult": 1.0, "xp_mult": 1.0,
-        "desc": "Foggy, quiet, and good for learning.",
-        "weights": [60, 25, 12, 3],
-        "ammo_mods": {"Standard": 1.00, "Bleed": 1.00, "Incendiary": 1.00, "Frostbite": 1.00, "Toxic": 1.00, "Shock": 1.00},
-    },
-    "Mega Death City": {
-        "min_level": 50, "hp_mult": 2.2, "dmg_mult": 1.4, "money_mult": 2.5, "xp_mult": 2.0,
-        "desc": "A concrete jungle with tougher, richer zombies.",
-        "weights": [30, 30, 25, 15],
-        "ammo_mods": {"Standard": 1.00, "Bleed": 1.00, "Incendiary": 1.20, "Frostbite": 0.90, "Toxic": 1.00, "Shock": 1.15},
-    },
-    "Frostbitten Outskirts": {
-        "min_level": 100, "hp_mult": 3.8, "dmg_mult": 1.8, "money_mult": 4.0, "xp_mult": 3.5,
-        "desc": "Freezing rain and frost armor.",
-        "weights": [20, 20, 35, 25],
-        "ammo_mods": {"Standard": 1.00, "Bleed": 0.90, "Incendiary": 1.40, "Frostbite": 0.70, "Toxic": 1.00, "Shock": 1.15},
-    },
-    "Toxic Wasteland": {
-        "min_level": 150, "hp_mult": 6.0, "dmg_mult": 2.3, "money_mult": 6.5, "xp_mult": 5.5,
-        "desc": "A green haze where toxic rounds shine.",
-        "weights": [15, 15, 35, 35],
-        "ammo_mods": {"Standard": 1.00, "Bleed": 1.00, "Incendiary": 1.10, "Frostbite": 1.00, "Toxic": 1.50, "Shock": 0.90},
-    },
-    "The Void": {
-        "min_level": 200, "hp_mult": 10.0, "dmg_mult": 3.0, "money_mult": 10.0, "xp_mult": 8.0,
-        "desc": "Endgame. Everything wants you dead.",
-        "weights": [10, 10, 30, 50],
-        "ammo_mods": {"Standard": 1.00, "Bleed": 1.10, "Incendiary": 1.15, "Frostbite": 1.10, "Toxic": 1.25, "Shock": 1.50},
-    },
+    "Graveyard": {"min_level": 1, "hp_mult": 1.0, "dmg_mult": 1.0, "money_mult": 1.0, "xp_mult": 1.0, "desc": "Foggy, quiet, and good for learning.", "weights": [60, 25, 12, 3], "ammo_mods": {"Standard": 1.00, "Bleed": 1.00, "Incendiary": 1.00, "Frostbite": 1.00, "Toxic": 1.00, "Shock": 1.00}},
+    "Mega Death City": {"min_level": 50, "hp_mult": 2.2, "dmg_mult": 1.4, "money_mult": 2.5, "xp_mult": 2.0, "desc": "A concrete jungle with tougher, richer zombies.", "weights": [30, 30, 25, 15], "ammo_mods": {"Standard": 1.00, "Bleed": 1.00, "Incendiary": 1.20, "Frostbite": 0.90, "Toxic": 1.00, "Shock": 1.15}},
+    "Frostbitten Outskirts": {"min_level": 100, "hp_mult": 3.8, "dmg_mult": 1.8, "money_mult": 4.0, "xp_mult": 3.5, "desc": "Freezing rain and frost armor.", "weights": [20, 20, 35, 25], "ammo_mods": {"Standard": 1.00, "Bleed": 0.90, "Incendiary": 1.40, "Frostbite": 0.70, "Toxic": 1.00, "Shock": 1.15}},
+    "Toxic Wasteland": {"min_level": 150, "hp_mult": 6.0, "dmg_mult": 2.3, "money_mult": 6.5, "xp_mult": 5.5, "desc": "A green haze where toxic rounds shine.", "weights": [15, 15, 35, 35], "ammo_mods": {"Standard": 1.00, "Bleed": 1.00, "Incendiary": 1.10, "Frostbite": 1.00, "Toxic": 1.50, "Shock": 0.90}},
+    "The Void": {"min_level": 200, "hp_mult": 10.0, "dmg_mult": 3.0, "money_mult": 10.0, "xp_mult": 8.0, "desc": "Endgame. Everything wants you dead.", "weights": [10, 10, 30, 50], "ammo_mods": {"Standard": 1.00, "Bleed": 1.10, "Incendiary": 1.15, "Frostbite": 1.10, "Toxic": 1.25, "Shock": 1.50}},
 }
-
-# NEW COSTS - rarer = more expensive
 AMMO: dict[str, dict[str, Any]] = {
     "Standard": {"unlock_level": 1, "price": 0, "desc": "Reliable regular lead.", "effect": None, "cost_per_attack": 1, "box_price": 30, "box_amount": 24},
     "Bleed": {"unlock_level": 10, "price": 200, "desc": "25% bleed 8 dmg x3", "effect": "bleed", "cost_per_attack": 2, "box_price": 50, "box_amount": 24},
@@ -55,7 +23,6 @@ AMMO: dict[str, dict[str, Any]] = {
     "Toxic": {"unlock_level": 110, "price": 2500, "desc": "35% poison 10 dmg x4", "effect": "poison", "cost_per_attack": 5, "box_price": 150, "box_amount": 24},
     "Shock": {"unlock_level": 160, "price": 5000, "desc": "15% stun 1 turn", "effect": "shock", "cost_per_attack": 6, "box_price": 200, "box_amount": 24},
 }
-
 WEAPONS: dict[str, dict[str, int]] = {
     "Pistol": {"damage": 20, "mag": 12, "price": 0, "unlock_level": 1},
     "Shotgun": {"damage": 45, "mag": 6, "price": 250, "unlock_level": 15},
@@ -64,83 +31,78 @@ WEAPONS: dict[str, dict[str, int]] = {
     "Sawed-Off": {"damage": 70, "mag": 2, "price": 1800, "unlock_level": 90},
 }
 
+# --- DEATH LINES - SPLIT BY TYPE ---
+NORMAL_DEATH_LINES = [
+    "Bro really thought he was the main character 💀 LMAO dead.",
+    "Your K/D is so bad the zombies are laughing at you.",
+    "Even the Walkers are embarrassed they killed YOU.",
+    "You got folded like laundry, buddy. Stay down.",
+    "Graveyard's full of heroes like you — oh wait, you're just food.",
+    "Skill issue. Literally. Uninstall, survivor.",
+    "The zombies didn't even have to try. You just sucked.",
+    "Nice try, hero. The graveyard just got one plot fuller.",
+]
+
+NO_AMMO_DEATH_LINES = [
+    "The hoard was too big for you eh buddy? Pathetic.",
+    "You brought a water gun to a zombie apocalypse. Clown.",
+    "Imagine dying with all that expensive gear. Couldn't be me.",
+    "CLICK CLICK... that's the sound of you being an idiot.",
+    "Shoulda bought ammo instead of that dumb hat, rookie!",
+    "You ran out of bullets AND braincells at the same time. Impressive.",
+    "No ammo? No chance. No brain? Obviously.",
+    "My man really tried to fist-fight the hoard. Respectfully, dumbass.",
+]
+
+def get_cocky_line() -> str:
+    import random
+    return random.choice(NORMAL_DEATH_LINES)
+
+def get_no_ammo_line() -> str:
+    import random
+    return random.choice(NO_AMMO_DEATH_LINES)
+
+
 ZOMBIES: dict[str, dict[str, int]] = {
     "Walker": {"health": 50, "damage": 10, "money": 10, "xp": 5},
     "Runner": {"health": 35, "damage": 18, "money": 20, "xp": 10},
     "Brute": {"health": 100, "damage": 15, "money": 40, "xp": 20},
     "Mutant": {"health": 150, "damage": 25, "money": 100, "xp": 50},
 }
-
 @dataclass
 class Enemy:
-    name: str
-    health: int
-    max_health: int
-    damage: int
-    money_reward: int
-    xp_reward: int
-    effects: dict[str, int] = field(default_factory=dict)
-
+    name: str; health: int; max_health: int; damage: int; money_reward: int; xp_reward: int; effects: dict[str, int] = field(default_factory=dict)
 @dataclass
 class Survivor:
-    max_health: int = 100
-    health: int = 100
-    money: int = 0
-    xp: int = 0
-    stars: int = 0
-    weapon_name: str = "Pistol"
-    weapon_damage: int = 20
-    magazine_size: int = 12
-    magazine: int = 12
-    # NEW: separate pools
+    max_health: int = 100; health: int = 100; money: int = 0; xp: int = 0; stars: int = 0
+    weapon_name: str = "Pistol"; weapon_damage: int = 20; magazine_size: int = 12; magazine: int = 12
     spare_ammo: dict[str, int] = field(default_factory=lambda: {"Standard": 36})
-    full_restores: int = 1
-    painkillers: int = 3
-    painkillers_used_this_run: int = 0
-    full_restores_used_this_run: int = 0
-    run_money_earned: int = 0
-    run_xp_earned: int = 0
-    zone_name: str = "Graveyard"
-    ammo_name: str = "Standard"
-    owned_ammo: list[str] = field(default_factory=lambda: ["Standard"])
-    run_active: bool = False
-    wave: int = 0
-    zombies_remaining: int = 0
-    enemy: Enemy | None = None
-
+    full_restores: int = 1; painkillers: int = 3; painkillers_used_this_run: int = 0; full_restores_used_this_run: int = 0
+    run_money_earned: int = 0; run_xp_earned: int = 0; zone_name: str = "Graveyard"; ammo_name: str = "Standard"
+    owned_ammo: list[str] = field(default_factory=lambda: ["Standard"]); owned_weapons: list[str] = field(default_factory=lambda: ["Pistol"])
+    run_active: bool = False; wave: int = 0; zombies_remaining: int = 0; enemy: Enemy | None = None
     @property
-    def level(self) -> int:
-        return level_for_xp(self.xp)
-
-    def get_spare(self, ammo_type: str | None = None) -> int:
-        ammo_type = ammo_type or self.ammo_name
-        return self.spare_ammo.get(ammo_type, 0)
-
+    def level(self) -> int: return level_for_xp(self.xp)
+    def get_spare(self, ammo_type: str | None = None) -> int: return self.spare_ammo.get(ammo_type or self.ammo_name, 0)
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
+        d = asdict(self); d["__version"] = 2; return d
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> Survivor:
+    def from_dict(cls, data: dict[str, Any]) -> "Survivor":
+        if data.get("zone_name") not in ZONES: data["zone_name"] = "Graveyard"
+        if data.get("ammo_name") not in AMMO: data["ammo_name"] = "Standard"
+        if data.get("weapon_name") not in WEAPONS: data["weapon_name"] = "Pistol"
         enemy_data = data.get("enemy")
         enemy = Enemy(**enemy_data) if isinstance(enemy_data, dict) else None
-        
-        # MIGRATION: old save had spare_ammo as int -> convert to dict
         spare = data.get("spare_ammo", {"Standard": 36})
-        if isinstance(spare, int):
-            spare = {"Standard": spare}
-        
+        if isinstance(spare, int): spare = {"Standard": spare}
         allowed = {k: v for k, v in data.items() if k in cls.__dataclass_fields__}
-        allowed["spare_ammo"] = spare
-        allowed["enemy"] = enemy
-        allowed.setdefault("painkillers_used_this_run", 0)
-        allowed.setdefault("full_restores_used_this_run", 0)
-        allowed.setdefault("run_money_earned", 0)
-        allowed.setdefault("run_xp_earned", 0)
-        allowed.setdefault("owned_ammo", ["Standard"])
-        if "stars" not in data:
-            allowed["stars"] = max(0, level_for_xp(int(data.get("xp", 0))) - 1)
+        allowed["spare_ammo"] = spare; allowed["enemy"] = enemy
+        allowed.setdefault("painkillers_used_this_run", 0); allowed.setdefault("full_restores_used_this_run", 0)
+        allowed.setdefault("run_money_earned", 0); allowed.setdefault("run_xp_earned", 0)
+        allowed.setdefault("owned_ammo", ["Standard"]); allowed.setdefault("owned_weapons", ["Pistol"])
+        if "Pistol" not in allowed["owned_weapons"]: allowed["owned_weapons"].append("Pistol")
+        if "stars" not in data: allowed["stars"] = max(0, level_for_xp(int(data.get("xp", 0))) - 1)
         return cls(**allowed)
-
 class GameStore:
     def __init__(self) -> None:
         self.players: dict[str, Survivor] = {}
@@ -149,25 +111,29 @@ class GameStore:
         key = str(user_id)
         if key not in self.players:
             self.players[key] = Survivor()
-            self.save()
+            self.save_one(key)
         return self.players[key]
+    def save_one(self, key: str) -> None:
+        p = self.players.get(key)
+        if p:
+            save_player(key, p.to_dict())
     def save(self) -> None:
-        try:
-            SAVE_FILE.write_text(json.dumps({k: p.to_dict() for k, p in self.players.items()}, indent=2), encoding="utf-8")
-        except OSError:
-            pass
+        for k, p in self.players.items():
+            save_player(k, p.to_dict())
     def load(self) -> None:
-        if not SAVE_FILE.exists():
-            return
-        try:
-            data = json.loads(SAVE_FILE.read_text(encoding="utf-8"))
-            if isinstance(data, dict):
-                self.players = {k: Survivor.from_dict(v) for k, v in data.items() if isinstance(v, dict)}
-        except (OSError, json.JSONDecodeError, TypeError, ValueError):
-            self.players = {}
+        raw = load_all_players()
+        loaded = {}
+        for k, v in raw.items():
+            try:
+                if isinstance(v, dict):
+                    loaded[k] = Survivor.from_dict(v)
+            except Exception as e:
+                logging.getLogger("zombie.storage").error(f"Corrupt player {k} quarantined: {e}")
+                continue
+        self.players = loaded
 
 def zone_for(player: Survivor) -> dict[str, Any]:
-    return ZONES[player.zone_name]
+    return ZONES.get(player.zone_name, ZONES["Graveyard"])
 
 def ammo_modifier(player: Survivor, ammo_name: str) -> float:
     return float(zone_for(player).get("ammo_mods", {}).get(ammo_name, 1.0))
@@ -211,12 +177,16 @@ def start_run(player: Survivor) -> list[str]:
     if player.run_active:
         return ["⚠️ Already in a run!"]
     player.health = player.max_health
-    # ensure current ammo has some spare
-    if player.get_spare() <= 0:
-        player.spare_ammo[player.ammo_name] = player.spare_ammo.get(player.ammo_name, 0) + 12
-    player.magazine = min(player.magazine_size, player.get_spare())
-    # deduct what we loaded from spare
-    player.spare_ammo[player.ammo_name] = max(0, player.get_spare() - player.magazine)
+    # Allow start with no ammo - player will get overwhelmed message
+    if player.get_spare() <= 0 and player.magazine <= 0:
+        player.wave = 1; player.zombies_remaining = 3; player.run_active = True; player.enemy = spawn_enemy(player)
+        return [f"⚠️ You started with NO {player.ammo_name} ammo! The hoard smells blood...", f"Wave {player.wave}: **{player.enemy.name}** ({player.enemy.health} HP) - you\'re about to get overwhelmed!"]
+    if player.magazine == 0:
+        spare = player.get_spare()
+        if spare > 0:
+            load_amt = min(player.magazine_size, spare)
+            player.magazine = load_amt
+            player.spare_ammo[player.ammo_name] = spare - load_amt
     player.painkillers_used_this_run = 0
     player.full_restores_used_this_run = 0
     player.run_money_earned = 0
@@ -253,10 +223,9 @@ def _enemy_damage(player: Survivor) -> list[str]:
         player.run_active = False
         player.enemy = None
         player.health = player.max_health
-        # return mag to spare on death
         player.spare_ammo[player.ammo_name] = player.spare_ammo.get(player.ammo_name, 0) + player.magazine
         player.magazine = 0
-        result.append("💀 **You died!** Rewards saved.")
+        result.append(f"💀 **You died!** {get_cocky_line()} Rewards saved.")
         result.extend(_grant_random_elemental_drop(player))
     return result
 
@@ -287,13 +256,6 @@ def _finish_enemy(player: Survivor) -> list[str]:
     player.run_xp_earned += enemy.xp_reward
     player.zombies_remaining -= 1
     messages = [f"✅ **{enemy.name} defeated!** +${enemy.money_reward} • +{enemy.xp_reward} XP"]
-    if player.level > 1 and level_progress(player)[0] == 0:  # just leveled? approximate
-        pass
-    old_level = player.level - (1 if player.xp - enemy.xp_reward < 0 else 0)  # simplified
-    # use proper level check
-    if player.stars == 0 and player.xp >= 100:
-        pass
-    # level up check via xp
     if player.level > level_for_xp(player.xp - enemy.xp_reward):
         ups = player.level - level_for_xp(player.xp - enemy.xp_reward)
         if ups > 0:
@@ -303,7 +265,6 @@ def _finish_enemy(player: Survivor) -> list[str]:
         bonus = int(15 * player.wave * zone_for(player)["money_mult"])
         player.money += bonus
         player.run_money_earned += bonus
-        # reward ammo of current type
         player.spare_ammo[player.ammo_name] = player.spare_ammo.get(player.ammo_name, 0) + 5
         player.wave += 1
         player.zombies_remaining = player.wave + 2
@@ -316,6 +277,25 @@ def _finish_enemy(player: Survivor) -> list[str]:
 def take_action(player: Survivor, action: str, heal_item: str | None = None) -> list[str]:
     if not player.run_active or player.enemy is None:
         return ["Not in a run. Use Start run."]
+
+    # NEW: Overwhelmed check - if completely out of ammo at start of any action
+    def check_overwhelmed():
+        if player.magazine <= 0 and player.get_spare() <= 0:
+            # die overwhelmed
+            player.spare_ammo[player.ammo_name] = player.spare_ammo.get(player.ammo_name, 0) + player.magazine
+            player.magazine = 0
+            player.run_active = False
+            player.enemy = None
+            player.health = player.max_health
+            msgs = [
+                "💀 **OUT OF AMMO!**",
+                ff"🧟‍♂️ {get_no_ammo_line()}",
+                f"🏃 You limped back to safehouse with ${player.run_money_earned} and {player.run_xp_earned} XP from this run.",
+            ]
+            msgs.extend(_grant_random_elemental_drop(player))
+            return msgs
+        return None
+
     if action == "heal":
         if heal_item == "full_restore":
             if player.full_restores_used_this_run >= MAX_FULL_RESTORES_PER_RUN:
@@ -352,7 +332,20 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
         ammo_data = AMMO[player.ammo_name]
         cost = int(ammo_data["cost_per_attack"])
         if player.magazine < cost:
-            return [f"❌ Need {cost} {player.ammo_name} ammo! Have {player.magazine}/{player.magazine_size}", f"🔄 Reload (you have {player.get_spare()} spare)"]
+            spare = player.get_spare()
+            if spare <= 0:
+                # OVERWHELMED - no ammo at all
+                player.spare_ammo[player.ammo_name] = player.spare_ammo.get(player.ammo_name, 0) + player.magazine
+                player.magazine = 0
+                player.run_active = False
+                player.enemy = None
+                player.health = player.max_health
+                return [
+                    "💀 **CLICK... CLICK... OUT OF AMMO!**",
+                    f"🧟‍♂️ {get_no_ammo_line()}",
+                    f"💰 You kept ${player.run_money_earned} • {player.run_xp_earned} XP from this run.",
+                ] + _grant_random_elemental_drop(player)
+            return [f"❌ Need {cost} {player.ammo_name} ammo! Have {player.magazine}/{player.magazine_size}", f"🔄 Reload (you have {spare} spare)"]
         player.magazine -= cost
         mod = ammo_modifier(player, player.ammo_name)
         dmg = int(player.weapon_damage * mod)
@@ -370,19 +363,29 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
             return ["✅ Mag full!"]
         spare = player.get_spare()
         if spare <= 0:
-            return [f"❌ No {player.ammo_name} spare ammo! Buy at shop."]
+            # OVERWHELMED on reload attempt with no spare
+            player.spare_ammo[player.ammo_name] = player.spare_ammo.get(player.ammo_name, 0) + player.magazine
+            player.magazine = 0
+            player.run_active = False
+            player.enemy = None
+            player.health = player.max_health
+            return [
+                "💀 **No spare ammo left!**",
+                f"🧟‍♂️ {get_no_ammo_line()}",
+                f"💰 You escaped with ${player.run_money_earned} • {player.run_xp_earned} XP.",
+            ] + _grant_random_elemental_drop(player)
         amount = min(player.magazine_size - player.magazine, spare)
         player.magazine += amount
         player.spare_ammo[player.ammo_name] = spare - amount
         messages.append(f"🔄 Reloaded {amount} {player.ammo_name}. {player.spare_ammo[player.ammo_name]} spare left.")
     elif action == "flee":
-        # return mag to spare
+        # USER WANTS: flee still rewards players + full heal
         player.spare_ammo[player.ammo_name] = player.spare_ammo.get(player.ammo_name, 0) + player.magazine
         player.magazine = 0
         player.run_active = False
         player.enemy = None
         player.health = player.max_health
-        messages.append(f"🏃 Fled! Kept ${player.run_money_earned} • {player.run_xp_earned} XP this run.")
+        messages.append(f"🏃 You fled like a legend! Kept ${player.run_money_earned} • {player.run_xp_earned} XP this run. Full healed!")
         messages.extend(_grant_random_elemental_drop(player))
         return messages
     else:
@@ -397,7 +400,6 @@ def buy_item(player: Survivor, item: str) -> list[str]:
     if player.run_active:
         return ["⚠️ Can't shop in a run! Flee first."]
     if item == "ammo":
-        # Buy for currently equipped ammo type
         ammo_type = player.ammo_name
         box_price = AMMO[ammo_type]["box_price"]
         box_amount = AMMO[ammo_type]["box_amount"]
@@ -423,15 +425,21 @@ def buy_item(player: Survivor, item: str) -> list[str]:
     weapon = WEAPONS[item]
     if player.level < weapon["unlock_level"]:
         return [f"{item} unlocks at level {weapon['unlock_level']}."]
-    if item == player.weapon_name:
-        return ["Already equipped!"]
+    if item in player.owned_weapons:
+        player.weapon_name = item
+        player.weapon_damage = weapon["damage"]
+        player.magazine_size = weapon["mag"]
+        player.spare_ammo[player.ammo_name] = player.spare_ammo.get(player.ammo_name, 0) + player.magazine
+        player.magazine = 0
+        return [f"🔫 Re-equipped **{item}** for free."]
     if player.money < weapon["price"]:
         return [f"Need ${weapon['price']} for {item}, you have ${player.money}"]
     player.money -= weapon["price"]
     player.weapon_name = item
     player.weapon_damage = weapon["damage"]
     player.magazine_size = weapon["mag"]
-    # return old mag to spare
+    if item not in player.owned_weapons:
+        player.owned_weapons.append(item)
     player.spare_ammo[player.ammo_name] = player.spare_ammo.get(player.ammo_name, 0) + player.magazine
     player.magazine = 0
     return [f"🔫 Equipped **{item}**. ${player.money} left."]
@@ -447,13 +455,11 @@ def equip_ammo(player: Survivor, ammo_name: str) -> list[str]:
             return [f"Need ${ammo['price']} for {ammo_name}, you have ${player.money}"]
         player.money -= ammo["price"]
         player.owned_ammo.append(ammo_name)
-        player.spare_ammo[ammo_name] = player.spare_ammo.get(ammo_name, 0) + 12  # starter ammo
-    # Switch ammo: return current mag to its pool
+        player.spare_ammo[ammo_name] = player.spare_ammo.get(ammo_name, 0) + 12
     if player.ammo_name != ammo_name:
         player.spare_ammo[player.ammo_name] = player.spare_ammo.get(player.ammo_name, 0) + player.magazine
         player.magazine = 0
         player.ammo_name = ammo_name
-        # auto reload some from new pool
         spare = player.get_spare(ammo_name)
         if spare > 0:
             load = min(player.magazine_size, spare)
@@ -496,22 +502,15 @@ def upgrade(player: Survivor, stat: str) -> list[str]:
         return [f"📦 Mag size → **{player.magazine_size}**. Stars: {player.stars}"]
     return [f"Unknown upgrade. Stars: {player.stars}"]
 
-
 def _grant_random_elemental_drop(player: Survivor) -> list[str]:
-    """End-of-run drop: 1 single elemental bullet + 1-10 normal bullets, only if you own an elemental type"""
     elemental_owned = [a for a in player.owned_ammo if a != "Standard"]
     if not elemental_owned:
-        return []  # No elemental unlocked = no drop
-    
+        return []
     chosen = random.choice(elemental_owned)
     normal_amount = random.randint(1, 10)
-    
-    # Give 1 of the elemental + 1-10 standard
     player.spare_ammo[chosen] = player.spare_ammo.get(chosen, 0) + 1
     player.spare_ammo["Standard"] = player.spare_ammo.get("Standard", 0) + normal_amount
-    
     return [f"🎁 **Scavenged!** +1x **{chosen}** bullet + {normal_amount}x Standard bullets found!"]
-
 
 def status(player: Survivor) -> str:
     earned, needed = level_progress(player)
@@ -526,10 +525,9 @@ def status(player: Survivor) -> str:
     if player.run_active and player.enemy:
         lines.append(f"⚔️ Wave {player.wave} • {player.zombies_remaining} left • Fighting {player.enemy.name} {player.enemy.health}/{player.enemy.max_health} HP • 💵 Run: ${player.run_money_earned} | ✨ {player.run_xp_earned} XP")
     else:
-        # show all ammo pools
         pool_text = " | ".join([f"{k}: {v}" for k, v in player.spare_ammo.items() if v > 0])
         lines.append(f"💊 {player.painkillers} painkillers ({pain_left} left) • ✨ {player.full_restores} restores ({full_left} left)")
-        lines.append(f"🎒 Ammo pools: {pool_text or 'Empty'} | Owned: {', '.join(player.owned_ammo)}")
+        lines.append(f"🎒 Ammo pools: {pool_text or 'Empty'} | Owned: {', '.join(player.owned_ammo)} | Guns: {', '.join(player.owned_weapons)}")
     return "\n".join(lines)
 
 def get_status(player: Survivor) -> str:
