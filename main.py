@@ -6,6 +6,9 @@ from typing import Any, Dict
 from datetime import datetime, timezone
 
 import discord
+import logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger('zombie-bot')
 from discord import app_commands
 
 # === STORAGE (from storage.py) ===
