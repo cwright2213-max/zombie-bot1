@@ -105,7 +105,6 @@ def status_detail_embed(player: object) -> discord.Embed:
     star_text = f"💨 Dodge Lvl {player.star_dodge_upgrades} ({player.dodge_chance*100:.1f}%) | ✨ Magic Lvl {player.star_magical_upgrades} ({player.magical_bullet_chance*100:.1f}%)\n💊 Medic Lvl {player.star_medic_upgrades} ({player.medic_chance*100:.2f}%) | 🐺 Pet Lvl {player.star_pet_upgrades} ({player.pet_chance*100:.0f}% • {player.pet_damage} dmg)"
     embed.add_field(name="⭐ Star Prestige", value=star_text, inline=False)
     embed.add_field(name="💪 Money Upgrades", value=f"❤️ HP Lvl {player.health_upgrades} | 💥 Dmg Lvl {player.damage_upgrades} | 📦 Mag Lvl {player.mag_upgrades}\n🎯 Crit Lvl {player.crit_upgrades} ({player.crit_chance*100:.1f}%) | 🛡️ Armor Lvl {player.armor_upgrades} | 💰 Loot Lvl {player.scavenger_upgrades}", inline=False)
-    embed.add_field(name="⭐ Star Prestige", value=f"💥 CritDmg Lvl {player.star_crit_dmg_upgrades} ({player.crit_damage_mult:.2f}x) | 🔬 Elem Lvl {player.star_elemental_upgrades} (+{int((player.elemental_bonus-1)*100)}%)\n❤️ Fort Lvl {player.star_fortitude_upgrades} | ⭐ Hunter Lvl {player.star_hunter_upgrades} (+{int((player.star_drop_bonus-1)*100)}%)", inline=False)
     embed.add_field(name=f"🌍 {player.zone_name}", value=ammo_effectiveness_text(player), inline=False)
     return embed
 

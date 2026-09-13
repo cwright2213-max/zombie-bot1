@@ -144,8 +144,6 @@ class Survivor:
     @property
     def pet_damage(self) -> int:
         return int(self.weapon_damage * 0.25)
-        # max health: 100 base + 20 per health upgrade
-        self.max_health = 100 + self.health_upgrades * 20
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self); d["__version"] = 3; return d
     @classmethod
