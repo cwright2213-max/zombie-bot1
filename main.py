@@ -1470,6 +1470,94 @@ async def zombie_start_cmd(interaction: discord.Interaction):
     embed = combat_embed(player, msgs)
     await interaction.followup.send(embed=embed, view=CombatView(interaction.user.id, game_store))
 
+# --- ADMIN COMMANDS - ANY SERVER ADMIN CAN USE ---
+def is_server_admin(interaction: discord.Interaction) -> bool:
+    # DM check - no guild = not admin
+    if interaction.guild is None:
+        return False
+    # Check if user has Administrator permission in this server
+    try:
+        perms = interaction.user.guild_permissions
+        if perms.administrator:
+            return True
+        # Also allow Manage Guild as admin fallback
+        if perms.manage_guild:
+            return True
+    except:
+        pass
+    return False
+
+@bot.tree.command(name="addmoney", description="[ADMIN] Add money to a player")
+@app_commands.describe(user="Player to give money to (leave empty for yourself)", amount="Amount to add (e.g. 5000)")
+async def addmoney(interaction: discord.Interaction, amount: int, user: discord.User = None):
+    if not is_server_admin(interaction):
+        await interaction.response.send_message("❌ You need **Administrator** permission in this server to use this.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+    target = user or interaction.user
+    player = game_store.get(target.id)
+    player.money += amount
+    game_store.save()
+    await interaction.followup.send(f"💰 **+${amount}** added to {target.mention} → Now has **${player.money}**", ephemeral=True)
+
+@bot.tree.command(name="addstars", description="[ADMIN] Add stars to a player")
+@app_commands.describe(user="Player to give stars to", amount="Amount to add")
+async def addstars(interaction: discord.Interaction, amount: int, user: discord.User = None):
+    if not is_server_admin(interaction):
+        await interaction.response.send_message("❌ You need **Administrator** permission.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+    target = user or interaction.user
+    player = game_store.get(target.id)
+    player.stars += amount
+    game_store.save()
+    await interaction.followup.send(f"⭐ **+{amount} stars** to {target.mention} → Now has **{player.stars}** ⭐", ephemeral=True)
+
+@bot.tree.command(name="addxp", description="[ADMIN] Add XP to a player")
+@app_commands.describe(user="Player to give XP to", amount="Amount to add")
+async def addxp(interaction: discord.Interaction, amount: int, user: discord.User = None):
+    if not is_server_admin(interaction):
+        await interaction.response.send_message("❌ You need **Administrator** permission.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+    target = user or interaction.user
+    player = game_store.get(target.id)
+    player.xp += amount
+    # Recalc level based on xp (if your Survivor has level property auto)
+    game_store.save()
+    await interaction.followup.send(f"✨ **+{amount} XP** to {target.mention} → Level {player.level} | XP: {player.xp}", ephemeral=True)
+
+@bot.tree.command(name="resetplayer", description="[ADMIN] Reset a player's progress")
+@app_commands.describe(user="Player to reset")
+async def resetplayer(interaction: discord.Interaction, user: discord.User):
+    if not is_server_admin(interaction):
+        await interaction.response.send_message("❌ Administrator only.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+    # Create fresh survivor
+    from dataclasses import replace
+    fresh = game_store.get(user.id)
+    # Reset to defaults - we will create new Survivor instance
+    new_player = fresh.__class__()  # fresh Survivor
+    # Preserve user id via store logic
+    game_store.players[str(user.id)] = new_player
+    game_store.save()
+    await interaction.followup.send(f"🔄 {user.mention} has been reset to level 1!", ephemeral=True)
+
+@bot.tree.command(name="zombie_give", description="[ADMIN] Give money/stars/xp to restore a player")
+@app_commands.describe(user="Player to restore", money="Money to give", stars="Stars to give", xp="XP to give")
+async def zombie_give(interaction: discord.Interaction, user: discord.User, money: int = 0, stars: int = 0, xp: int = 0):
+    if not is_server_admin(interaction):
+        await interaction.response.send_message("❌ Administrator permission required.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+    player = game_store.get(user.id)
+    player.money += money
+    player.stars += stars
+    player.xp += xp
+    game_store.save()
+    await interaction.followup.send(f"✅ Restored {user.mention}: +${money}, +{stars}⭐, +{xp} XP\nNow: ${player.money} | {player.stars}⭐ | Lvl {player.level} ({player.xp} XP)", ephemeral=True)
+
 def main():
     import os, sys
     token = os.getenv("DISCORD_BOT_TOKEN")
