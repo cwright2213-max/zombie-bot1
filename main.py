@@ -119,12 +119,12 @@ AMMO: dict[str, dict[str, Any]] = {
     "Toxic": {"unlock_level": 110, "price": 2500, "desc": "35% poison 10 dmg x4", "effect": "poison", "cost_per_attack": 5, "box_price": 150, "box_amount": 24},
     "Shock": {"unlock_level": 160, "price": 5000, "desc": "15% stun 1 turn", "effect": "shock", "cost_per_attack": 6, "box_price": 200, "box_amount": 24},
 }
-WEAPONS: dict[str, dict[str, int]] = {
-    "Pistol": {"damage": 20, "mag": 12, "price": 0, "unlock_level": 1},
-    "Shotgun": {"damage": 45, "mag": 6, "price": 250, "unlock_level": 15},
-    "Rifle": {"damage": 35, "mag": 30, "price": 500, "unlock_level": 30},
-    "SMG": {"damage": 25, "mag": 40, "price": 900, "unlock_level": 60},
-    "Sawed-Of": {"damage": 70, "mag": 2, "price": 1800, "unlock_level": 90},
+WEAPONS: dict[str, dict[str, Any]] = {
+    "Pistol": {"damage": 20, "mag": 12, "price": 0, "unlock_level": 1, "shots": 1},
+    "Shotgun": {"damage": 45, "mag": 6, "price": 250, "unlock_level": 15, "shots": 1},
+    "Rifle": {"damage": 25, "mag": 30, "price": 2500, "unlock_level": 30, "shots": 2},
+    "SMG": {"damage": 15, "mag": 42, "price": 4000, "unlock_level": 60, "shots": 3},
+    "Sawed-Off": {"damage": 70, "mag": 2, "price": 6000, "unlock_level": 90, "shots": 1},
 }
 
 # --- DEATH LINES - SPLIT BY TYPE ---
@@ -234,6 +234,12 @@ class Survivor:
     @property
     def pet_damage(self) -> int:
         return int(self.weapon_damage * 0.25)
+    @property
+    def xp_bonus(self) -> float:
+        if self.star_xp_upgrades <= 0:
+            return 0.0
+        bonus = 0.10 + (self.star_xp_upgrades - 1) * 0.01
+        return min(bonus, 0.25)
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self); d["__version"] = 3; return d
     @classmethod
@@ -256,11 +262,13 @@ class Survivor:
             data["star_magical_upgrades"] = data.get("star_elemental_upgrades", 0)
         if "star_medic_upgrades" not in data:
             data["star_medic_upgrades"] = data.get("star_fortitude_upgrades", 0)
+        if "star_xp_upgrades" not in data:
+            data["star_xp_upgrades"] = 0
         if "star_pet_upgrades" not in data:
             data["star_pet_upgrades"] = data.get("star_hunter_upgrades", 0)
 
         # Ensure new fields exist
-        for f in ["star_dodge_upgrades", "star_magical_upgrades", "star_medic_upgrades", "star_pet_upgrades"]:
+        for f in ["star_dodge_upgrades", "star_magical_upgrades", "star_medic_upgrades", "star_pet_upgrades", "star_xp_upgrades"]:
             if f not in data:
                 data[f] = 0
 
@@ -525,6 +533,10 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
                 return ["❌ No full restores."]
             if player.health >= player.max_health:
                 return ["❤️ Full HP!"]
+            # MEDIC STAR CHECK - chance to not consume
+            if player.medic_chance > 0 and random.random() < player.medic_chance:
+                player.health = player.max_health
+                return [f"💊 **MEDIC SAVE!** Full heal kept! ({player.medic_chance*100:.1f}%) {player.max_health} HP", f"{player.full_restores} owned • ✨ Saved!"]
             player.health = player.max_health
             player.full_restores -= 1
             player.full_restores_used_this_run += 1
@@ -538,6 +550,10 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
             if player.health >= player.max_health:
                 return ["❤️ Full HP!"]
             amount = max(1, player.max_health // 4)
+            # MEDIC STAR CHECK - chance to not consume
+            if player.medic_chance > 0 and random.random() < player.medic_chance:
+                player.health = min(player.max_health, player.health + amount)
+                return [f"💊 **MEDIC SAVE!** +{amount} HP without using item! ({player.medic_chance*100:.1f}%) Now {player.health}/{player.max_health}", f"{player.painkillers} owned • ✨ Saved!"]
             player.health = min(player.max_health, player.health + amount)
             player.painkillers -= 1
             player.painkillers_used_this_run += 1
@@ -551,7 +567,19 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
     enemy = player.enemy
     if action == "attack":
         ammo_data = AMMO[player.ammo_name]
-        cost = int(ammo_data["cost_per_attack"])
+        base_cost = int(ammo_data["cost_per_attack"])
+        # NEW: Weapon shots per attack
+        weapon_data = WEAPONS.get(player.weapon_name, WEAPONS["Pistol"])
+        shots = int(weapon_data.get("shots", 1))
+        cost = base_cost * shots
+
+        # NEW: Mag size must support ammo type - e.g. Sawed-Off mag 2 can't use Shock cost 6
+        # Check if max magazine size is too small for this ammo type (even with 1 shot)
+        if player.magazine_size < base_cost:
+            return [f"❌ **{player.weapon_name} mag too small for {player.ammo_name}!**", f"Need mag size {base_cost}, you have {player.magazine_size}. Upgrade mag or use lighter ammo.", f"🔧 {player.weapon_name} {player.magazine}/{player.magazine_size} can't fit {player.ammo_name} ({base_cost}/shot)"]
+        if player.magazine_size < cost:
+            return [f"❌ **{player.weapon_name} mag too small for {shots}x {player.ammo_name}!**", f"Need mag size {cost} ({base_cost}x{shots} shots), you have {player.magazine_size}. Upgrade mag!", f"🔧 {player.weapon_name} can't do {shots}x {player.ammo_name}"]
+
         if player.magazine < cost:
             spare = player.get_spare()
             if spare <= 0:
@@ -575,15 +603,27 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
             player.magazine -= cost
         
         mod = ammo_modifier(player, player.ammo_name)
-        dmg = int(player.weapon_damage * mod)
-        is_crit = random.random() < player.crit_chance
-        if is_crit:
-            dmg = int(dmg * 2)
-        enemy.health = max(0, enemy.health - dmg)
+        total_dmg = 0
+        total_crits = 0
+        hit_details = []
+        for shot_i in range(shots):
+            dmg = int(player.weapon_damage * mod)
+            is_crit = random.random() < player.crit_chance
+            if is_crit:
+                dmg = int(dmg * 2)
+                total_crits += 1
+            enemy.health = max(0, enemy.health - dmg)
+            total_dmg += dmg
+            hit_details.append(dmg)
+            if enemy.health <= 0:
+                break
         mod_txt = f" (Zone {int(mod*100)}%)" if mod != 1.0 else ""
-        crit_txt = " **CRIT!**" if is_crit else ""
+        crit_txt = f" **{total_crits}x CRIT!**" if total_crits > 0 else ""
         magical_txt = " ✨ **MAGICAL! Free shot!**" if is_magical else ""
-        messages.append(f"🔫 Hit **{enemy.name} for {dmg}**{crit_txt}{magical_txt} using {player.ammo_name} ({cost}/shot){mod_txt}")
+        if shots > 1:
+            messages.append(f"🔫 **{shots}x** {player.weapon_name} Hit **{enemy.name} for {total_dmg}** ({'+'.join(map(str, hit_details))}){crit_txt}{magical_txt} using {player.ammo_name} ({base_cost}x{shots}={cost} ammo){mod_txt}")
+        else:
+            messages.append(f"🔫 Hit **{enemy.name} for {total_dmg}**{crit_txt}{magical_txt} using {player.ammo_name} ({cost}/shot){mod_txt}")
         
         # PET ATTACK CHECK
         if player.pet_chance > 0 and random.random() < player.pet_chance:
@@ -785,17 +825,14 @@ def upgrade(player: Survivor, stat: str) -> list[str]:
         player.mag_upgrades += 1
         return [f"📦 Mag size → **{player.magazine_size}** (+1). ${player.money} left. Lvl {player.mag_upgrades}"]
     elif canonical == "crit":
-        player.crit_chance = min(0.5, player.crit_chance + 0.02)
         player.crit_upgrades += 1
-        return [f"🎯 Crit chance → **{int(player.crit_chance*100)}%** (+2%). ${player.money} left. Lvl {player.crit_upgrades}"]
+        return [f"🎯 Crit chance → **{int(player.crit_chance*100)}%** (+2% first, +0.5% after). ${player.money} left. Lvl {player.crit_upgrades}"]
     elif canonical == "armor":
-        player.armor_reduction += 2
         player.armor_upgrades += 1
-        return [f"🛡️ Armor → **-{player.armor_reduction} dmg**. ${player.money} left. Lvl {player.armor_upgrades}"]
+        return [f"🛡️ Armor → **-{player.armor_reduction} dmg** (cap -35). ${player.money} left. Lvl {player.armor_upgrades}"]
     elif canonical == "scavenger":
-        player.scavenger_bonus += 0.05
         player.scavenger_upgrades += 1
-        return [f"💰 Loot bonus → **+{int((player.scavenger_bonus-1)*100)}%**. ${player.money} left. Lvl {player.scavenger_upgrades}"]
+        return [f"💰 Loot bonus → **+{int((player.scavenger_bonus-1)*100)}%** (+5% per lvl). ${player.money} left. Lvl {player.scavenger_upgrades}"]
     else:
         # Refund if unknown
         player.money += cost
@@ -804,32 +841,32 @@ def upgrade(player: Survivor, stat: str) -> list[str]:
 
 
 def get_star_upgrade_cost(player: Survivor, stat: str) -> int:
-    """Custom star costs: 5 to unlock, then 1 or 3 per level"""
+    """All star upgrades: 5 to unlock, 3 per level after"""
     stat = stat.lower().strip()
     alias = {
         "dodge": "dodge", "dodge_chance": "dodge", "evade": "dodge",
         "magical": "magical", "magical_bullet": "magical", "magic": "magical", "bullet": "magical", "ammo_saver": "magical",
         "medic": "medic", "medic_drop": "medic", "heal_drop": "medic",
         "pet": "pet", "pet_attack": "pet", "wolf": "pet", "dog": "pet",
+        "xp": "xp", "xp_gain": "xp", "experience": "xp", "exp": "xp",
     }
     canonical = alias.get(stat, stat)
+    lvl = 0
     if canonical == "dodge":
-        if player.star_dodge_upgrades == 0:
-            return 5
-        return 1
+        lvl = player.star_dodge_upgrades
     elif canonical == "magical":
-        if player.star_magical_upgrades == 0:
-            return 5
-        return 1
+        lvl = player.star_magical_upgrades
     elif canonical == "medic":
-        if player.star_medic_upgrades == 0:
-            return 5
-        return 1
+        lvl = player.star_medic_upgrades
     elif canonical == "pet":
-        if player.star_pet_upgrades == 0:
-            return 5
-        return 3
-    return 999
+        lvl = player.star_pet_upgrades
+    elif canonical == "xp":
+        lvl = player.star_xp_upgrades
+    if lvl == 0:
+        return 5
+    return 3
+
+
 
 def upgrade_star(player: Survivor, stat: str) -> list[str]:
     if player.run_active:
@@ -1212,7 +1249,7 @@ class ShopView(PlayerView):
         super().__init__(user_id, store, timeout)
         player = self.store.get(user_id)
         # Weapon buttons with cost and level
-        for i, wname in enumerate(["Shotgun", "Rifle", "SMG", "Sawed-Of"]):
+        for i, wname in enumerate(["Shotgun", "Rifle", "SMG", "Sawed-Off"]):
             if wname in WEAPONS:
                 w = WEAPONS[wname]
                 owned = wname in player.owned_weapons
@@ -1381,6 +1418,8 @@ class StarUpgradeView(PlayerView):
                 lvl = player.star_medic_upgrades; cur = player.medic_chance*100; cap="7%"
             elif stat == "pet":
                 lvl = player.star_pet_upgrades; cur = player.pet_chance*100; cap="10%"
+            elif stat == "xp":
+                lvl = player.star_xp_upgrades; cur = player.xp_bonus*100; cap="25%"
             label = f"{emoji} {name} {cur:.1f}% · ⭐{cost} (Lvl {lvl}/{cap})"
             btn = discord.ui.Button(label=label[:80], style=discord.ButtonStyle.primary, row=row)
             async def cb(interaction, stat=stat):
@@ -1392,6 +1431,7 @@ class StarUpgradeView(PlayerView):
         self.add_item(make_star("magical","✨","Magical",0))
         self.add_item(make_star("medic","💊","Medic",0))
         self.add_item(make_star("pet","🐺","Pet",1))
+        self.add_item(make_star("xp","✨","XP Gain",1))
     @discord.ui.button(label="⬆️ Money Upgrades", style=discord.ButtonStyle.success, row=2)
     async def money(self, interaction: discord.Interaction, _b):
         p=self.store.get(self.user_id)
@@ -1413,19 +1453,22 @@ bot = StarterBot()
 
 @bot.tree.command(name="zombie", description="Zombie Survival - main menu")
 async def zombie_cmd(interaction: discord.Interaction):
+    await interaction.response.defer()
     player = game_store.get(interaction.user.id)
-    await interaction.response.send_message(content=status(player), view=ZombieMenuView(interaction.user.id, game_store))
+    await interaction.followup.send(content=status(player), view=ZombieMenuView(interaction.user.id, game_store))
 
 @bot.tree.command(name="zombie_start", description="Start a zombie run")
 async def zombie_start_cmd(interaction: discord.Interaction):
+    await interaction.response.defer()  # Prevent timeout - fixes "didn't respond in time"
     player = game_store.get(interaction.user.id)
     if player.run_active:
-        await interaction.response.send_message(content=status(player)+"\nAlready in run!", view=CombatView(interaction.user.id, game_store), ephemeral=True)
+        embed = combat_embed(player, [f"Already in run! Wave {player.wave}"])
+        await interaction.followup.send(embed=embed, view=CombatView(interaction.user.id, game_store))
         return
     msgs = start_run(player)
     game_store.save()
     embed = combat_embed(player, msgs)
-    await interaction.response.send_message(embed=embed, view=CombatView(interaction.user.id, game_store))
+    await interaction.followup.send(embed=embed, view=CombatView(interaction.user.id, game_store))
 
 def main():
     import os, sys
@@ -1433,7 +1476,7 @@ def main():
     if not token:
         print("DISCORD_BOT_TOKEN missing")
         sys.exit(1)
-    print(f"Token found {token[:10]}... Starting CLEAN V5 - WAVES+KILLS")
+    print(f"Token found {token[:10]}... Starting FIXED V14 - crit/armor/loot/medic/pet fixed")
     bot.run(token, log_handler=None)
 
 if __name__ == "__main__":
