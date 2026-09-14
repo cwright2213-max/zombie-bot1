@@ -1381,6 +1381,114 @@ class AmmoView(PlayerView):
     def __init__(self, user_id, store):
         super().__init__(user_id, store)
         player = self.store.get(user_id)
+        # Emoji map for clean look
+        emoji_map = {
+            "Standard": "🔫",
+            "Bleed": "🩸",
+            "Incendiary": "🔥",
+            "Frostbite": "❄️",
+            "Toxic": "☠️",
+            "Shock": "⚡"
+        }
+        # Create buttons - SUPER CLEAN, just emoji + name + status
+        for i, ammo_name in enumerate(AMMO):
+            ammo = AMMO[ammo_name]
+            emoji = emoji_map.get(ammo_name, "🔹")
+            is_equipped = player.ammo_name == ammo_name
+            owned = ammo_name in player.owned_ammo
+            
+            if is_equipped:
+                label = f"{emoji} {ammo_name} ✅"
+                style = discord.ButtonStyle.success
+            elif owned:
+                label = f"{emoji} {ammo_name}"
+                style = discord.ButtonStyle.primary
+            else:
+                label = f"{emoji} {ammo_name} 🔒"
+                style = discord.ButtonStyle.secondary
+            
+            btn = discord.ui.Button(label=label[:80], style=style, row=i//2)
+            async def cb(interaction, an=ammo_name):
+                p=self.store.get(self.user_id)
+                msgs=equip_ammo(p,an)
+                self.store.save()
+                info = AMMO[an]
+                spare = p.spare_ammo.get(an, 0)
+                emoji = {"Standard":"🔫","Bleed":"🩸","Incendiary":"🔥","Frostbite":"❄️","Toxic":"☠️","Shock":"⚡"}.get(an, "🔹")
+                
+                # Build clean embed-like text - all details fully visible
+                lines = []
+                lines.extend(msgs)
+                lines.append("")
+                lines.append(f"{emoji} **{an} - Details**")
+                lines.append(f"┌ Perk: {info['desc']}")
+                lines.append(f"├ Cost: {info['cost_per_attack']} round(s) per attack")
+                lines.append(f"├ Box: ${info['box_price']} for {info['box_amount']} rounds")
+                lines.append(f"├ Unlock: ${info['price']} at Level {info['unlock_level']}")
+                lines.append(f"└ Your spare: {spare} rounds")
+                if p.ammo_name == an:
+                    lines.append("")
+                    lines.append(f"🔫 Currently equipped!")
+                lines.append("")
+                lines.append(status(p))
+                await interaction.response.edit_message(content=chr(10).join(lines), view=AmmoView(self.user_id, self.store))
+            btn.callback = cb
+            self.add_item(btn)
+        
+        # Dynamic buy button - shows current ammo and price clearly
+        cur = player.ammo_name
+        cur_data = AMMO.get(cur, AMMO["Standard"])
+        cur_emoji = emoji_map.get(cur, "📦")
+        buy_label = f"{cur_emoji} Buy {cur} Box ${cur_data['box_price']}"
+        btn_buy = discord.ui.Button(label=buy_label[:80], style=discord.ButtonStyle.primary, row=3)
+        async def buy_cb(interaction: discord.Interaction):
+            p=self.store.get(self.user_id)
+            cur_name = p.ammo_name
+            cur_d = AMMO.get(cur_name, AMMO["Standard"])
+            price = cur_d["box_price"]
+            amount = cur_d["box_amount"]
+            msgs=buy_item(p,"ammo")
+            self.store.save()
+            new_spare = p.spare_ammo.get(cur_name, 0)
+            lines = []
+            lines.extend(msgs)
+            lines.append("")
+            lines.append(f"📦 Bought {cur_name} x{amount} for ${price} | Now {new_spare} spare")
+            lines.append("")
+            lines.append(status(p))
+            await interaction.response.edit_message(content=chr(10).join(lines), view=AmmoView(self.user_id, self.store))
+        btn_buy.callback = buy_cb
+        self.add_item(btn_buy)
+        
+        btn_main = discord.ui.Button(label="🏠 Main menu", style=discord.ButtonStyle.secondary, row=3)
+        async def main_cb(interaction: discord.Interaction):
+            await interaction.response.edit_message(content=status(self.store.get(self.user_id)), embed=None, view=ZombieMenuView(self.user_id, self.store))
+        btn_main.callback = main_cb
+        self.add_item(btn_main)
+
+    async def on_timeout(self):
+        pass
+
+class ZoneView(PlayerView):
+    def __init__(self, user_id, store):
+        super().__init__(user_id, store)
+        for i, zone_name in enumerate(ZONES):
+            btn = discord.ui.Button(label=zone_name, style=discord.ButtonStyle.primary, row=i//2)
+            async def cb(interaction, zn=zone_name):
+                p=self.store.get(self.user_id); msgs=change_zone(p,zn); self.store.save()
+                await interaction.response.edit_message(content="\n".join(msgs)+"\n\n"+status(p), view=ZoneView(self.user_id, self.store))
+            btn.callback = cb
+            self.add_item(btn)
+    @discord.ui.button(label="🏠 Main menu", style=discord.ButtonStyle.secondary, row=2)
+    async def main(self, interaction: discord.Interaction, _b):
+        await interaction.response.edit_message(content=status(self.store.get(self.user_id)), view=ZombieMenuView(self.user_id, self.store))
+
+
+
+class AmmoView(PlayerView):
+    def __init__(self, user_id, store):
+        super().__init__(user_id, store)
+        player = self.store.get(user_id)
         for i, ammo_name in enumerate(AMMO):
             ammo = AMMO[ammo_name]
             cost_per = ammo["cost_per_attack"]
