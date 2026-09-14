@@ -182,7 +182,7 @@ class Survivor:
     crit_upgrades: int = 0; armor_upgrades: int = 0; scavenger_upgrades: int = 0
     # --- STAR UPGRADES (prestige) - CUSTOM 4 ---
     star_dodge_upgrades: int = 0; star_magical_upgrades: int = 0
-    star_medic_upgrades: int = 0; star_pet_upgrades: int = 0
+    star_medic_upgrades: int = 0; star_pet_upgrades: int = 0; star_xp_upgrades: int = 0
     @property
     def level(self) -> int: return level_for_xp(self.xp)
     def get_spare(self, ammo_type: str | None = None) -> int: return self.spare_ammo.get(ammo_type or self.ammo_name, 0)
@@ -877,6 +877,7 @@ def upgrade_star(player: Survivor, stat: str) -> list[str]:
         "magical": "magical", "magical_bullet": "magical", "magic": "magical", "bullet": "magical", "ammo_saver": "magical",
         "medic": "medic", "medic_drop": "medic", "heal_drop": "medic",
         "pet": "pet", "pet_attack": "pet", "wolf": "pet", "dog": "pet",
+        "xp": "xp", "xp_gain": "xp", "experience": "xp", "exp": "xp",
     }
     canonical = alias.get(stat)
     if not canonical:
@@ -911,6 +912,14 @@ def upgrade_star(player: Survivor, stat: str) -> list[str]:
         player.stars -= cost
         player.star_pet_upgrades += 1
         return [f"🐺 Wolf Pet → **{player.pet_chance*100:.0f}%** to deal {player.pet_damage} dmg (Lvl {player.star_pet_upgrades}) | Paid ⭐{cost} | ⭐ {player.stars} left | Next: ⭐{get_star_upgrade_cost(player,'pet')} (cap 10%)"]
+
+    if canonical == "xp":
+        if player.star_xp_upgrades > 0 and player.xp_bonus >= 0.25:
+            return [f"❌ XP Gain already maxed at 25%! (Lvl {player.star_xp_upgrades})"]
+        player.stars -= cost
+        player.star_xp_upgrades += 1
+        return [f"✨ XP Gain → **{player.xp_bonus*100:.1f}%** bonus XP (Lvl {player.star_xp_upgrades}) | Paid ⭐{cost} | ⭐ {player.stars} left | Next: ⭐{get_star_upgrade_cost(player,'xp')} (cap 25%)"]
+
     return ["Unknown error"]
 
 
