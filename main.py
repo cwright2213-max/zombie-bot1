@@ -1183,13 +1183,22 @@ class GameStore:
 game_store = GameStore()
 
 class PlayerView(discord.ui.View):
-    def __init__(self, user_id: int, store: GameStore, timeout: float = 180):
+    def __init__(self, user_id: int, store: GameStore, display_name: str = "Survivor", timeout: float = 180):
+        # Handle case where display_name is passed as timeout positionally (old bug compat)
+        if isinstance(display_name, (int, float)) and timeout == 180:
+            # display_name is actually timeout value
+            timeout = float(display_name)
+            display_name = "Survivor"
         super().__init__(timeout=timeout)
         self.user_id = user_id
         self.store = store
+        self.display_name = display_name
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message("Not your game!", ephemeral=True)
+            try:
+                await interaction.response.send_message("Not your game! Use /zombie", ephemeral=True)
+            except:
+                pass
             return False
         return True
 
@@ -1346,51 +1355,73 @@ class CombatView(PlayerView):
         await interaction.edit_original_response(content=None, embed=embed, view=ZombieMenuView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
 
 
+
 class HealView(PlayerView):
-    def __init__(self, user_id: int, store, timeout: float = 180):
-        super().__init__(user_id, store, timeout)
+    def __init__(self, user_id: int, store, display_name: str = "Survivor", timeout: float = 180):
+        super().__init__(user_id, store, display_name, timeout)
         player = self.store.get(user_id)
-        # Update button labels to show counts
-        # We need to dynamically set labels, so override in __init__
-        # Clear default buttons and re-add with counts
         self.clear_items()
-        # Painkillers button with count and limits
         pk_left = 3 - player.painkillers_used_this_run
         pk_label = f"💊 Painkillers ({player.painkillers}x - {pk_left} left this run)"
         pk_btn = discord.ui.Button(label=pk_label[:80], style=discord.ButtonStyle.success, row=0)
-        async def pk_cb(interaction,):
-            await interaction.response.defer()
+        async def pk_cb(interaction):
+            try:
+                await interaction.response.defer()
+            except:
+                pass
             p=self.store.get(self.user_id)
             msgs=take_action(p,"heal","painkillers")
-            await self.store.save_one_async(str(self.user_id))
+            try:
+                await self.store.save_one_async(str(self.user_id))
+            except:
+                self.store.save_one(str(self.user_id))
             embed = combat_embed(p, msgs)
-            await interaction.edit_original_response(content=None, embed=embed, view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+            try:
+                await interaction.edit_original_response(content=None, embed=embed, view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+            except Exception as e:
+                print(f"Heal CB error: {e}")
         pk_btn.callback = pk_cb
         self.add_item(pk_btn)
 
         fr_left = 1 - player.full_restores_used_this_run
         fr_label = f"✨ Full restore ({player.full_restores}x - {fr_left} left)"
         fr_btn = discord.ui.Button(label=fr_label[:80], style=discord.ButtonStyle.success, row=0)
-        async def fr_cb(interaction,):
-            await interaction.response.defer()
+        async def fr_cb(interaction):
+            try:
+                await interaction.response.defer()
+            except:
+                pass
             p=self.store.get(self.user_id)
             msgs=take_action(p,"heal","full_restore")
-            await self.store.save_one_async(str(self.user_id))
+            try:
+                await self.store.save_one_async(str(self.user_id))
+            except:
+                self.store.save_one(str(self.user_id))
             embed = combat_embed(p, msgs)
-            await interaction.edit_original_response(content=None, embed=embed, view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+            try:
+                await interaction.edit_original_response(content=None, embed=embed, view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+            except Exception as e:
+                print(f"Heal CB error: {e}")
         fr_btn.callback = fr_cb
         self.add_item(fr_btn)
 
         back_btn = discord.ui.Button(label="⬅️ Back", style=discord.ButtonStyle.secondary, row=1)
-        async def back_cb(interaction,):
-            p=self.store.get(self.user_id)
-            embed = combat_embed(p, [action_help(p)])
-            await interaction.response.edit_message(content=None, embed=embed, view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+        async def back_cb(interaction):
+            try:
+                p=self.store.get(self.user_id)
+                embed = combat_embed(p, [action_help(p)])
+                await interaction.response.edit_message(content=None, embed=embed, view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+            except Exception as e:
+                print(f"Heal back error: {e}")
+                try:
+                    await interaction.response.defer()
+                    p=self.store.get(self.user_id)
+                    embed = combat_embed(p, [action_help(p)])
+                    await interaction.edit_original_response(content=None, embed=embed, view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+                except:
+                    pass
         back_btn.callback = back_cb
         self.add_item(back_btn)
-
-
-
 
 
 
@@ -2007,7 +2038,7 @@ class StarUpgradeView(PlayerView):
 
 
 class ZoneView(PlayerView):
-    def __init__(self, user_id, store, display_name: str = "Survivor"):
+    def __init__(self, user_id, store, display_name: str = "Survivor", timeout: float = 180):
         super().__init__(user_id, store, display_name)
         for i, zone_name in enumerate(ZONES):
             btn = discord.ui.Button(label=zone_name, style=discord.ButtonStyle.primary, row=i//2)
@@ -2024,7 +2055,7 @@ class ZoneView(PlayerView):
 
 
 class ZoneView(PlayerView):
-    def __init__(self, user_id, store, display_name: str = "Survivor"):
+    def __init__(self, user_id, store, display_name: str = "Survivor", timeout: float = 180):
         super().__init__(user_id, store, display_name)
         for i, zone_name in enumerate(ZONES):
             btn = discord.ui.Button(label=zone_name, style=discord.ButtonStyle.primary, row=i//2)
