@@ -143,7 +143,7 @@ WEAPONS: dict[str, dict[str, Any]] = {
     "Sawed-Off": {"damage": 70, "mag": 2, "price": 6000, "unlock_level": 90, "shots": 1},
 }
 
-# --- DEATH LINES - SPLIT BY TYPE ---
+# --- DEATH LINES - SPLIT BY TYPE (BIG VARIETY - no repeats) ---
 NORMAL_DEATH_LINES = [
     "Bro really thought he was the main character 💀 LMAO dead.",
     "Your K/D is so bad the zombies are laughing at you.",
@@ -153,6 +153,28 @@ NORMAL_DEATH_LINES = [
     "Skill issue. Literally. Uninstall, survivor.",
     "The zombies didn't even have to try. You just sucked.",
     "Nice try, hero. The graveyard just got one plot fuller.",
+    "You died faster than your WiFi drops. Impressive.",
+    "Imagine training for years just to die to a Walker. Couldn't be me.",
+    "The zombies sent a thank you card for the free meal.",
+    "You fought like a stormtrooper. Blind and useless.",
+    "My grandma fights better than you, and she's been dead for 10 years.",
+    "You got clapped so hard the zombies had to respawn.",
+    "That was the worst performance since your last rank game.",
+    "You died so fast the death screen didn't even load properly.",
+    "The Brute didn't even feel you. You were just tickling it.",
+    "You got humbled by a zombie with no brain. Think about that.",
+    "Bro got 1v1'd by a Walker and LOST. Log off.",
+    "Your gameplay is so bad the zombies felt bad eating you.",
+    "You just donated your loot to the zombie foundation. Thanks!",
+    "You died like a tutorial NPC. Zero aura.",
+    "The zombies are writing a book: 'How to kill YOU in 2 seconds'.",
+    "You got turned into a highlight reel for the hoard.",
+    "Even the Mutant is disappointed. You were that easy.",
+    "You got packed up so quick I didn't even see it happen.",
+    "You call that fighting? I call that free XP for zombies.",
+    "You just made the zombies' day. Free lunch!",
+    "The Graveyard has a VIP section and you're banned from it. Too bad.",
+    "You died with full meds in your pocket. Classic.",
 ]
 
 NO_AMMO_DEATH_LINES = [
@@ -164,6 +186,61 @@ NO_AMMO_DEATH_LINES = [
     "You ran out of bullets AND braincells at the same time. Impressive.",
     "No ammo? No chance. No brain? Obviously.",
     "My man really tried to fist-fight the hoard. Respectfully, dumbass.",
+    "Bro forgot to reload in a zombie apocalypse. Genius move.",
+    "You had ONE job: bring ammo. You failed it.",
+    "Running out of ammo mid-fight? That's rookie hour, kid.",
+    "You spent all your money on drip and forgot bullets. LMAO.",
+    "CLICK CLICK BOOM... oh wait, just CLICK. You're dead.",
+    "Imagine flexing a Sawed-Off with no shells. Embarrassing.",
+    "You tried to scare them with an empty mag. They laughed.",
+    "No bullets, no brain, no hope. The triple combo.",
+    "You counted your money but not your bullets. Priorities.",
+    "The zombies heard CLICK and knew dinner was served.",
+    "You brought a knife to a gunfight and didn't even bring the knife.",
+    "Your ammo counter hit 0 and so did your survival chance.",
+    "Should've looted more, shot less. You did the opposite, dumbass.",
+    "You ran out of ammo faster than you run from your problems.",
+    "Empty mag, empty head. Perfect match.",
+    "The shop sells ammo for a reason. You ignored it and died.",
+    "You had 0 bullets and 100% confidence. Now you have 0 of both.",
+    "Bro really thought intimidation would kill zombies. Cute.",
+    "You conserved ammo so well you died with 0 kills. Pro strat.",
+    "The zombies thank you for saving them ammo. You did their job.",
+    "You played yourself. No ammo = no win. Simple math.",
+    "Next time buy bullets, not excuses.",
+]
+
+FLEE_LINES = [
+    "Ran away? Smartest play you've made all week, survivor.",
+    "Fled like a coward, lived like a coward. Classic you.",
+    "You ran so fast even the zombies got confused. Respect.",
+    "Tactical retreat? Nah, you just panicked and bolted.",
+    "At least you're good at ONE thing — running away.",
+    "The hoard will remember you as 'that guy who ran'. Legend.",
+    "Fleeing again? The graveyard's disappointed you're still alive.",
+    "You fled like a legend! ...a legend of being scared.",
+    "You ran away so fast you left your dignity behind.",
+    "The zombies are still laughing at how fast you bolted.",
+    "Retreat! Retreat! The bravest chicken in the apocalypse.",
+    "You fled faster than you die. That's actually progress.",
+    "The zombies didn't even chase you. You weren't worth it.",
+    "You ran like your mom called you for dinner. Adorable.",
+    "Escaped with your life but not your pride. Worth it?",
+    "You lived to fight another day... and lose another day.",
+    "The hoard watched you run and thought 'same, bro, same'.",
+    "You hit the eject button so fast I got whiplash.",
+    "Fleeing is a valid strat, but you made it look embarrassing.",
+    "You ran like the rent was due and zombies were landlords.",
+    "Congratulations, you survived by being a coward. Trophy?",
+    "You fled like a pro. Too bad you fight like an amateur.",
+    "The zombies let you go. You were too boring to eat.",
+    "You escaped! The zombies are filing a missing person report: your skill.",
+    "You lived, but at what cost? Your reputation, apparently.",
+    "You ran so far you're back at level 1. Oh wait...",
+    "Tactical retreat or just pure fear? We all know the answer.",
+    "You yeeted out of there like your life depended on it. It did.",
+    "Fleeing is smart, but you made it look like an Olympic sport.",
+    "You survived, but the hoard is still cringing at your exit.",
 ]
 
 def get_cocky_line() -> str:
@@ -173,6 +250,10 @@ def get_cocky_line() -> str:
 def get_no_ammo_line() -> str:
     import random
     return random.choice(NO_AMMO_DEATH_LINES)
+
+def get_flee_line() -> str:
+    import random
+    return random.choice(FLEE_LINES)
 
 
 ZOMBIES: dict[str, dict[str, int]] = {
@@ -691,7 +772,7 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
         player.run_active = False
         player.enemy = None
         player.health = player.max_health
-        messages.append(f"🏃 You fled like a legend! Kept ${player.run_money_earned} • {player.run_xp_earned} XP this run. Full healed!")
+        messages.append(f"🏃 {get_flee_line()} Kept ${player.run_money_earned} • {player.run_xp_earned} XP this run. Full healed!")
         messages.extend(_grant_end_of_run_rewards(player))
         return messages
     else:
@@ -1202,6 +1283,41 @@ class PlayerView(discord.ui.View):
             return False
         return True
 
+
+class RunEndedView(PlayerView):
+    """End of run screen that disappears when you press any button"""
+    def __init__(self, user_id: int, store, display_name: str = "Survivor", end_embed: discord.Embed = None):
+        super().__init__(user_id, store, display_name, timeout=180)
+        self.end_embed = end_embed
+
+        btn_continue = discord.ui.Button(label="🏠 Main Menu", style=discord.ButtonStyle.success, row=0)
+        async def cont_cb(interaction: discord.Interaction):
+            p = self.store.get(self.user_id)
+            name = getattr(self, "display_name", "Survivor")
+            await interaction.response.edit_message(content=status(p, display_name=name), embed=None, view=ZombieMenuView(self.user_id, self.store, display_name=name))
+        btn_continue.callback = cont_cb
+        self.add_item(btn_continue)
+
+        btn_shop = discord.ui.Button(label="🛒 Shop", style=discord.ButtonStyle.primary, row=0)
+        async def shop_cb(interaction: discord.Interaction):
+            p = self.store.get(self.user_id)
+            hub = ShopHubView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"))
+            await interaction.response.edit_message(content=hub.get_shop_text(p), embed=None, view=hub)
+        btn_shop.callback = shop_cb
+        self.add_item(btn_shop)
+
+        btn_again = discord.ui.Button(label="▶️ Start Run", style=discord.ButtonStyle.primary, row=0)
+        async def again_cb(interaction: discord.Interaction):
+            p = self.store.get(self.user_id)
+            msgs = start_run(p)
+            self.store.save()
+            embed = combat_embed(p, msgs)
+            await interaction.response.edit_message(content=None, embed=embed, view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+        btn_again.callback = again_cb
+        self.add_item(btn_again)
+
+
+
 class ZombieMenuView(PlayerView):
     def __init__(self, user_id: int, store, display_name: str = "Survivor"):
         super().__init__(user_id, store, display_name)
@@ -1230,7 +1346,7 @@ class ZombieMenuView(PlayerView):
         async def shop_cb(interaction: discord.Interaction):
             p = self.store.get(self.user_id)
             hub = ShopHubView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"))
-            await interaction.response.edit_message(content=hub.get_shop_text(p), view=hub)
+            await interaction.response.edit_message(content=hub.get_shop_text(p), embed=None, view=hub)
         btn_shop.callback = shop_cb
         self.add_item(btn_shop)
 
@@ -1251,7 +1367,7 @@ class ZombieMenuView(PlayerView):
                 lines.append(f"🗺️ **{zn}** {status_icon}{sel}")
                 lines.append(f"{zd['desc']} | Money x{zd['money_mult']} | XP x{zd['xp_mult']}")
                 lines.append("")
-            await interaction.response.edit_message(content="\n".join(lines), view=ZoneView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+            await interaction.response.edit_message(content="\n".join(lines), embed=None, view=ZoneView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
         btn_zones.callback = zones_cb
         self.add_item(btn_zones)
 
@@ -1259,7 +1375,7 @@ class ZombieMenuView(PlayerView):
         async def ammo_cb(interaction: discord.Interaction):
             p = self.store.get(self.user_id)
             view = AmmoShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"))
-            await interaction.response.edit_message(content=view.get_shop_text(p), view=view)
+            await interaction.response.edit_message(content=view.get_shop_text(p), embed=None, view=view)
         btn_ammo.callback = ammo_cb
         self.add_item(btn_ammo)
 
@@ -1267,7 +1383,7 @@ class ZombieMenuView(PlayerView):
         async def up_cb(interaction: discord.Interaction):
             p = self.store.get(self.user_id)
             view = UpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"))
-            await interaction.response.edit_message(content=view.get_shop_text(p), view=view)
+            await interaction.response.edit_message(content=view.get_shop_text(p), embed=None, view=view)
         btn_up.callback = up_cb
         self.add_item(btn_up)
 
@@ -1281,7 +1397,7 @@ class ZombieMenuView(PlayerView):
                 self.display_name = name
             except:
                 pass
-            await interaction.response.edit_message(content=status(p, display_name=name), view=ZombieMenuView(self.user_id, self.store, display_name=name))
+            await interaction.response.edit_message(content=status(p, display_name=name), embed=None, view=ZombieMenuView(self.user_id, self.store, display_name=name))
         btn_refresh.callback = refresh_cb
         self.add_item(btn_refresh)
 
@@ -1304,8 +1420,8 @@ class CombatView(PlayerView):
             embed.add_field(name="🌊 Waves", value=f"{player.wave - 1 if player.run_zombies_killed>0 else 0} survived\nReached Wave {player.wave}", inline=True)
             embed.add_field(name="🧟 Kills", value=f"{player.run_zombies_killed} zombies", inline=True)
             embed.add_field(name="💰 Rewards", value=f"+${player.run_money_earned}\n+{player.run_xp_earned} XP", inline=True)
-            embed.set_footer(text=f"HP restored to {player.max_health}/{player.max_health} • Use Start run for another go")
-            await interaction.edit_original_response(content=None, embed=embed, view=ZombieMenuView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+            embed.set_footer(text=f"HP restored to {player.max_health}/{player.max_health} • Press any button to continue")
+            await interaction.edit_original_response(content=None, embed=embed, view=RunEndedView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), end_embed=embed))
         else:
             embed = combat_embed(player, msgs)
             await interaction.edit_original_response(content=None, embed=embed, view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
@@ -1325,8 +1441,8 @@ class CombatView(PlayerView):
             embed.add_field(name="🌊 Waves", value=f"{player.wave - 1 if player.run_zombies_killed>0 else 0} survived\nReached Wave {player.wave}", inline=True)
             embed.add_field(name="🧟 Kills", value=f"{player.run_zombies_killed} zombies", inline=True)
             embed.add_field(name="💰 Rewards", value=f"+${player.run_money_earned}\n+{player.run_xp_earned} XP", inline=True)
-            embed.set_footer(text=f"HP restored to {player.max_health}/{player.max_health}")
-            await interaction.edit_original_response(content=None, embed=embed, view=ZombieMenuView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+            embed.set_footer(text=f"HP restored to {player.max_health}/{player.max_health} • Press any button to continue")
+            await interaction.edit_original_response(content=None, embed=embed, view=RunEndedView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), end_embed=embed))
         else:
             embed = combat_embed(player, msgs)
             await interaction.edit_original_response(content=None, embed=embed, view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
@@ -1335,7 +1451,7 @@ class CombatView(PlayerView):
     async def heal(self, interaction: discord.Interaction, _b):
         player = self.store.get(self.user_id)
         embed = combat_embed(player, ["Choose heal item"])
-        await interaction.response.edit_message(content=None, embed=embed, view=HealView(self.user_id, self.store))
+        await interaction.response.edit_message(content=None, embed=embed, view=HealView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
 
     @discord.ui.button(label="🏃 Flee", style=discord.ButtonStyle.secondary, row=0)
     async def flee(self, interaction: discord.Interaction, _b):
@@ -1343,16 +1459,20 @@ class CombatView(PlayerView):
         player = self.store.get(self.user_id)
         msgs = take_action(player, "flee")
         await self.store.save_one_async(str(self.user_id))
-        embed = discord.Embed(
-            title="🏃 You Fled!",
-            description="\n".join(msgs),
-            color=discord.Color.green()
-        )
-        embed.add_field(name="🌊 Waves", value=f"{player.wave} survived\nReached Wave {player.wave}", inline=True)
-        embed.add_field(name="🧟 Kills", value=f"{player.run_zombies_killed} zombies", inline=True)
-        embed.add_field(name="💰 Kept", value=f"+${player.run_money_earned}\n+{player.run_xp_earned} XP", inline=True)
-        embed.set_footer(text=f"HP restored to {player.max_health}/{player.max_health} • Fleeing keeps all rewards")
-        await interaction.edit_original_response(content=None, embed=embed, view=ZombieMenuView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+        if not player.run_active:
+            embed = discord.Embed(
+                title="🏃 Escaped!",
+                description="\n".join(msgs),
+                color=discord.Color.blue()
+            )
+            embed.add_field(name="🌊 Waves", value=f"{player.wave - 1 if player.run_zombies_killed>0 else 0} survived\nReached Wave {player.wave}", inline=True)
+            embed.add_field(name="🧟 Kills", value=f"{player.run_zombies_killed} zombies", inline=True)
+            embed.add_field(name="💰 Rewards", value=f"+${player.run_money_earned}\n+{player.run_xp_earned} XP", inline=True)
+            embed.set_footer(text=f"HP restored to {player.max_health}/{player.max_health} • Press any button to continue")
+            await interaction.edit_original_response(content=None, embed=embed, view=RunEndedView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), end_embed=embed))
+        else:
+            embed = combat_embed(player, msgs)
+            await interaction.edit_original_response(content=None, embed=embed, view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
 
 
 
@@ -1450,27 +1570,27 @@ class ShopHubView(PlayerView):
     @discord.ui.button(label="🔫", style=discord.ButtonStyle.primary, row=0)
     async def weapons_btn(self, interaction: discord.Interaction, _b):
         p=self.store.get(self.user_id)
-        await interaction.response.edit_message(content=self.get_shop_text(p) + f"\n\n🔫 Opening weapons shop...", view=WeaponShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+        await interaction.response.edit_message(content=WeaponShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")).get_shop_text(p), embed=None, view=WeaponShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
 
     @discord.ui.button(label="🧪", style=discord.ButtonStyle.primary, row=0)
     async def ammo_btn(self, interaction: discord.Interaction, _b):
         p=self.store.get(self.user_id)
-        await interaction.response.edit_message(content=self.get_shop_text(p), view=AmmoShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+        await interaction.response.edit_message(content=AmmoShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")).get_shop_text(p), embed=None, view=AmmoShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
 
     @discord.ui.button(label="💊", style=discord.ButtonStyle.primary, row=0)
     async def meds_btn(self, interaction: discord.Interaction, _b):
         p=self.store.get(self.user_id)
-        await interaction.response.edit_message(content=self.get_shop_text(p), view=MedsShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+        await interaction.response.edit_message(content=MedsShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")).get_shop_text(p), embed=None, view=MedsShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
 
     @discord.ui.button(label="⬆️", style=discord.ButtonStyle.primary, row=0)
     async def upgrades_btn(self, interaction: discord.Interaction, _b):
         p=self.store.get(self.user_id)
-        await interaction.response.edit_message(content=status(p, display_name=getattr(self, "display_name", "Survivor")), view=UpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+        await interaction.response.edit_message(content=UpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")).get_shop_text(p), embed=None, view=UpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
 
     @discord.ui.button(label="⭐", style=discord.ButtonStyle.primary, row=0)
     async def stars_btn(self, interaction: discord.Interaction, _b):
         p=self.store.get(self.user_id)
-        await interaction.response.edit_message(content=status(p, display_name=getattr(self, "display_name", "Survivor")) + f"\n💰 ${p.money} | ⭐ {p.stars} flex\n**STAR PRESTIGE**", view=StarUpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+        await interaction.response.edit_message(content=StarUpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")).get_shop_text(p), embed=None, view=StarUpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
 
     @discord.ui.button(label="Return", style=discord.ButtonStyle.secondary, row=1)
     async def ret(self, interaction: discord.Interaction, _b):
@@ -1482,7 +1602,7 @@ class ShopHubView(PlayerView):
         except:
             pass
         p=self.store.get(self.user_id)
-        await interaction.response.edit_message(content=status(p, display_name=name), view=ZombieMenuView(self.user_id, self.store, display_name=name))
+        await interaction.response.edit_message(content=status(p, display_name=name), embed=None, view=ZombieMenuView(self.user_id, self.store, display_name=name))
 
 # Keep backward compat alias
 ShopView = ShopHubView
