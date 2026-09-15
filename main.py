@@ -1,3 +1,4 @@
+
 """Ultimate clean bot v4 - waves + kills, no Total Money Earned"""
 import os, sys, json, random, logging
 from dataclasses import asdict, dataclass, field
@@ -338,14 +339,19 @@ def ammo_effectiveness_text(player: Survivor) -> str:
     return f"**Bonus:** {bonus}\n**Penalty:** {penalty}"
 
 def xp_to_next_level(level: int) -> int:
-    # FAST START: levels 1-10 are introduction - smooth and quick
+    # STRETCHED: ~800 runs to 250 - balanced for tonight
     if level <= 5:
-        return 50 + (level - 1) * 15  # 50,65,80,95,110 = 400 total to reach lvl6
+        return 50 + (level - 1) * 15
     elif level <= 10:
-        return 110 + (level - 5) * 20  # 130,150,170,190,210 = 850 more, 1250 total to reach 11
+        return 110 + (level - 5) * 20
+    elif level <= 50:
+        return 200 + (level - 10) * 40 + (level - 1) * 10
+    elif level <= 100:
+        return 350 + (level - 10) * 50 + (level - 1) * 15
+    elif level <= 150:
+        return 550 + (level - 10) * 60 + (level - 1) * 20
     else:
-        # HILL CLIMB: after 10, grind kicks in
-        return 200 + (level - 10) * 35 + (level - 1) * 10
+        return 700 + (level - 10) * 75 + (level - 1) * 28
 
 def level_for_xp(total_xp: int) -> int:
     level = 1
