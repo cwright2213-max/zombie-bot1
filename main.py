@@ -109,6 +109,8 @@ def combat_embed(player, last_msgs=None):
         value=f"`{e_bar}`\n⚔️ ~{e_dmg} dmg",
         inline=False
     )
+    if player.enemy and player.enemy.is_bloater:
+        embed.add_field(name=f"💣 BLOATER - {player.enemy.bloater_timer} ATTACKS LEFT!", value=f"⏰ Kill it in {player.enemy.bloater_timer} attacks or take {int(BLOATER_EXPLODE_PCT*100)}% max HP damage! Solo wave - reward if you survive!", inline=False)
     if last_msgs:
         clean = [m for m in last_msgs if m and "HP restored" not in m and "Waves survived" not in m][:3]
         if clean:
@@ -127,6 +129,19 @@ ZONES: dict[str, dict[str, Any]] = {
     "Toxic Wasteland": {"min_level": 150, "hp_mult": 9.0, "dmg_mult": 2.6, "money_mult": 7.5, "xp_mult": 3.2, "desc": "A green haze where toxic rounds shine. Bring real gear.", "weights": [15, 15, 35, 35], "ammo_mods": {"Standard": 1.00, "Bleed": 1.00, "Incendiary": 1.10, "Frostbite": 1.00, "Toxic": 1.50, "Shock": 0.90}},
     "The Void": {"min_level": 200, "hp_mult": 14.0, "dmg_mult": 3.4, "money_mult": 10.0, "xp_mult": 4.5, "desc": "Endgame. Everything wants you dead. 3-4 shots? Not here.", "weights": [10, 10, 30, 50], "ammo_mods": {"Standard": 1.00, "Bleed": 1.10, "Incendiary": 1.15, "Frostbite": 1.10, "Toxic": 1.25, "Shock": 1.50}},
 }
+ZONE_ORDER = ["Graveyard", "Mega Death City", "Frostbitten Outskirts", "Toxic Wasteland", "The Void"]
+# Bloater config - run ender
+BLOATER_BASE = {"health": 280, "damage": 4, "money": 350, "xp": 120}
+BLOATER_MAX_PER_ZONE = {
+    "Graveyard": 1,
+    "Mega Death City": 2,
+    "Frostbitten Outskirts": 3,
+    "Toxic Wasteland": 4,
+    "The Void": 5,
+}
+BLOATER_MIN_WAVE = 5
+BLOATER_FUSE = 5  # attacks before explosion
+BLOATER_EXPLODE_PCT = 0.65  # 65% max HP
 AMMO: dict[str, dict[str, Any]] = {
     "Standard": {"unlock_level": 1, "price": 0, "desc": "Reliable regular lead.", "effect": None, "cost_per_attack": 1, "box_price": 15, "box_amount": 24},
     "Bleed": {"unlock_level": 10, "price": 200, "desc": "25% bleed 15 dmg x3", "effect": "bleed", "cost_per_attack": 2, "box_price": 50, "box_amount": 24},
@@ -265,6 +280,8 @@ ZOMBIES: dict[str, dict[str, int]] = {
 @dataclass
 class Enemy:
     name: str; health: int; max_health: int; damage: int; money_reward: int; xp_reward: int; effects: dict[str, int] = field(default_factory=dict)
+    is_bloater: bool = False
+    bloater_timer: int = 0  # fuse countdown for Bloater
 @dataclass
 class Survivor:
     max_health: int = 100; health: int = 100; money: int = 0; xp: int = 0; stars: int = 0
@@ -274,6 +291,9 @@ class Survivor:
     run_money_earned: int = 0; run_xp_earned: int = 0; run_zombies_killed: int = 0; zone_name: str = "Graveyard"; ammo_name: str = "Standard"
     owned_ammo: list[str] = field(default_factory=lambda: ["Standard"]); owned_weapons: list[str] = field(default_factory=lambda: ["Pistol"])
     run_active: bool = False; wave: int = 0; zombies_remaining: int = 0; enemy: Enemy | None = None
+    # --- Bloater tracking ---
+    bloaters_spawned_this_run: int = 0
+    bloater_cooldown: int = 0  # waves since last bloater to avoid back-to-back
     # --- NEW: permanent upgrade counters ---
     damage_upgrades: int = 0; health_upgrades: int = 0; mag_upgrades: int = 0
     crit_upgrades: int = 0; armor_upgrades: int = 0; scavenger_upgrades: int = 0
@@ -387,6 +407,7 @@ class Survivor:
         allowed["spare_ammo"] = spare; allowed["enemy"] = enemy
         allowed.setdefault("painkillers_used_this_run", 0); allowed.setdefault("full_restores_used_this_run", 0)
         allowed.setdefault("run_money_earned", 0); allowed.setdefault("run_xp_earned", 0)
+        allowed.setdefault("bloaters_spawned_this_run", 0); allowed.setdefault("bloater_cooldown", 0)
         allowed.setdefault("owned_ammo", ["Standard"]); allowed.setdefault("owned_weapons", ["Pistol"])
         if "Pistol" not in allowed["owned_weapons"]: allowed["owned_weapons"].append("Pistol")
         if "stars" not in data: allowed["stars"] = max(0, level_for_xp(int(data.get("xp", 0))) - 1)
@@ -465,12 +486,62 @@ def level_progress(player: Survivor) -> tuple[int, int]:
         level += 1
     return earned, xp_to_next_level(level)
 
+def _should_spawn_bloater(player: Survivor) -> bool:
+    """Decide if Bloater should spawn this enemy slot - balanced scaling"""
+    if player.wave < BLOATER_MIN_WAVE:
+        return False
+    max_allowed = BLOATER_MAX_PER_ZONE.get(player.zone_name, 1)
+    if player.bloaters_spawned_this_run >= max_allowed:
+        return False
+    if player.bloater_cooldown > 0:
+        return False
+    # Chance scales with wave: 5% at W5, +3% per wave, +2% per zone tier, cap 35%
+    try:
+        zone_idx = ZONE_ORDER.index(player.zone_name)
+    except:
+        zone_idx = 0
+    base_chance = 0.05 + (player.wave - BLOATER_MIN_WAVE) * 0.03 + zone_idx * 0.02
+    chance = min(0.35, base_chance)
+    return random.random() < chance
+
+def _make_bloater_enemy(player: Survivor) -> Enemy:
+    zone = zone_for(player)
+    # Bloater health scales but not insane: base 280 + wave*12 * hp_mult
+    health = int((BLOATER_BASE["health"] + (player.wave - 1) * 12) * zone["hp_mult"] * 0.8)
+    # Damage is low ~4 as requested, but scale slightly with zone
+    dmg = int(BLOATER_BASE["damage"] * zone["dmg_mult"])
+    dmg = max(1, min(dmg, 8))  # keep it 1-8 max
+    money = int(BLOATER_BASE["money"] * zone["money_mult"] * 1.5)
+    xp = int(BLOATER_BASE["xp"] * zone["xp_mult"] * 1.5)
+    return Enemy(
+        name="Bloater",
+        health=health,
+        max_health=health,
+        damage=dmg,
+        money_reward=money,
+        xp_reward=xp,
+        is_bloater=True,
+        bloater_timer=BLOATER_FUSE
+    )
+
 def spawn_enemy(player: Survivor) -> Enemy:
+    # Bloater check first - if eligible, spawn it as solo wave boss
+    if _should_spawn_bloater(player):
+        bloater = _make_bloater_enemy(player)
+        player.bloaters_spawned_this_run += 1
+        player.bloater_cooldown = 2  # no back-to-back bloaters
+        # Solo wave: only bloater this round = reward
+        player.zombies_remaining = 1
+        return bloater
+
     zone = zone_for(player)
     name = random.choices(list(ZOMBIES), weights=zone["weights"])[0]
     base = ZOMBIES[name]
     health = int((base["health"] + (player.wave - 1) * 6) * zone["hp_mult"])
     damage = int((base["damage"] + (player.wave - 1) // 2) * zone["dmg_mult"])
+    # Decrement bloater cooldown if any
+    if player.bloater_cooldown > 0:
+        player.bloater_cooldown -= 1
     return Enemy(name=name, health=health, max_health=health, damage=damage, money_reward=int(base["money"]*zone["money_mult"]), xp_reward=int(base["xp"]*zone["xp_mult"]))
 
 def start_run(player: Survivor) -> list[str]:
@@ -492,6 +563,8 @@ def start_run(player: Survivor) -> list[str]:
     player.run_money_earned = 0
     player.run_xp_earned = 0
     player.run_zombies_killed = 0
+    player.bloaters_spawned_this_run = 0
+    player.bloater_cooldown = 0
     player.wave = 1
     player.zombies_remaining = 3
     player.run_active = True
@@ -503,6 +576,8 @@ def action_help(player: Survivor) -> str:
     if player.enemy is None:
         return "Choose your next move."
     cost = AMMO[player.ammo_name]["cost_per_attack"]
+    if player.enemy.is_bloater:
+        return f"💣 BLOATER {player.enemy.bloater_timer} attacks left! {player.enemy.health} HP | 🔫 {player.ammo_name} {player.magazine}/{player.magazine_size} | 🧟 {player.enemy.name} 4 dmg"
     return f"🔫 {player.ammo_name} {player.magazine}/{player.magazine_size} ({cost}/shot) | spare: {player.get_spare()} | 🧟 {player.enemy.name} {player.enemy.health} HP"
 
 def _enemy_damage(player: Survivor) -> list[str]:
@@ -594,15 +669,22 @@ def _finish_enemy(player: Survivor) -> list[str]:
                 player.full_restores += 1
                 messages.append(f"✨ **Medic drop!** +1 full restore on wave clear! ({player.medic_chance*100:.2f}% chance)")
         # FIX: Wave bonus now also respects Loot upgrade
+        # Check if this was a bloater solo wave - give extra reward
+        was_bloater = enemy.is_bloater if hasattr(enemy, 'is_bloater') else False
         base_bonus = int(10 * player.wave * zone_for(player)["money_mult"])
+        if was_bloater:
+            base_bonus = int(base_bonus * 2.5)  # big reward for surviving bloater
         bonus = int(base_bonus * player.scavenger_bonus)
         player.money += bonus
         player.run_money_earned += bonus
-        player.spare_ammo[player.ammo_name] = player.spare_ammo.get(player.ammo_name, 0) + 5
+        player.spare_ammo[player.ammo_name] = player.spare_ammo.get(player.ammo_name, 0) + (10 if was_bloater else 5)
         player.wave += 1
         player.zombies_remaining = player.wave + 2
-        player.health = min(player.max_health, player.health + 5)
-        messages.append(f"🌊 **Wave cleared!** +${bonus} • +5 {player.ammo_name} ammo • +5 HP. Wave {player.wave} - {player.zombies_remaining} zombies!")
+        player.health = min(player.max_health, player.health + (15 if was_bloater else 5))
+        if was_bloater:
+            messages.append(f"💣 **BLOATER SURVIVED! SOLO WAVE REWARD!** +${bonus} • +10 {player.ammo_name} ammo • +15 HP! Wave {player.wave} - {player.zombies_remaining} zombies! 🎉")
+        else:
+            messages.append(f"🌊 **Wave cleared!** +${bonus} • +5 {player.ammo_name} ammo • +5 HP. Wave {player.wave} - {player.zombies_remaining} zombies!")
     player.enemy = spawn_enemy(player)
     messages.append(f"🧟 **{player.enemy.name}** appears! {player.enemy.health} HP")
     return messages
@@ -734,6 +816,36 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
             pet_dmg = player.pet_damage
             enemy.health = max(0, enemy.health - pet_dmg)
             messages.append(f"🐺 **Wolf bites {enemy.name} for {pet_dmg} dmg!** ({player.pet_chance*100:.0f}% chance)")
+
+        # BLOATER TICKING BOMB LOGIC - 5 attacks then 65% max HP explosion
+        if enemy.is_bloater and enemy.health > 0:
+            enemy.bloater_timer -= 1
+            if enemy.bloater_timer > 0:
+                messages.append(f"⏰ **BLOATER TICKING!** {enemy.bloater_timer} attacks left before it EXPLODES! 💣")
+            else:
+                # BOOM
+                explode_dmg = int(player.max_health * BLOATER_EXPLODE_PCT)
+                # Armor reduces explosion a bit
+                explode_dmg = max(1, explode_dmg - player.armor_reduction)
+                player.health = max(0, player.health - explode_dmg)
+                messages.append(f"💥 **BLOATER EXPLODED!** Deals {explode_dmg} dmg! ({int(BLOATER_EXPLODE_PCT*100)}% of max HP!)")
+                # Bloater dies in explosion
+                enemy.health = 0
+                if player.health <= 0:
+                    # Player dies from explosion
+                    player.health = player.max_health
+                    player.spare_ammo[player.ammo_name] = player.spare_ammo.get(player.ammo_name, 0) + player.magazine
+                    player.magazine = 0
+                    player.run_active = False
+                    player.enemy = None
+                    msgs = [
+                        f"💀 **BLOATER BLEW YOU UP!** {get_cocky_line()}",
+                        f"⏰ You had 5 attacks and failed. {explode_dmg} dmg explosion ended you.",
+                        f"🌊 Waves: {player.wave} | 🧟 Kills: {player.run_zombies_killed} | 💰 ${player.run_money_earned} | ✨ {player.run_xp_earned} XP"
+                    ]
+                    msgs.extend(_grant_end_of_run_rewards(player))
+                    return messages + msgs
+
         effect = ammo_data["effect"]
         chances = {"bleed": 0.25, "burn": 0.30, "freeze": 0.20, "poison": 0.35, "shock": 0.15}
         if effect and random.random() < chances[effect]:
