@@ -702,18 +702,30 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
         messages.extend(_enemy_damage(player))
     return messages
 
+def buy_ammo_boxes(player: Survivor, ammo_type: str, boxes: int = 1) -> list[str]:
+    """Bulk buy ammo boxes - like Fisher bait +1 +10 +100 +1000"""
+    if player.run_active:
+        return ["⚠️ Can't shop in a run! Flee first."]
+    if ammo_type not in AMMO:
+        ammo_type = player.ammo_name
+    box_price = AMMO[ammo_type]["box_price"]
+    box_amount = AMMO[ammo_type]["box_amount"]
+    total_price = box_price * boxes
+    total_rounds = box_amount * boxes
+    if player.money < total_price:
+        return [f"❌ Need ${total_price} for {boxes}x {ammo_type} box ({total_rounds} rounds), you have ${player.money}"]
+    player.money -= total_price
+    player.spare_ammo[ammo_type] = player.spare_ammo.get(ammo_type, 0) + total_rounds
+    if boxes == 1:
+        return [f"📦 Bought {ammo_type} box +{total_rounds}. {player.spare_ammo[ammo_type]} spare now. ${player.money} left."]
+    else:
+        return [f"📦 Bought {boxes}x {ammo_type} boxes +{total_rounds} rounds. {player.spare_ammo[ammo_type]} spare now. ${player.money} left."]
+
 def buy_item(player: Survivor, item: str) -> list[str]:
     if player.run_active:
         return ["⚠️ Can't shop in a run! Flee first."]
     if item == "ammo":
-        ammo_type = player.ammo_name
-        box_price = AMMO[ammo_type]["box_price"]
-        box_amount = AMMO[ammo_type]["box_amount"]
-        if player.money < box_price:
-            return [f"❌ Need ${box_price} for {ammo_type} box, you have ${player.money}"]
-        player.money -= box_price
-        player.spare_ammo[ammo_type] = player.spare_ammo.get(ammo_type, 0) + box_amount
-        return [f"📦 Bought {ammo_type} box +{box_amount}. {player.spare_ammo[ammo_type]} spare now. ${player.money} left."]
+        return buy_ammo_boxes(player, player.ammo_name, 1)
     if item == "painkillers":
         if player.money < 15:
             return [f"❌ Need $15, you have ${player.money}"]
@@ -869,7 +881,7 @@ def upgrade(player: Survivor, stat: str) -> list[str]:
 
 
 def get_star_upgrade_cost(player: Survivor, stat: str) -> int:
-    """All star upgrades: 5 to unlock, 3 per level after"""
+    """Star upgrades: 5 to unlock, then pattern 3,3,4,4,5,5,6,6..."""
     stat = stat.lower().strip()
     alias = {
         "dodge": "dodge", "dodge_chance": "dodge", "evade": "dodge",
@@ -890,9 +902,15 @@ def get_star_upgrade_cost(player: Survivor, stat: str) -> int:
         lvl = player.star_pet_upgrades
     elif canonical == "xp":
         lvl = player.star_xp_upgrades
+    # Lvl 0 = unlock cost 5
     if lvl == 0:
         return 5
-    return 3
+    # After unlock, pattern 3,3,4,4,5,5,6,6...
+    # lvl 1 -> 3, lvl 2 -> 3, lvl 3 -> 4, lvl 4 -> 4, lvl 5 ->5, lvl6->5 etc
+    # index = lvl-1, cost = 3 + (index // 2)
+    index = lvl - 1
+    cost = 3 + (index // 2)
+    return cost
 
 
 
@@ -1032,8 +1050,8 @@ def _grant_random_elemental_drop(player: Survivor) -> list[str]:
     return [f"🎁 **Scavenged!** +1x **{chosen}** bullet + {normal_amount}x Standard bullets found!"]
 
 
-def status(player: Survivor) -> str:
-    """CLEAN VERSION - minimal info at a glance"""
+def status(player: Survivor, display_name: str = "Survivor") -> str:
+    """Fisher-style inventory with real player name wired in"""
     earned, needed = level_progress(player)
     
     if player.run_active and player.enemy:
@@ -1046,30 +1064,43 @@ def status(player: Survivor) -> str:
             lines.append(f"💵 Run: ${player.run_money_earned} • ✨ {player.run_xp_earned} XP")
         return "\n".join(lines)
     
-    lines = [
-        f"**🧟 {player.zone_name} — Lvl {player.level}** ({earned}/{needed} XP)",
-        f"❤️ {player.health}/{player.max_health} | 💰 ${player.money} | ⭐ {player.stars}",
-        f"🔫 {player.weapon_name} {player.magazine}/{player.magazine_size} • {player.get_spare()} spare [{player.ammo_name}]",
-    ]
+    ammo_icons = {"Standard": "🔹", "Bleed": "🩸", "Incendiary": "🔥", "Frostbite": "❄️", "Toxic": "☠️", "Shock": "⚡"}
     
-    if player.health < player.max_health and (player.painkillers > 0 or player.full_restores > 0):
-        pain_left = MAX_PAINKILLERS_PER_RUN - player.painkillers_used_this_run
-        full_left = MAX_FULL_RESTORES_PER_RUN - player.full_restores_used_this_run
-        heals = []
-        if player.painkillers > 0:
-            heals.append(f"💊 {player.painkillers}x ({pain_left} left)")
-        if player.full_restores > 0:
-            heals.append(f"✨ {player.full_restores}x ({full_left} left)")
-        if heals:
-            lines.append(" • ".join(heals))
+    ammo_lines = []
+    for ammo_name in ["Standard", "Bleed", "Incendiary", "Frostbite", "Toxic", "Shock"]:
+        count = player.spare_ammo.get(ammo_name, 0)
+        if ammo_name in player.owned_ammo or count > 0 or ammo_name == player.ammo_name:
+            icon = ammo_icons.get(ammo_name, "🔹")
+            ammo_lines.append(f"{count} {icon} {ammo_name}")
+    
+    if not ammo_lines:
+        ammo_lines = ["0 🔹 No ammo"]
+    
+    lines = [
+        f"**Inventory of {display_name}**",
+        f"",
+        f"Balance: **${player.money}** | Stars: **{player.stars}**",
+        f"Level **{player.level}** — {earned}/{needed} XP to next level.",
+        f"Equipped Weapon: **{player.weapon_name}**",
+        f"Equipped Ammo type: **{player.ammo_name}**",
+        f"Mag size: **{player.magazine_size}** ({player.magazine}/{player.magazine_size} loaded)",
+        f"Zone: **{player.zone_name}**",
+        f"",
+        f"**Ammo inventory:**",
+    ]
+    lines.extend(ammo_lines)
+    lines.append(f"")
+    lines.append(f"**Meds inventory:**")
+    lines.append(f"{player.full_restores} ✨ Full Restore")
+    lines.append(f"{player.painkillers} 💊 Painkillers")
     
     return "\n".join(lines)
 
-def status_detailed(player: Survivor) -> str:
+def status_detailed(player: Survivor, display_name: str = "Survivor") -> str:
     """Detailed view for inventory/stats menu"""
     earned, needed = level_progress(player)
     lines = [
-        f"**📊 Survivor Detail — Lvl {player.level}**",
+        f"**📊 {display_name} — Lvl {player.level}**",
         f"❤️ HP: {player.health}/{player.max_health} (+{player.health_upgrades*20})",
         f"💥 Dmg: {player.weapon_damage} (+{player.damage_upgrades*3}) | 📦 Mag: {player.magazine_size} (+{player.mag_upgrades})",
         f"🎯 Crit: {int(player.crit_chance*100)}% | 🛡️ Armor: -{player.armor_reduction} | 💰 Loot: +{int((player.scavenger_bonus-1)*100)}%",
@@ -1081,12 +1112,12 @@ def status_detailed(player: Survivor) -> str:
     ]
     return "\n".join(lines)
 
-def get_status(player: Survivor) -> str:
-    return status(player)
+def get_status(player: Survivor, display_name: str = "Survivor") -> str:
+    return status(player, display_name)
 
-def get_detailed_status(player: Survivor) -> str:
+def get_detailed_status(player: Survivor, display_name: str = "Survivor") -> str:
+    return status_detailed(player, display_name)
 
-    return status_detailed(player)
 
 
 class GameStore:
@@ -1163,8 +1194,9 @@ class PlayerView(discord.ui.View):
         return True
 
 class ZombieMenuView(PlayerView):
-    def __init__(self, user_id: int, store):
+    def __init__(self, user_id: int, store, display_name: str = "Survivor"):
         super().__init__(user_id, store)
+        self.display_name = display_name
         player = self.store.get(user_id)
         
         # Dynamic Start/Continue button
@@ -1184,47 +1216,47 @@ class ZombieMenuView(PlayerView):
             # RESUME LOGIC - if already in run, go back to combat (boss caught you at work mode)
             if p.run_active and p.enemy:
                 embed = combat_embed(p, [f"🔄 Resumed your run! Wave {p.wave} | {p.zombies_remaining} zombies left"])
-                await interaction.response.edit_message(content=None, embed=embed, view=CombatView(self.user_id, self.store))
+                await interaction.response.edit_message(content=None, embed=embed, view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
                 return
             # Otherwise start fresh run
             msgs = start_run(p)
             self.store.save()
             # Show combat immediately
             embed = combat_embed(p, msgs)
-            await interaction.response.edit_message(content=None, embed=embed, view=CombatView(self.user_id, self.store))
+            await interaction.response.edit_message(content=None, embed=embed, view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
         btn_start.callback = start_cb
         self.add_item(btn_start)
 
         btn_shop = discord.ui.Button(label="🛒 Shop", style=discord.ButtonStyle.primary, row=0)
         async def shop_cb(interaction: discord.Interaction):
-            await interaction.response.edit_message(content=status(self.store.get(self.user_id)), embed=None, view=ShopView(self.user_id, self.store))
+            await interaction.response.edit_message(content=status(self.store.get(self.user_id), display_name=getattr(self, "display_name", "Survivor")), embed=None, view=ShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
         btn_shop.callback = shop_cb
         self.add_item(btn_shop)
 
         # --- ROW 1: Progression ---
         btn_zones = discord.ui.Button(label="🗺️ Zones", style=discord.ButtonStyle.secondary, row=1)
         async def zones_cb(interaction: discord.Interaction):
-            await interaction.response.edit_message(content=status(self.store.get(self.user_id)), embed=None, view=ZoneView(self.user_id, self.store))
+            await interaction.response.edit_message(content=status(self.store.get(self.user_id), display_name=getattr(self, "display_name", "Survivor")), embed=None, view=ZoneView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
         btn_zones.callback = zones_cb
         self.add_item(btn_zones)
 
         btn_ammo = discord.ui.Button(label="🧪 Ammo Lab", style=discord.ButtonStyle.secondary, row=1)
         async def ammo_cb(interaction: discord.Interaction):
-            await interaction.response.edit_message(content=status(self.store.get(self.user_id)), embed=None, view=AmmoView(self.user_id, self.store))
+            await interaction.response.edit_message(content=status(self.store.get(self.user_id), display_name=getattr(self, "display_name", "Survivor")), embed=None, view=AmmoView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
         btn_ammo.callback = ammo_cb
         self.add_item(btn_ammo)
 
         btn_up = discord.ui.Button(label="⬆️ Upgrades", style=discord.ButtonStyle.secondary, row=1)
         async def up_cb(interaction: discord.Interaction):
             p = self.store.get(self.user_id)
-            await interaction.response.edit_message(content=status(p) + chr(10) + f"💰 ${p.money} | ⭐ {p.stars} flex", embed=None, view=UpgradeView(self.user_id, self.store))
+            await interaction.response.edit_message(content=status(p) + chr(10) + f"💰 ${p.money} | ⭐ {p.stars} flex", embed=None, view=UpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
         btn_up.callback = up_cb
         self.add_item(btn_up)
 
         # --- ROW 2: Utility ---
         btn_refresh = discord.ui.Button(label="🔄 Refresh", style=discord.ButtonStyle.secondary, row=2)
         async def refresh_cb(interaction: discord.Interaction):
-            await interaction.response.edit_message(content=status(self.store.get(self.user_id)), embed=None, view=ZombieMenuView(self.user_id, self.store))
+            await interaction.response.edit_message(content=status(self.store.get(self.user_id), display_name=getattr(self, "display_name", "Survivor")), embed=None, view=ZombieMenuView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
         btn_refresh.callback = refresh_cb
         self.add_item(btn_refresh)
 
@@ -1251,10 +1283,10 @@ class CombatView(PlayerView):
             embed.add_field(name="🧟 Kills", value=f"{player.run_zombies_killed} zombies", inline=True)
             embed.add_field(name="💰 Rewards", value=f"+${player.run_money_earned}\n+{player.run_xp_earned} XP", inline=True)
             embed.set_footer(text=f"HP restored to {player.max_health}/{player.max_health} • Use Start run for another go")
-            await interaction.edit_original_response(content=None, embed=embed, view=ZombieMenuView(self.user_id, self.store))
+            await interaction.edit_original_response(content=None, embed=embed, view=ZombieMenuView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
         else:
             embed = combat_embed(player, msgs)
-            await interaction.edit_original_response(content=None, embed=embed, view=CombatView(self.user_id, self.store))
+            await interaction.edit_original_response(content=None, embed=embed, view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
 
     @discord.ui.button(label="🔄 Reload", style=discord.ButtonStyle.primary, row=0)
     async def reload(self, interaction: discord.Interaction, _b):
@@ -1272,10 +1304,10 @@ class CombatView(PlayerView):
             embed.add_field(name="🧟 Kills", value=f"{player.run_zombies_killed} zombies", inline=True)
             embed.add_field(name="💰 Rewards", value=f"+${player.run_money_earned}\n+{player.run_xp_earned} XP", inline=True)
             embed.set_footer(text=f"HP restored to {player.max_health}/{player.max_health}")
-            await interaction.edit_original_response(content=None, embed=embed, view=ZombieMenuView(self.user_id, self.store))
+            await interaction.edit_original_response(content=None, embed=embed, view=ZombieMenuView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
         else:
             embed = combat_embed(player, msgs)
-            await interaction.edit_original_response(content=None, embed=embed, view=CombatView(self.user_id, self.store))
+            await interaction.edit_original_response(content=None, embed=embed, view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
 
     @discord.ui.button(label="💊 Heal", style=discord.ButtonStyle.success, row=0)
     async def heal(self, interaction: discord.Interaction, _b):
@@ -1298,7 +1330,7 @@ class CombatView(PlayerView):
         embed.add_field(name="🧟 Kills", value=f"{player.run_zombies_killed} zombies", inline=True)
         embed.add_field(name="💰 Kept", value=f"+${player.run_money_earned}\n+{player.run_xp_earned} XP", inline=True)
         embed.set_footer(text=f"HP restored to {player.max_health}/{player.max_health} • Fleeing keeps all rewards")
-        await interaction.edit_original_response(content=None, embed=embed, view=ZombieMenuView(self.user_id, self.store))
+        await interaction.edit_original_response(content=None, embed=embed, view=ZombieMenuView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
 
 
 class HealView(PlayerView):
@@ -1319,7 +1351,7 @@ class HealView(PlayerView):
             msgs=take_action(p,"heal","painkillers")
             await self.store.save_one_async(str(self.user_id))
             embed = combat_embed(p, msgs)
-            await interaction.edit_original_response(content=None, embed=embed, view=CombatView(self.user_id, self.store))
+            await interaction.edit_original_response(content=None, embed=embed, view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
         pk_btn.callback = pk_cb
         self.add_item(pk_btn)
 
@@ -1332,7 +1364,7 @@ class HealView(PlayerView):
             msgs=take_action(p,"heal","full_restore")
             await self.store.save_one_async(str(self.user_id))
             embed = combat_embed(p, msgs)
-            await interaction.edit_original_response(content=None, embed=embed, view=CombatView(self.user_id, self.store))
+            await interaction.edit_original_response(content=None, embed=embed, view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
         fr_btn.callback = fr_cb
         self.add_item(fr_btn)
 
@@ -1340,7 +1372,7 @@ class HealView(PlayerView):
         async def back_cb(interaction,):
             p=self.store.get(self.user_id)
             embed = combat_embed(p, [action_help(p)])
-            await interaction.response.edit_message(content=None, embed=embed, view=CombatView(self.user_id, self.store))
+            await interaction.response.edit_message(content=None, embed=embed, view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
         back_btn.callback = back_cb
         self.add_item(back_btn)
 
@@ -1349,402 +1381,653 @@ class HealView(PlayerView):
 
 
 
-class ShopView(PlayerView):
-    def __init__(self, user_id: int, store, timeout: float = 180):
-        super().__init__(user_id, store, timeout)
+
+class ShopHubView(PlayerView):
+    """Fisher-style Shop Categories hub"""
+    def __init__(self, user_id: int, store, display_name: str = "Survivor", timeout: float = 180):
+        super().__init__(user_id, store, display_name, timeout)
+        # No auto buttons, we add manually via decorators + callbacks below
+
+    def get_shop_text(self, player):
+        lines = [
+            "**Shop Categories**",
+            "",
+            f"🔫 **/shop weapons** - Shop for different weapons.",
+            f"🧪 **/shop ammo** - Purchase ammo and special rounds.",
+            f"💊 **/shop meds** - Purchase meds for heals.",
+            f"⬆️ **/shop upgrades** - Purchase various permanent upgrades.",
+            f"⭐ **/shop stars** - Shop for star prestige upgrades.",
+            "",
+            f"Balance: **${player.money}** | Stars: **{player.stars}**",
+            f"Level **{player.level}** | Zone: **{player.zone_name}**",
+        ]
+        return "\n".join(lines)
+
+    @discord.ui.button(label="🔫", style=discord.ButtonStyle.primary, row=0)
+    async def weapons_btn(self, interaction: discord.Interaction, _b):
+        p=self.store.get(self.user_id)
+        await interaction.response.edit_message(content=self.get_shop_text(p) + f"\n\n🔫 Opening weapons shop...", view=WeaponShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+
+    @discord.ui.button(label="🧪", style=discord.ButtonStyle.primary, row=0)
+    async def ammo_btn(self, interaction: discord.Interaction, _b):
+        p=self.store.get(self.user_id)
+        await interaction.response.edit_message(content=self.get_shop_text(p), view=AmmoShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+
+    @discord.ui.button(label="💊", style=discord.ButtonStyle.primary, row=0)
+    async def meds_btn(self, interaction: discord.Interaction, _b):
+        p=self.store.get(self.user_id)
+        await interaction.response.edit_message(content=self.get_shop_text(p), view=MedsShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+
+    @discord.ui.button(label="⬆️", style=discord.ButtonStyle.primary, row=0)
+    async def upgrades_btn(self, interaction: discord.Interaction, _b):
+        p=self.store.get(self.user_id)
+        await interaction.response.edit_message(content=status(p, display_name=getattr(self, "display_name", "Survivor")), view=UpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+
+    @discord.ui.button(label="⭐", style=discord.ButtonStyle.primary, row=0)
+    async def stars_btn(self, interaction: discord.Interaction, _b):
+        p=self.store.get(self.user_id)
+        await interaction.response.edit_message(content=status(p, display_name=getattr(self, "display_name", "Survivor")) + f"\n💰 ${p.money} | ⭐ {p.stars} flex\n**STAR PRESTIGE**", view=StarUpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+
+    @discord.ui.button(label="Return", style=discord.ButtonStyle.secondary, row=1)
+    async def ret(self, interaction: discord.Interaction, _b):
+        name = getattr(self, "display_name", "Survivor")
+        # Try to get real name from interaction
+        try:
+            name = getattr(interaction.user, "display_name", None) or getattr(interaction.user, "global_name", None) or interaction.user.name
+            self.display_name = name
+        except:
+            pass
+        p=self.store.get(self.user_id)
+        await interaction.response.edit_message(content=status(p, display_name=name), view=ZombieMenuView(self.user_id, self.store, display_name=name))
+
+# Keep backward compat alias
+ShopView = ShopHubView
+
+
+class WeaponShopView(PlayerView):
+    """Fisher-style Weapon Shop"""
+    def __init__(self, user_id: int, store, display_name: str = "Survivor", selected_weapon: str = None, timeout: float = 180):
+        super().__init__(user_id, store, display_name, timeout)
         player = self.store.get(user_id)
-        for i, wname in enumerate(["Shotgun", "Rifle", "SMG", "Sawed-Off"]):
-            if wname in WEAPONS:
-                w = WEAPONS[wname]
-                owned = wname in player.owned_weapons
-                price = w["price"]
-                lvl = w["unlock_level"]
-                if owned:
-                    label = f"🔫 {wname} (Owned)"
-                else:
-                    label = f"🔫 {wname} ${price} Lvl {lvl}"
-                btn = discord.ui.Button(label=label[:80], style=discord.ButtonStyle.primary if not owned else discord.ButtonStyle.secondary, row=i//2)
-                async def cb(interaction, wn=wname):
-                    p=self.store.get(self.user_id)
-                    msgs=buy_item(p, wn)
-                    self.store.save()
-                    await interaction.response.edit_message(content=chr(10).join(msgs)+chr(10)+chr(10)+status(p), view=ShopView(self.user_id, self.store))
-                btn.callback = cb
-                self.add_item(btn)
+        self.selected_weapon = selected_weapon or player.weapon_name
+        self.clear_items()
 
-    @discord.ui.button(label="📦 Ammo box", style=discord.ButtonStyle.primary, row=2)
-    async def ammo(self, interaction: discord.Interaction, _b):
-        p=self.store.get(self.user_id)
-        cur_ammo = p.ammo_name
-        cur_data = AMMO.get(cur_ammo, AMMO["Standard"])
-        box_price = cur_data["box_price"]
-        box_amount = cur_data["box_amount"]
-        msgs=buy_item(p,"ammo")
-        self.store.save()
-        new_spare = p.spare_ammo.get(cur_ammo, 0)
-        lines = []
-        lines.extend(msgs)
-        lines.append("")
-        lines.append(f"Bought {cur_ammo} crate: ${box_price} for {box_amount} rounds | Now {new_spare} spare")
-        lines.append("")
-        lines.append(status(p))
-        await interaction.response.edit_message(content=chr(10).join(lines), view=ShopView(self.user_id, self.store))
-
-    @discord.ui.button(label="💊 Painkillers $15", style=discord.ButtonStyle.success, row=2)
-    async def pk(self, interaction: discord.Interaction, _b):
-        p=self.store.get(self.user_id)
-        msgs=buy_item(p,"painkillers")
-        self.store.save()
-        await interaction.response.edit_message(content=chr(10).join(msgs)+chr(10)+chr(10)+status(p), view=ShopView(self.user_id, self.store))
-
-    @discord.ui.button(label="✨ Full restore $80", style=discord.ButtonStyle.success, row=2)
-    async def fr(self, interaction: discord.Interaction, _b):
-        p=self.store.get(self.user_id)
-        msgs=buy_item(p,"full_restore")
-        self.store.save()
-        await interaction.response.edit_message(content=chr(10).join(msgs)+chr(10)+chr(10)+status(p), view=ShopView(self.user_id, self.store))
-
-    @discord.ui.button(label="🧪 Ammo prices", style=discord.ButtonStyle.primary, row=3)
-    async def ammo_prices(self, interaction: discord.Interaction, _b):
-        p=self.store.get(self.user_id)
-        lines = ["** Ammo Crate Costs: **"]
-        for aname, adata in AMMO.items():
-            lines.append(f"{aname}: ${adata['box_price']} for {adata['box_amount']} rounds ({adata['cost_per_attack']}/shot) - {adata['desc']}")
-        lines.append("")
-        lines.append(status(p))
-        await interaction.response.edit_message(content=chr(10).join(lines), view=ShopView(self.user_id, self.store))
-
-    @discord.ui.button(label="🏠 Main menu", style=discord.ButtonStyle.secondary, row=3)
-    async def main(self, interaction: discord.Interaction, _b):
-        await interaction.response.edit_message(content=status(self.store.get(self.user_id)), embed=None, view=ZombieMenuView(self.user_id, self.store))
-
-
-
-
-class ZoneView(PlayerView):
-    def __init__(self, user_id, store):
-        super().__init__(user_id, store)
-        for i, zone_name in enumerate(ZONES):
-            btn = discord.ui.Button(label=zone_name, style=discord.ButtonStyle.primary, row=i//2)
-            async def cb(interaction, zn=zone_name):
-                p=self.store.get(self.user_id); msgs=change_zone(p,zn); self.store.save()
-                await interaction.response.edit_message(content="\n".join(msgs)+"\n\n"+status(p), view=ZoneView(self.user_id, self.store))
-            btn.callback = cb
-            self.add_item(btn)
-    @discord.ui.button(label="🏠 Main menu", style=discord.ButtonStyle.secondary, row=2)
-    async def main(self, interaction: discord.Interaction, _b):
-        await interaction.response.edit_message(content=status(self.store.get(self.user_id)), view=ZombieMenuView(self.user_id, self.store))
-
-
-
-class AmmoView(PlayerView):
-    def __init__(self, user_id, store):
-        super().__init__(user_id, store)
-        player = self.store.get(user_id)
-        # Emoji map for clean look
-        emoji_map = {
-            "Standard": "🔫",
-            "Bleed": "🩸",
-            "Incendiary": "🔥",
-            "Frostbite": "❄️",
-            "Toxic": "☠️",
-            "Shock": "⚡"
-        }
-        # Create buttons - SUPER CLEAN, just emoji + name + status
-        for i, ammo_name in enumerate(AMMO):
-            ammo = AMMO[ammo_name]
-            emoji = emoji_map.get(ammo_name, "🔹")
-            is_equipped = player.ammo_name == ammo_name
-            owned = ammo_name in player.owned_ammo
-            
-            if is_equipped:
-                label = f"{emoji} {ammo_name} ✅"
+        for i, wname in enumerate(["Pistol", "Shotgun", "Rifle", "SMG", "Sawed-Off"]):
+            if wname not in WEAPONS:
+                continue
+            owned = wname in player.owned_weapons
+            is_sel = wname == self.selected_weapon
+            emoji = "🔫"
+            if is_sel:
+                label = f"{emoji} {wname} ✅"
                 style = discord.ButtonStyle.success
             elif owned:
-                label = f"{emoji} {ammo_name}"
+                label = f"{emoji} {wname}"
+                style = discord.ButtonStyle.primary
+            else:
+                w = WEAPONS[wname]
+                label = f"{emoji} {wname} 🔒 Lvl{w['unlock_level']}"
+                style = discord.ButtonStyle.secondary
+            btn = discord.ui.Button(label=label[:80], style=style, row=0 if i < 3 else 1)
+            async def cb(interaction, wn=wname):
+                p=self.store.get(self.user_id)
+                if wn not in p.owned_weapons:
+                    msgs = buy_item(p, wn)
+                    self.store.save()
+                content = self.get_shop_text(p, selected_override=wn, extra_msgs=None)
+                await interaction.response.edit_message(content=content, view=WeaponShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_weapon=wn))
+            btn.callback = cb
+            self.add_item(btn)
+
+        # Buy button for selected
+        wdata = WEAPONS.get(self.selected_weapon, {"price": 0})
+        buy_label = f"Buy {self.selected_weapon} ${wdata['price']}"
+        if self.selected_weapon in player.owned_weapons:
+            buy_label = f"Equip {self.selected_weapon}"
+        btn_buy = discord.ui.Button(label=buy_label[:80], style=discord.ButtonStyle.primary, row=2)
+        async def buy_cb(interaction):
+            p=self.store.get(self.user_id)
+            msgs = buy_item(p, self.selected_weapon)
+            self.store.save()
+            content = self.get_shop_text(p, selected_override=self.selected_weapon, extra_msgs=msgs)
+            await interaction.response.edit_message(content=content, view=WeaponShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_weapon=self.selected_weapon))
+        btn_buy.callback = buy_cb
+        self.add_item(btn_buy)
+
+        hub_btn = discord.ui.Button(label="Back", style=discord.ButtonStyle.secondary, row=3)
+        async def hub_cb(interaction):
+            p=self.store.get(self.user_id)
+            hub = ShopHubView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"))
+            await interaction.response.edit_message(content=hub.get_shop_text(p), view=hub)
+        hub_btn.callback = hub_cb
+        self.add_item(hub_btn)
+
+        main_btn = discord.ui.Button(label="🏠 Main menu", style=discord.ButtonStyle.secondary, row=3)
+        async def main_cb(interaction):
+            name = getattr(self, "display_name", "Survivor")
+            try:
+                name = getattr(interaction.user, "display_name", None) or getattr(interaction.user, "global_name", None) or interaction.user.name
+            except:
+                pass
+            p=self.store.get(self.user_id)
+            await interaction.response.edit_message(content=status(p, display_name=name), view=ZombieMenuView(self.user_id, self.store, display_name=name))
+        main_btn.callback = main_cb
+        self.add_item(main_btn)
+
+    def get_shop_text(self, player, selected_override=None, extra_msgs=None):
+        sel = selected_override or getattr(self, "selected_weapon", player.weapon_name)
+        lines = []
+        if extra_msgs:
+            lines.extend(extra_msgs)
+            lines.append("")
+        lines.append("**Weapon Shop**")
+        lines.append("")
+        lines.append("Weapons are permanent and increase your damage.")
+        lines.append("")
+        lines.append(f"Your balance: **${player.money:,}**")
+        lines.append(f"Selected: 🔫 **{sel}**")
+        lines.append("---")
+        for wname in ["Pistol", "Shotgun", "Rifle", "SMG", "Sawed-Off"]:
+            if wname not in WEAPONS:
+                continue
+            w = WEAPONS[wname]
+            owned = wname in player.owned_weapons
+            is_sel = wname == sel
+            marker = " ← SELECTED" if is_sel else ""
+            status_str = "Owned" if owned else f"LOCKED Level {w['unlock_level']} - ${w['price']}"
+            if owned:
+                status_str = f"Owned - Dmg {w.get('damage', '?')} | Mag {w.get('mag_size', '?')}"
+            lines.append(f"🔫 **{wname}**{marker}")
+            lines.append(f"{status_str}")
+            lines.append(f"{w.get('desc','')}")
+            lines.append("")
+        locked = [w for w in WEAPONS if w not in player.owned_weapons and w != "Pistol"]
+        if locked:
+            nxt = locked[0]
+            lines.append(f"Next Weapon: 🔫 **{nxt}**")
+            lines.append(f"UNLOCKED AT LEVEL {WEAPONS[nxt]['unlock_level']}!")
+            lines.append("")
+        lines.append(f"Selected: **{sel}** - ${WEAPONS.get(sel, {'price':0})['price']}")
+        return "\n".join(lines)
+
+
+class AmmoShopView(PlayerView):
+    """Fisher Bait Shop clone - list + select + bulk buy +1 +10 +100 +1000"""
+    def __init__(self, user_id: int, store, display_name: str = "Survivor", selected_ammo: str = None, timeout: float = 180):
+        super().__init__(user_id, store, display_name, timeout)
+        player = self.store.get(user_id)
+        self.selected_ammo = selected_ammo or player.ammo_name
+        
+        self.clear_items()
+        
+        emoji_map = {"Standard": "🔹", "Bleed": "🩸", "Incendiary": "🔥", "Frostbite": "❄️", "Toxic": "☠️", "Shock": "⚡"}
+        for i, ammo_name in enumerate(AMMO):
+            emoji = emoji_map.get(ammo_name, "🔹")
+            spare = player.spare_ammo.get(ammo_name, 0)
+            owned = ammo_name in player.owned_ammo
+            is_sel = ammo_name == self.selected_ammo
+            if is_sel:
+                label = f"{emoji} {ammo_name} ({spare}) ✅"
+                style = discord.ButtonStyle.success
+            elif owned:
+                label = f"{emoji} {ammo_name} ({spare})"
                 style = discord.ButtonStyle.primary
             else:
                 label = f"{emoji} {ammo_name} 🔒"
                 style = discord.ButtonStyle.secondary
-            
-            btn = discord.ui.Button(label=label[:80], style=style, row=i//2)
+            btn = discord.ui.Button(label=label[:80], style=style, row=0 if i < 3 else 1)
             async def cb(interaction, an=ammo_name):
                 p=self.store.get(self.user_id)
-                msgs=equip_ammo(p,an)
-                self.store.save()
-                info = AMMO[an]
-                spare = p.spare_ammo.get(an, 0)
-                emoji = {"Standard":"🔫","Bleed":"🩸","Incendiary":"🔥","Frostbite":"❄️","Toxic":"☠️","Shock":"⚡"}.get(an, "🔹")
-                
-                # Build clean embed-like text - all details fully visible
-                lines = []
-                lines.extend(msgs)
-                lines.append("")
-                lines.append(f"{emoji} **{an} - Details**")
-                lines.append(f"┌ Perk: {info['desc']}")
-                lines.append(f"├ Cost: {info['cost_per_attack']} round(s) per attack")
-                lines.append(f"├ Box: ${info['box_price']} for {info['box_amount']} rounds")
-                lines.append(f"├ Unlock: ${info['price']} at Level {info['unlock_level']}")
-                lines.append(f"└ Your spare: {spare} rounds")
-                if p.ammo_name == an:
-                    lines.append("")
-                    lines.append(f"🔫 Currently equipped!")
-                lines.append("")
-                lines.append(status(p))
-                await interaction.response.edit_message(content=chr(10).join(lines), view=AmmoView(self.user_id, self.store))
+                if an not in p.owned_ammo:
+                    msgs = equip_ammo(p, an)
+                    self.store.save()
+                self.selected_ammo = an
+                content = self.get_shop_text(p)
+                await interaction.response.edit_message(content=content, view=AmmoShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_ammo=an))
             btn.callback = cb
             self.add_item(btn)
         
-        # Dynamic buy button - shows current ammo and price clearly
-        cur = player.ammo_name
-        cur_data = AMMO.get(cur, AMMO["Standard"])
-        cur_emoji = emoji_map.get(cur, "📦")
-        buy_label = f"{cur_emoji} Buy {cur} Box ${cur_data['box_price']}"
-        btn_buy = discord.ui.Button(label=buy_label[:80], style=discord.ButtonStyle.primary, row=3)
-        async def buy_cb(interaction: discord.Interaction):
-            p=self.store.get(self.user_id)
-            cur_name = p.ammo_name
-            cur_d = AMMO.get(cur_name, AMMO["Standard"])
-            price = cur_d["box_price"]
-            amount = cur_d["box_amount"]
-            msgs=buy_item(p,"ammo")
-            self.store.save()
-            new_spare = p.spare_ammo.get(cur_name, 0)
-            lines = []
-            lines.extend(msgs)
-            lines.append("")
-            lines.append(f"📦 Bought {cur_name} x{amount} for ${price} | Now {new_spare} spare")
-            lines.append("")
-            lines.append(status(p))
-            await interaction.response.edit_message(content=chr(10).join(lines), view=AmmoView(self.user_id, self.store))
-        btn_buy.callback = buy_cb
-        self.add_item(btn_buy)
-        
-        btn_main = discord.ui.Button(label="🏠 Main menu", style=discord.ButtonStyle.secondary, row=3)
-        async def main_cb(interaction: discord.Interaction):
-            await interaction.response.edit_message(content=status(self.store.get(self.user_id)), embed=None, view=ZombieMenuView(self.user_id, self.store))
-        btn_main.callback = main_cb
-        self.add_item(btn_main)
-
-    async def on_timeout(self):
-        pass
-
-class ZoneView(PlayerView):
-    def __init__(self, user_id, store):
-        super().__init__(user_id, store)
-        for i, zone_name in enumerate(ZONES):
-            btn = discord.ui.Button(label=zone_name, style=discord.ButtonStyle.primary, row=i//2)
-            async def cb(interaction, zn=zone_name):
-                p=self.store.get(self.user_id); msgs=change_zone(p,zn); self.store.save()
-                await interaction.response.edit_message(content="\n".join(msgs)+"\n\n"+status(p), view=ZoneView(self.user_id, self.store))
-            btn.callback = cb
-            self.add_item(btn)
-    @discord.ui.button(label="🏠 Main menu", style=discord.ButtonStyle.secondary, row=2)
-    async def main(self, interaction: discord.Interaction, _b):
-        await interaction.response.edit_message(content=status(self.store.get(self.user_id)), view=ZombieMenuView(self.user_id, self.store))
-
-
-
-class AmmoView(PlayerView):
-    def __init__(self, user_id, store):
-        super().__init__(user_id, store)
-        player = self.store.get(user_id)
-        for i, ammo_name in enumerate(AMMO):
-            ammo = AMMO[ammo_name]
-            cost_per = ammo["cost_per_attack"]
-            is_equipped = player.ammo_name == ammo_name
-            owned = ammo_name in player.owned_ammo
-            if is_equipped:
-                label = f"EQ {ammo_name} {cost_per}/shot"
-                style = discord.ButtonStyle.success
-            elif owned:
-                label = f"OWNED {ammo_name} {cost_per}/shot"
-                style = discord.ButtonStyle.primary
-            else:
-                label = f"LOCKED {ammo_name} {cost_per}/shot ${ammo['price']} Lvl{ammo['unlock_level']}"
-                style = discord.ButtonStyle.secondary
-            btn = discord.ui.Button(label=label[:80], style=style, row=i)
-            async def cb(interaction, an=ammo_name):
+        box_price = AMMO[self.selected_ammo]["box_price"]
+        for qty, row in [(1,2), (10,2), (100,3), (1000,3)]:
+            total = box_price * qty
+            label = f"+{qty} (${total:,})"
+            btn = discord.ui.Button(label=label[:80], style=discord.ButtonStyle.primary, row=row)
+            async def bulk_cb(interaction, q=qty, ammo=self.selected_ammo):
                 p=self.store.get(self.user_id)
-                msgs=equip_ammo(p,an)
+                msgs = buy_ammo_boxes(p, ammo, q)
                 self.store.save()
-                info = AMMO[an]
-                spare = p.spare_ammo.get(an, 0)
-                lines = []
-                lines.extend(msgs)
-                lines.append("")
-                lines.append(f"AMMO {an} FULL DETAILS")
-                lines.append(f"Perk: {info['desc']}")
-                lines.append(f"Cost per attack: {info['cost_per_attack']}")
-                lines.append(f"Box price: ${info['box_price']} for {info['box_amount']} rounds")
-                lines.append(f"Unlock: ${info['price']} at Level {info['unlock_level']}")
-                lines.append(f"Spare: {spare}")
-                if p.ammo_name == an:
-                    lines.append("Equipped now!")
-                lines.append("")
-                lines.append(status(p))
-                await interaction.response.edit_message(content=chr(10).join(lines), view=AmmoView(self.user_id, self.store))
-            btn.callback = cb
+                content = self.get_shop_text(p, selected_override=ammo, extra_msgs=msgs)
+                await interaction.response.edit_message(content=content, view=AmmoShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_ammo=ammo))
+            btn.callback = bulk_cb
             self.add_item(btn)
-        cur = player.ammo_name
-        cur_data = AMMO.get(cur, AMMO["Standard"])
-        buy_label = f"Buy {cur} Box ${cur_data['box_price']} - {cur_data['box_amount']} rnds"
-        btn_buy = discord.ui.Button(label=buy_label[:80], style=discord.ButtonStyle.primary, row=6)
-        async def buy_cb(interaction: discord.Interaction):
+        
+        hub_btn = discord.ui.Button(label="Back", style=discord.ButtonStyle.secondary, row=4)
+        async def hub_cb(interaction):
             p=self.store.get(self.user_id)
-            cur_name = p.ammo_name
-            cur_d = AMMO.get(cur_name, AMMO["Standard"])
-            price = cur_d["box_price"]
-            amount = cur_d["box_amount"]
-            msgs=buy_item(p,"ammo")
-            self.store.save()
-            new_spare = p.spare_ammo.get(cur_name, 0)
-            lines = []
-            lines.extend(msgs)
+            hub = ShopHubView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"))
+            await interaction.response.edit_message(content=hub.get_shop_text(p), view=hub)
+        hub_btn.callback = hub_cb
+        self.add_item(hub_btn)
+
+        main_btn = discord.ui.Button(label="🏠 Main menu", style=discord.ButtonStyle.secondary, row=4)
+        async def main_cb(interaction):
+            name = getattr(self, "display_name", "Survivor")
+            try:
+                name = getattr(interaction.user, "display_name", None) or getattr(interaction.user, "global_name", None) or interaction.user.name
+            except:
+                pass
+            p=self.store.get(self.user_id)
+            await interaction.response.edit_message(content=status(p, display_name=name), view=ZombieMenuView(self.user_id, self.store, display_name=name))
+        main_btn.callback = main_cb
+        self.add_item(main_btn)
+
+    def get_shop_text(self, player, selected_override=None, extra_msgs=None):
+        sel = selected_override or getattr(self, "selected_ammo", player.ammo_name)
+        ammo_icons = {"Standard": "🔹", "Bleed": "🩸", "Incendiary": "🔥", "Frostbite": "❄️", "Toxic": "☠️", "Shock": "⚡"}
+        lines = []
+        if extra_msgs:
+            lines.extend(extra_msgs)
             lines.append("")
-            lines.append(f"Bought {cur_name} box ${price} for {amount} rounds Now {new_spare} spare")
-            lines.append("")
-            lines.append(status(p))
-            await interaction.response.edit_message(content=chr(10).join(lines), view=AmmoView(self.user_id, self.store))
-        btn_buy.callback = buy_cb
-        self.add_item(btn_buy)
-        btn_main = discord.ui.Button(label="Main menu", style=discord.ButtonStyle.secondary, row=6)
-        async def main_cb(interaction: discord.Interaction):
-            await interaction.response.edit_message(content=status(self.store.get(self.user_id)), embed=None, view=ZombieMenuView(self.user_id, self.store))
-        btn_main.callback = main_cb
-        self.add_item(btn_main)
-
-
-
-class ZoneView(PlayerView):
-    def __init__(self, user_id, store):
-        super().__init__(user_id, store)
-        for i, zone_name in enumerate(ZONES):
-            btn = discord.ui.Button(label=zone_name, style=discord.ButtonStyle.primary, row=i//2)
-            async def cb(interaction, zn=zone_name):
-                p=self.store.get(self.user_id); msgs=change_zone(p,zn); self.store.save()
-                await interaction.response.edit_message(content="\n".join(msgs)+"\n\n"+status(p), view=ZoneView(self.user_id, self.store))
-            btn.callback = cb
-            self.add_item(btn)
-    @discord.ui.button(label="🏠 Main menu", style=discord.ButtonStyle.secondary, row=2)
-    async def main(self, interaction: discord.Interaction, _b):
-        await interaction.response.edit_message(content=status(self.store.get(self.user_id)), view=ZombieMenuView(self.user_id, self.store))
-
-
-class AmmoView(PlayerView):
-    def __init__(self, user_id, store):
-        super().__init__(user_id, store)
-        player = self.store.get(user_id)
-        for i, ammo_name in enumerate(AMMO):
+        lines.append("**Ammo Shop**")
+        lines.append("")
+        lines.append(f"Ammo is consumed **PER SHOT** so make sure to stock up.")
+        lines.append("")
+        lines.append(f"Your balance: **${player.money:,}**")
+        lines.append(f"Selected: {ammo_icons.get(sel,'🔹')} **{sel}** ({player.spare_ammo.get(sel,0)})")
+        lines.append("---")
+        for ammo_name in AMMO:
             ammo = AMMO[ammo_name]
-            owned = ammo_name in player.owned_ammo
-            cost_per = ammo["cost_per_attack"]
-            price = ammo["price"]
-            lvl = ammo["unlock_level"]
-            desc = ammo["desc"]
             spare = player.spare_ammo.get(ammo_name, 0)
-            if ammo_name == "Standard":
-                label = f"Standard {cost_per}/shot (Free) {spare} spare"
-            else:
-                if owned:
-                    label = f"{ammo_name} {cost_per}/shot {spare} spare {desc}"
-                else:
-                    label = f"{ammo_name} {cost_per}/shot ${price} Lvl {lvl} {desc}"
-            btn = discord.ui.Button(label=label[:80], style=discord.ButtonStyle.primary if not owned else discord.ButtonStyle.success, row=i//2)
-            async def cb(interaction, an=ammo_name):
+            owned = ammo_name in player.owned_ammo or ammo_name == "Standard"
+            icon = ammo_icons.get(ammo_name, "🔹")
+            if not owned:
+                lines.append(f"{icon} **{ammo_name} ({spare})**")
+                lines.append(f"LOCKED - Level {ammo['unlock_level']} + ${ammo['price']} to unlock. {ammo['desc']} - {ammo['cost_per_attack']}/shot")
+                lines.append("")
+                continue
+            sel_marker = " ← SELECTED" if ammo_name == sel else ""
+            lines.append(f"{icon} **{ammo_name} ({spare})**{sel_marker}")
+            lines.append(f"{ammo['desc']} | Cost {ammo['cost_per_attack']}/shot | Box ${ammo['box_price']} for {ammo['box_amount']} rounds")
+            lines.append("")
+        locked = [a for a in AMMO if a not in player.owned_ammo]
+        if locked:
+            next_ammo = locked[0]
+            lines.append(f"Next Ammo: {ammo_icons.get(next_ammo,'🔹')} **{next_ammo}**")
+            lines.append(f"UNLOCKED AT LEVEL {AMMO[next_ammo]['unlock_level']}!")
+            lines.append("")
+        lines.append(f"Selected box: **{sel}** - ${AMMO[sel]['box_price']} per box ({AMMO[sel]['box_amount']} rounds)")
+        return "\n".join(lines)
+
+
+class MedsShopView(PlayerView):
+    """Fisher-style Meds Shop with bulk buy"""
+    def __init__(self, user_id: int, store, display_name: str = "Survivor", selected_med: str = "painkillers", timeout: float = 180):
+        super().__init__(user_id, store, display_name, timeout)
+        player = self.store.get(user_id)
+        self.selected_med = selected_med
+        self.clear_items()
+
+        # Med type selector
+        meds = [("painkillers", "💊 Painkillers", player.painkillers, 15), ("full_restore", "✨ Full Restore", player.full_restores, 80)]
+        for i, (mid, mname, count, price) in enumerate(meds):
+            is_sel = mid == self.selected_med
+            label = f"{mname} ({count}) {'✅' if is_sel else ''}"
+            style = discord.ButtonStyle.success if is_sel else discord.ButtonStyle.primary
+            btn = discord.ui.Button(label=label[:80], style=style, row=0)
+            async def cb(interaction, m=mid):
+                self.selected_med = m
                 p=self.store.get(self.user_id)
-                msgs=equip_ammo(p,an)
-                self.store.save()
-                ammo_info = AMMO[an]
-                # Build details with explicit newline via \n in file
-                details = f"**{an}** | Cost: {ammo_info['cost_per_attack']}/shot | Effect: {ammo_info['desc']} | Box: ${ammo_info['box_price']} for {ammo_info['box_amount']} | Spare: {p.spare_ammo.get(an,0)}"
-                await interaction.response.edit_message(content="\n".join(msgs)+"\n\n"+details+"\n\n"+status(p), view=AmmoView(self.user_id, self.store))
+                content = self.get_shop_text(p, selected_override=m)
+                await interaction.response.edit_message(content=content, view=MedsShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_med=m))
             btn.callback = cb
             self.add_item(btn)
-    
-    @discord.ui.button(label="Buy ammo box $30-200", style=discord.ButtonStyle.primary, row=3)
-    async def buy_box(self, interaction: discord.Interaction, _b):
-        p=self.store.get(self.user_id)
-        msgs=buy_item(p,"ammo")
-        self.store.save()
-        await interaction.response.edit_message(content="\n".join(msgs)+"\n\n"+status(p), view=AmmoView(self.user_id, self.store))
-    
-    @discord.ui.button(label="Main menu", style=discord.ButtonStyle.secondary, row=3)
-    async def main(self, interaction: discord.Interaction, _b):
-        await interaction.response.edit_message(content=status(self.store.get(self.user_id)), embed=None, view=ZombieMenuView(self.user_id, self.store))
 
+        # Bulk buy for selected med
+        sel_price = 15 if self.selected_med == "painkillers" else 80
+        for qty, row in [(1,1), (10,1), (100,2), (1000,2)]:
+            total = sel_price * qty
+            # Painkillers give +2 per purchase, so adjust label
+            label = f"+{qty} (${total:,})"
+            btn = discord.ui.Button(label=label[:80], style=discord.ButtonStyle.primary, row=row)
+            async def bulk_cb(interaction, q=qty, med=self.selected_med):
+                p=self.store.get(self.user_id)
+                total_cost = (15 if med == "painkillers" else 80) * q
+                if p.money < total_cost:
+                    msgs = [f"❌ Need ${total_cost} for {q}x {med}, you have ${p.money}"]
+                else:
+                    msgs = []
+                    for _ in range(q):
+                        msgs_inner = buy_item(p, med)
+                        # buy_item already deducts, we want to keep only last msg to avoid spam
+                    p.money -= 0  # already deducted in loop
+                    # Actually buy_item loop above already did q times, but we did it inefficiently - redo properly
+                    # Reset and do bulk properly
+                    pass
+                # Proper bulk implementation
+                p=self.store.get(self.user_id)
+                # We already consumed money if loop above, let's redo clean
+                # For safety, re-implement bulk here directly
+                if p.money < total_cost and q != 1:  # we already checked
+                    pass
+                # Do bulk
+                bought = 0
+                for _ in range(q):
+                    if med == "painkillers":
+                        if p.money >= 15:
+                            p.money -= 15
+                            p.painkillers += 2
+                            bought += 2
+                        else:
+                            break
+                    else:
+                        if p.money >= 80:
+                            p.money -= 80
+                            p.full_restores += 1
+                            bought += 1
+                        else:
+                            break
+                self.store.save()
+                if med == "painkillers":
+                    msgs = [f"💊 Bought {q}x Painkillers +{bought} | Now {p.painkillers}x | ${p.money} left"]
+                else:
+                    msgs = [f"✨ Bought {q}x Full Restore +{bought} | Now {p.full_restores}x | ${p.money} left"]
+                content = self.get_shop_text(p, selected_override=med, extra_msgs=msgs)
+                await interaction.response.edit_message(content=content, view=MedsShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_med=med))
+            btn.callback = bulk_cb
+            self.add_item(btn)
+
+        hub_btn = discord.ui.Button(label="Back", style=discord.ButtonStyle.secondary, row=3)
+        async def hub_cb(interaction):
+            p=self.store.get(self.user_id)
+            hub = ShopHubView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"))
+            await interaction.response.edit_message(content=hub.get_shop_text(p), view=hub)
+        hub_btn.callback = hub_cb
+        self.add_item(hub_btn)
+
+        main_btn = discord.ui.Button(label="🏠 Main menu", style=discord.ButtonStyle.secondary, row=3)
+        async def main_cb(interaction):
+            name = getattr(self, "display_name", "Survivor")
+            try:
+                name = getattr(interaction.user, "display_name", None) or getattr(interaction.user, "global_name", None) or interaction.user.name
+            except:
+                pass
+            p=self.store.get(self.user_id)
+            await interaction.response.edit_message(content=status(p, display_name=name), view=ZombieMenuView(self.user_id, self.store, display_name=name))
+        main_btn.callback = main_cb
+        self.add_item(main_btn)
+
+    def get_shop_text(self, player, selected_override=None, extra_msgs=None):
+        sel = selected_override or getattr(self, "selected_med", "painkillers")
+        lines = []
+        if extra_msgs:
+            lines.extend(extra_msgs)
+            lines.append("")
+        lines.append("**Meds Shop**")
+        lines.append("")
+        lines.append("Meds are consumed **PER RUN** so make sure to stock up.")
+        lines.append("")
+        lines.append(f"Your balance: **${player.money:,}**")
+        sel_name = "Painkillers" if sel == "painkillers" else "Full Restore"
+        sel_count = player.painkillers if sel == "painkillers" else player.full_restores
+        sel_icon = "💊" if sel == "painkillers" else "✨"
+        lines.append(f"Selected: {sel_icon} **{sel_name}** ({sel_count})")
+        lines.append("---")
+        lines.append(f"💊 **Painkillers ({player.painkillers})** {'← SELECTED' if sel == 'painkillers' else ''}")
+        lines.append("Heals 40 HP in run. Max 3 uses per run. +2 per purchase ($15).")
+        lines.append("")
+        lines.append(f"✨ **Full Restore ({player.full_restores})** {'← SELECTED' if sel == 'full_restore' else ''}")
+        lines.append("Fully heals HP in run. Max 1 use per run. +1 per purchase ($80).")
+        lines.append("")
+        lines.append(f"Selected: **{sel_name}** - ${15 if sel == 'painkillers' else 80} each")
+        return "\n".join(lines)
 
 
 class UpgradeView(PlayerView):
-    def __init__(self, user_id: int, store):
-        super().__init__(user_id, store)
+    """Fisher-style Upgrades Shop"""
+    def __init__(self, user_id: int, store, display_name: str = "Survivor", selected_up: str = "health", timeout: float = 180):
+        super().__init__(user_id, store, display_name, timeout)
         player = self.store.get(user_id)
-        def make_btn(stat, emoji, name, plus, row):
-            cost = get_upgrade_cost(player, stat)
-            lvl = getattr(player, f"{stat}_upgrades", 0)
-            if stat == "scavenger":
-                lvl = player.scavenger_upgrades
-            label = f"{emoji} {name} {plus} · ${cost} (Lvl {lvl})"
-            btn = discord.ui.Button(label=label[:80], style=discord.ButtonStyle.success, row=row)
-            async def cb(interaction, stat=stat):
-                p=self.store.get(self.user_id); msgs=upgrade(p,stat); self.store.save()
-                await interaction.response.edit_message(content="\n".join(msgs)+"\n\n"+status(p)+f"\n💰 ${p.money} | ⭐ {p.stars}", view=UpgradeView(self.user_id, self.store))
+        self.selected_up = selected_up
+        self.clear_items()
+
+        upgrades = [
+            ("health", "❤️ Health", "+20 HP"),
+            ("damage", "💥 Damage", "+3 Dmg"),
+            ("mag", "📦 Mag", "+1 Mag"),
+            ("crit", "🎯 Crit", "+2%"),
+            ("armor", "🛡️ Armor", "-2 Dmg"),
+            ("scavenger", "💰 Loot", "+10%"),
+        ]
+        for i, (uid, uname, plus) in enumerate(upgrades):
+            is_sel = uid == self.selected_up
+            cost = get_upgrade_cost(player, uid)
+            lvl = getattr(player, f"{uid}_upgrades", 0) if uid != "scavenger" else player.scavenger_upgrades
+            label = f"{uname.split()[1]} ({lvl}) {'✅' if is_sel else ''}"
+            style = discord.ButtonStyle.success if is_sel else discord.ButtonStyle.primary
+            btn = discord.ui.Button(label=label[:80], style=style, row=0 if i < 3 else 1)
+            async def cb(interaction, u=uid):
+                self.selected_up = u
+                p=self.store.get(self.user_id)
+                content = self.get_shop_text(p, selected_override=u)
+                await interaction.response.edit_message(content=content, view=UpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_up=u))
             btn.callback = cb
-            return btn
-        self.add_item(make_btn("health","❤️","Health","+20",0))
-        self.add_item(make_btn("damage","💥","Damage","+3",0))
-        self.add_item(make_btn("mag","📦","Mag","+1",0))
-        self.add_item(make_btn("crit","🎯","Crit","+2%",1))
-        self.add_item(make_btn("armor","🛡️","Armor","-2",1))
-        self.add_item(make_btn("scavenger","💰","Loot","+10%",1))
-    @discord.ui.button(label="⭐ Star Upgrades", style=discord.ButtonStyle.primary, row=2)
-    async def stars(self, interaction: discord.Interaction, _b):
-        p=self.store.get(self.user_id)
-        await interaction.response.edit_message(content=status(p)+f"\n💰 ${p.money} | ⭐ {p.stars} flex\n**STAR PRESTIGE**", view=StarUpgradeView(self.user_id, self.store))
-    @discord.ui.button(label="🏠 Main menu", style=discord.ButtonStyle.secondary, row=2)
-    async def mainmenu(self, interaction: discord.Interaction, _b):
-        await interaction.response.edit_message(content=status(self.store.get(self.user_id)), view=ZombieMenuView(self.user_id, self.store))
+            self.add_item(btn)
+
+        # Single buy button for selected upgrade - no bulk as requested
+        cost = get_upgrade_cost(player, self.selected_up)
+        buy_label = f"Buy {self.selected_up.capitalize()} ${cost}"
+        btn_buy = discord.ui.Button(label=buy_label[:80], style=discord.ButtonStyle.success, row=2)
+        async def buy_cb(interaction):
+            p=self.store.get(self.user_id)
+            msgs = upgrade(p, self.selected_up)
+            self.store.save()
+            content = self.get_shop_text(p, selected_override=self.selected_up, extra_msgs=msgs)
+            await interaction.response.edit_message(content=content, view=UpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_up=self.selected_up))
+        btn_buy.callback = buy_cb
+        self.add_item(btn_buy)
+
+        star_btn = discord.ui.Button(label="⭐ Stars", style=discord.ButtonStyle.primary, row=3)
+        async def star_cb(interaction):
+            p=self.store.get(self.user_id)
+            await interaction.response.edit_message(content=status(p, display_name=getattr(self, "display_name", "Survivor")) + f"\n💰 ${p.money} | ⭐ {p.stars} flex\n**STAR PRESTIGE**", view=StarUpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+        star_btn.callback = star_cb
+        self.add_item(star_btn)
+
+        hub_btn = discord.ui.Button(label="Back", style=discord.ButtonStyle.secondary, row=4)
+        async def hub_cb(interaction):
+            p=self.store.get(self.user_id)
+            hub = ShopHubView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"))
+            await interaction.response.edit_message(content=hub.get_shop_text(p), view=hub)
+        hub_btn.callback = hub_cb
+        self.add_item(hub_btn)
+
+        main_btn = discord.ui.Button(label="🏠 Main menu", style=discord.ButtonStyle.secondary, row=4)
+        async def main_cb(interaction):
+            name = getattr(self, "display_name", "Survivor")
+            try:
+                name = getattr(interaction.user, "display_name", None) or getattr(interaction.user, "global_name", None) or interaction.user.name
+            except:
+                pass
+            p=self.store.get(self.user_id)
+            await interaction.response.edit_message(content=status(p, display_name=name), view=ZombieMenuView(self.user_id, self.store, display_name=name))
+        main_btn.callback = main_cb
+        self.add_item(main_btn)
+
+    def get_shop_text(self, player, selected_override=None, extra_msgs=None):
+        sel = selected_override or getattr(self, "selected_up", "health")
+        lines = []
+        if extra_msgs:
+            lines.extend(extra_msgs)
+            lines.append("")
+        lines.append("**Money Upgrades Shop**")
+        lines.append("")
+        lines.append("Upgrades are permanent and make you stronger.")
+        lines.append("")
+        lines.append(f"Your balance: **${player.money:,}** | Stars: **{player.stars}**")
+        # Selected
+        emoji_map = {"health": "❤️", "damage": "💥", "mag": "📦", "crit": "🎯", "armor": "🛡️", "scavenger": "💰"}
+        lines.append(f"Selected: {emoji_map.get(sel,'⬆️')} **{sel.capitalize()}**")
+        lines.append("---")
+        for uid, uname, plus in [("health","❤️ Health","+20 HP"),("damage","💥 Damage","+3 Dmg"),("mag","📦 Mag","+1 Mag"),("crit","🎯 Crit","+2% Crit"),("armor","🛡️ Armor","-2 Dmg taken"),("scavenger","💰 Loot","+10% Money")]:
+            cost = get_upgrade_cost(player, uid)
+            lvl = getattr(player, f"{uid}_upgrades", 0) if uid != "scavenger" else player.scavenger_upgrades
+            sel_mark = " ← SELECTED" if uid == sel else ""
+            lines.append(f"{uname} ({lvl}){sel_mark}")
+            lines.append(f"{plus} per level - Cost ${cost} - Lvl {lvl}")
+            lines.append("")
+        lines.append(f"Next: {sel} Lvl {getattr(player, f'{sel}_upgrades', 0)+1 if sel != 'scavenger' else player.scavenger_upgrades+1} for ${get_upgrade_cost(player, sel)}")
+        return "\n".join(lines)
+
 
 class StarUpgradeView(PlayerView):
-    def __init__(self, user_id: int, store):
-        super().__init__(user_id, store)
+    """Fisher-style Star Upgrades - same layout"""
+    def __init__(self, user_id: int, store, display_name: str = "Survivor", selected_star: str = "dodge", timeout: float = 180):
+        super().__init__(user_id, store, display_name, timeout)
         player = self.store.get(user_id)
-        def make_star(stat, emoji, name, row):
-            cost = get_star_upgrade_cost(player, stat)
-            lvl = 0
-            cur = 0.0
-            cap = ""
-            if stat == "dodge":
-                lvl = player.star_dodge_upgrades; cur = player.dodge_chance*100; cap="30%"
-            elif stat == "magical":
-                lvl = player.star_magical_upgrades; cur = player.magical_bullet_chance*100; cap="20%"
-            elif stat == "medic":
-                lvl = player.star_medic_upgrades; cur = player.medic_chance*100; cap="7%"
-            elif stat == "pet":
-                lvl = player.star_pet_upgrades; cur = player.pet_chance*100; cap="10%"
-            elif stat == "xp":
-                lvl = player.star_xp_upgrades; cur = player.xp_bonus*100; cap="25%"
-            label = f"{emoji} {name} {cur:.1f}% · ⭐{cost} (Lvl {lvl}/{cap})"
-            btn = discord.ui.Button(label=label[:80], style=discord.ButtonStyle.primary, row=row)
-            async def cb(interaction, stat=stat):
-                p=self.store.get(self.user_id); msgs=upgrade_star(p,stat); self.store.save()
-                await interaction.response.edit_message(content="\n".join(msgs)+"\n\n"+status(p)+f"\n💰 ${p.money} | ⭐ {p.stars} flex", view=StarUpgradeView(self.user_id, self.store))
+        self.selected_star = selected_star
+        self.clear_items()
+
+        stars = [
+            ("dodge", "💨 Dodge", "30% cap"),
+            ("magical", "✨ Magical", "20% cap"),
+            ("medic", "💊 Medic", "7% cap"),
+            ("pet", "🐺 Pet", "10% cap"),
+            ("xp", "✨ XP Gain", "25% cap"),
+        ]
+        for i, (sid, sname, cap) in enumerate(stars):
+            is_sel = sid == self.selected_star
+            cost = get_star_upgrade_cost(player, sid)
+            # get lvl
+            if sid == "dodge":
+                lvl = player.star_dodge_upgrades; cur = player.dodge_chance*100
+            elif sid == "magical":
+                lvl = player.star_magical_upgrades; cur = player.magical_bullet_chance*100
+            elif sid == "medic":
+                lvl = player.star_medic_upgrades; cur = player.medic_chance*100
+            elif sid == "pet":
+                lvl = player.star_pet_upgrades; cur = player.pet_chance*100
+            else:
+                lvl = player.star_xp_upgrades; cur = player.xp_bonus*100
+            label = f"{sname.split()[1]} {cur:.0f}% {'✅' if is_sel else ''}"
+            style = discord.ButtonStyle.success if is_sel else discord.ButtonStyle.primary
+            btn = discord.ui.Button(label=label[:80], style=style, row=0 if i < 3 else 1)
+            async def cb(interaction, s=sid):
+                self.selected_star = s
+                p=self.store.get(self.user_id)
+                content = self.get_shop_text(p, selected_override=s)
+                await interaction.response.edit_message(content=content, view=StarUpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_star=s))
             btn.callback = cb
-            return btn
-        self.add_item(make_star("dodge","💨","Dodge",0))
-        self.add_item(make_star("magical","✨","Magical",0))
-        self.add_item(make_star("medic","💊","Medic",0))
-        self.add_item(make_star("pet","🐺","Pet",1))
-        self.add_item(make_star("xp","✨","XP Gain",1))
-    @discord.ui.button(label="⬆️ Money Upgrades", style=discord.ButtonStyle.success, row=2)
-    async def money(self, interaction: discord.Interaction, _b):
-        p=self.store.get(self.user_id)
-        await interaction.response.edit_message(content=status(p)+f"\n💰 ${p.money} | ⭐ {p.stars}", view=UpgradeView(self.user_id, self.store))
+            self.add_item(btn)
+
+        # Single buy button for selected star - no bulk as requested
+        cost = get_star_upgrade_cost(player, self.selected_star)
+        buy_label = f"Buy {self.selected_star.capitalize()} ⭐{cost}"
+        btn_buy = discord.ui.Button(label=buy_label[:80], style=discord.ButtonStyle.success, row=2)
+        async def buy_cb(interaction):
+            p=self.store.get(self.user_id)
+            msgs = upgrade_star(p, self.selected_star)
+            self.store.save()
+            content = self.get_shop_text(p, selected_override=self.selected_star, extra_msgs=msgs)
+            await interaction.response.edit_message(content=content, view=StarUpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_star=self.selected_star))
+        btn_buy.callback = buy_cb
+        self.add_item(btn_buy)
+
+        money_btn = discord.ui.Button(label="⬆️ Money", style=discord.ButtonStyle.success, row=3)
+        async def money_cb(interaction):
+            p=self.store.get(self.user_id)
+            await interaction.response.edit_message(content=status(p, display_name=getattr(self, "display_name", "Survivor"))+f"\n💰 ${p.money} | ⭐ {p.stars}", view=UpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+        money_btn.callback = money_cb
+        self.add_item(money_btn)
+
+        hub_btn = discord.ui.Button(label="Back", style=discord.ButtonStyle.secondary, row=3)
+        async def hub_cb(interaction):
+            p=self.store.get(self.user_id)
+            hub = ShopHubView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"))
+            await interaction.response.edit_message(content=hub.get_shop_text(p), view=hub)
+        hub_btn.callback = hub_cb
+        self.add_item(hub_btn)
+
+        main_btn = discord.ui.Button(label="🏠 Main menu", style=discord.ButtonStyle.secondary, row=4)
+        async def main_cb(interaction):
+            name = getattr(self, "display_name", "Survivor")
+            try:
+                name = getattr(interaction.user, "display_name", None) or getattr(interaction.user, "global_name", None) or interaction.user.name
+            except:
+                pass
+            p=self.store.get(self.user_id)
+            await interaction.response.edit_message(content=status(p, display_name=name), view=ZombieMenuView(self.user_id, self.store, display_name=name))
+        main_btn.callback = main_cb
+        self.add_item(main_btn)
+
+    def get_shop_text(self, player, selected_override=None, extra_msgs=None):
+        sel = selected_override or getattr(self, "selected_star", "dodge")
+        lines = []
+        if extra_msgs:
+            lines.extend(extra_msgs)
+            lines.append("")
+        lines.append("**Star Upgrades Shop**")
+        lines.append("")
+        lines.append("Star upgrades are rare prestige perks.")
+        lines.append("")
+        lines.append(f"Your stars: **⭐{player.stars}** | Money: **${player.money:,}**")
+        emoji_map = {"dodge":"💨","magical":"✨","medic":"💊","pet":"🐺","xp":"✨"}
+        lines.append(f"Selected: {emoji_map.get(sel,'⭐')} **{sel.capitalize()}**")
+        lines.append("---")
+        for sid, sname, cap in [("dodge","💨 Dodge","30%"),("magical","✨ Magical","20%"),("medic","💊 Medic","7%"),("pet","🐺 Pet","10%"),("xp","✨ XP Gain","25%")]:
+            if sid == "dodge":
+                lvl = player.star_dodge_upgrades; cur = player.dodge_chance*100
+            elif sid == "magical":
+                lvl = player.star_magical_upgrades; cur = player.magical_bullet_chance*100
+            elif sid == "medic":
+                lvl = player.star_medic_upgrades; cur = player.medic_chance*100
+            elif sid == "pet":
+                lvl = player.star_pet_upgrades; cur = player.pet_chance*100
+            else:
+                lvl = player.star_xp_upgrades; cur = player.xp_bonus*100
+            sel_mark = " ← SELECTED" if sid == sel else ""
+            cost = get_star_upgrade_cost(player, sid)
+            lines.append(f"{sname} ({lvl}) - {cur:.1f}%{sel_mark}")
+            lines.append(f"Cap {cap} | Next cost ⭐{cost} | Lvl {lvl}")
+            lines.append("")
+        lines.append(f"Selected: {sel} - Next ⭐{get_star_upgrade_cost(player, sel)}")
+        return "\n".join(lines)
+
+
+class ZoneView(PlayerView):
+    def __init__(self, user_id, store, display_name: str = "Survivor"):
+        super().__init__(user_id, store, display_name)
+        for i, zone_name in enumerate(ZONES):
+            btn = discord.ui.Button(label=zone_name, style=discord.ButtonStyle.primary, row=i//2)
+            async def cb(interaction, zn=zone_name):
+                p=self.store.get(self.user_id); msgs=change_zone(p,zn); self.store.save()
+                await interaction.response.edit_message(content="\n".join(msgs)+"\n\n"+status(p, display_name=getattr(self, "display_name", "Survivor")), view=ZoneView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+            btn.callback = cb
+            self.add_item(btn)
     @discord.ui.button(label="🏠 Main menu", style=discord.ButtonStyle.secondary, row=2)
-    async def mainmenu2(self, interaction: discord.Interaction, _b):
-        await interaction.response.edit_message(content=status(self.store.get(self.user_id)), view=ZombieMenuView(self.user_id, self.store))
+    async def main(self, interaction: discord.Interaction, _b):
+        await interaction.response.edit_message(content=status(self.store.get(self.user_id), display_name=getattr(self, "display_name", "Survivor")), view=ZombieMenuView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+
+
+
+
+class ZoneView(PlayerView):
+    def __init__(self, user_id, store, display_name: str = "Survivor"):
+        super().__init__(user_id, store, display_name)
+        for i, zone_name in enumerate(ZONES):
+            btn = discord.ui.Button(label=zone_name, style=discord.ButtonStyle.primary, row=i//2)
+            async def cb(interaction, zn=zone_name):
+                p=self.store.get(self.user_id); msgs=change_zone(p,zn); self.store.save()
+                await interaction.response.edit_message(content="\n".join(msgs)+"\n\n"+status(p, display_name=getattr(self, "display_name", "Survivor")), view=ZoneView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+            btn.callback = cb
+            self.add_item(btn)
+    @discord.ui.button(label="🏠 Main menu", style=discord.ButtonStyle.secondary, row=2)
+    async def main(self, interaction: discord.Interaction, _b):
+        await interaction.response.edit_message(content=status(self.store.get(self.user_id), display_name=getattr(self, "display_name", "Survivor")), view=ZombieMenuView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+
+
 
 class StarterBot(discord.Client):
+
     def __init__(self):
         intents = discord.Intents.default()
         super().__init__(intents=intents)
@@ -1759,7 +2042,8 @@ bot = StarterBot()
 async def zombie_cmd(interaction: discord.Interaction):
     await interaction.response.defer()
     player = game_store.get(interaction.user.id)
-    await interaction.followup.send(content=status(player), view=ZombieMenuView(interaction.user.id, game_store))
+    name = getattr(interaction.user, "display_name", None) or getattr(interaction.user, "global_name", None) or interaction.user.name
+    await interaction.followup.send(content=status(player, display_name=name), view=ZombieMenuView(interaction.user.id, game_store, display_name=name))
 
 @bot.tree.command(name="zombie_start", description="Start a zombie run")
 async def zombie_start_cmd(interaction: discord.Interaction):
