@@ -1462,7 +1462,7 @@ class ZombieMenuView(PlayerView):
         btn_shop.callback = shop_cb
         self.add_item(btn_shop)
 
-        # ROW 1: Zones + Ammo + Upgrades
+        # ROW 1: Zones + Refresh - slick 4-button layout
         btn_zones = discord.ui.Button(label="🗺️ Zones", style=discord.ButtonStyle.secondary, row=1)
         async def zones_cb(interaction: discord.Interaction):
             p = self.store.get(self.user_id)
@@ -1483,24 +1483,8 @@ class ZombieMenuView(PlayerView):
         btn_zones.callback = zones_cb
         self.add_item(btn_zones)
 
-        btn_ammo = discord.ui.Button(label="🧪 Ammo", style=discord.ButtonStyle.secondary, row=1)
-        async def ammo_cb(interaction: discord.Interaction):
-            p = self.store.get(self.user_id)
-            view = AmmoShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"))
-            await interaction.response.edit_message(content=view.get_shop_text(p), embed=None, view=view)
-        btn_ammo.callback = ammo_cb
-        self.add_item(btn_ammo)
-
-        btn_up = discord.ui.Button(label="⬆️ Upgrades", style=discord.ButtonStyle.secondary, row=1)
-        async def up_cb(interaction: discord.Interaction):
-            p = self.store.get(self.user_id)
-            view = UpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"))
-            await interaction.response.edit_message(content=view.get_shop_text(p), embed=None, view=view)
-        btn_up.callback = up_cb
-        self.add_item(btn_up)
-
-        # ROW 2: Refresh
-        btn_refresh = discord.ui.Button(label="🔄 Refresh", style=discord.ButtonStyle.secondary, row=2)
+        # ROW 1: Refresh (4th button)
+        btn_refresh = discord.ui.Button(label="🔄 Refresh", style=discord.ButtonStyle.secondary, row=1)
         async def refresh_cb(interaction: discord.Interaction):
             p = self.store.get(self.user_id)
             name = getattr(self, "display_name", "Survivor")
@@ -2102,14 +2086,7 @@ class UpgradeView(PlayerView):
         btn_buy.callback = buy_cb
         self.add_item(btn_buy)
 
-        star_btn = discord.ui.Button(label="⭐ Stars", style=discord.ButtonStyle.primary, row=3)
-        async def star_cb(interaction):
-            p=self.store.get(self.user_id)
-            await interaction.response.edit_message(content=status(p, display_name=getattr(self, "display_name", "Survivor")) + f"\n💰 ${p.money} | ⭐ {p.stars} flex\n**STAR PRESTIGE**", view=StarUpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
-        star_btn.callback = star_cb
-        self.add_item(star_btn)
-
-        hub_btn = discord.ui.Button(label="Back", style=discord.ButtonStyle.secondary, row=4)
+        hub_btn = discord.ui.Button(label="Back", style=discord.ButtonStyle.secondary, row=3)
         async def hub_cb(interaction):
             p=self.store.get(self.user_id)
             hub = ShopHubView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"))
@@ -2207,14 +2184,6 @@ class StarUpgradeView(PlayerView):
             await interaction.response.edit_message(content=content, view=StarUpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_star=self.selected_star))
         btn_buy.callback = buy_cb
         self.add_item(btn_buy)
-
-        money_btn = discord.ui.Button(label="⬆️ Money", style=discord.ButtonStyle.success, row=3)
-        async def money_cb(interaction):
-            p=self.store.get(self.user_id)
-            view = UpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"))
-            await interaction.response.edit_message(content=view.get_shop_text(p), embed=None, view=view)
-        money_btn.callback = money_cb
-        self.add_item(money_btn)
 
         hub_btn = discord.ui.Button(label="Back", style=discord.ButtonStyle.secondary, row=3)
         async def hub_cb(interaction):
