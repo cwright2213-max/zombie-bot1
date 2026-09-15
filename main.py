@@ -2099,7 +2099,8 @@ class StarUpgradeView(PlayerView):
         money_btn = discord.ui.Button(label="⬆️ Money", style=discord.ButtonStyle.success, row=3)
         async def money_cb(interaction):
             p=self.store.get(self.user_id)
-            await interaction.response.edit_message(content=status(p, display_name=getattr(self, "display_name", "Survivor"))+f"\n💰 ${p.money} | ⭐ {p.stars}", view=UpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+            view = UpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"))
+            await interaction.response.edit_message(content=view.get_shop_text(p), embed=None, view=view)
         money_btn.callback = money_cb
         self.add_item(money_btn)
 
@@ -2129,49 +2130,47 @@ class StarUpgradeView(PlayerView):
         if extra_msgs:
             lines.extend(extra_msgs)
             lines.append("")
-        lines.append("**Star Upgrades Shop**")
+        lines.append("**⭐ STAR PRESTIGE Shop**")
         lines.append("")
-        lines.append("Star upgrades are rare prestige perks.")
+        lines.append("Rare prestige perks from leveling up. Stars are earned from waves.")
         lines.append("")
-        lines.append(f"Your stars: **⭐{player.stars}** | Money: **${player.money:,}**")
+        lines.append(f"Your stars: **⭐{player.stars}** | Balance: **${player.money:,}** | Level **{player.level}**")
         emoji_map = {"dodge":"💨","magical":"✨","medic":"💊","pet":"🐺","xp":"✨"}
-        lines.append(f"Selected: {emoji_map.get(sel,'⭐')} **{sel.capitalize()}**")
+        lines.append(f"Selected: {emoji_map.get(sel,'⭐')} **{sel.capitalize()}** → Next: ⭐{get_star_upgrade_cost(player, sel)}")
         lines.append("---")
-        for sid, sname, cap in [("dodge","💨 Dodge","30%"),("magical","✨ Magical","20%"),("medic","💊 Medic","7%"),("pet","🐺 Pet","10%"),("xp","✨ XP Gain","25%")]:
+        descs = {
+            "dodge": "Dodge enemy attacks completely. 10% base +0.5% per lvl, cap 30%. Makes you untouchable late game.",
+            "magical": "Chance to NOT consume ammo on attack. 5% base +0.5% per lvl, cap 20%. Saves bullets with expensive ammo.",
+            "medic": "Chance to not consume meds + chance for med drop on wave clear. 2% base +0.25% per lvl, cap 7%. Best for sustain.",
+            "pet": "Wolf companion bites zombies for 25% weapon dmg. 5% base +1% per lvl, cap 10% chance. Extra free damage.",
+            "xp": "Bonus XP from all sources. 10% base +1% per lvl, cap 25%. Levels you faster for more stars.",
+        }
+        for sid, sname, cap in [("dodge","💨 Dodge","30%"),("magical","✨ Magical Bullet","20%"),("medic","💊 Medic","7%"),("pet","🐺 Wolf Pet","10%"),("xp","✨ XP Boost","25%")]:
             if sid == "dodge":
                 lvl = player.star_dodge_upgrades; cur = player.dodge_chance*100
+                per = "+0.5% per level"
             elif sid == "magical":
                 lvl = player.star_magical_upgrades; cur = player.magical_bullet_chance*100
+                per = "+0.5% per level"
             elif sid == "medic":
                 lvl = player.star_medic_upgrades; cur = player.medic_chance*100
+                per = "+0.25% per level"
             elif sid == "pet":
                 lvl = player.star_pet_upgrades; cur = player.pet_chance*100
+                per = "+1% per level"
             else:
                 lvl = player.star_xp_upgrades; cur = player.xp_bonus*100
+                per = "+1% per level"
             sel_mark = " ← SELECTED" if sid == sel else ""
             cost = get_star_upgrade_cost(player, sid)
-            lines.append(f"{sname} ({lvl}) - {cur:.1f}%{sel_mark}")
-            lines.append(f"Cap {cap} | Next cost ⭐{cost} | Lvl {lvl}")
+            lines.append(f"{sname} (Lvl {lvl}) - **{cur:.1f}%**{sel_mark}")
+            lines.append(f"{descs[sid]}")
+            lines.append(f"Cap {cap} | {per} | Cost ⭐{cost} | Next Lvl {lvl+1}")
             lines.append("")
-        lines.append(f"Selected: {sel} - Next ⭐{get_star_upgrade_cost(player, sel)}")
+        lines.append(f"Selected: **{sel.capitalize()}** → Buy for ⭐{get_star_upgrade_cost(player, sel)}")
         return "\n".join(lines)
 
 
-class ZoneView(PlayerView):
-    def __init__(self, user_id, store, display_name: str = "Survivor", timeout: float = 180):
-        super().__init__(user_id, store, display_name)
-        for i, zone_name in enumerate(ZONES):
-            btn = discord.ui.Button(label=zone_name, style=discord.ButtonStyle.primary, row=i//2)
-            async def cb(interaction, zn=zone_name):
-                p=self.store.get(self.user_id); msgs=change_zone(p,zn); self.store.save()
-                await interaction.response.edit_message(content="\n".join(msgs)+"\n\n"+status(p, display_name=getattr(self, "display_name", "Survivor")), view=ZoneView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
-            btn.callback = cb
-            self.add_item(btn)
-    @discord.ui.button(label="🏠 Main menu", style=discord.ButtonStyle.secondary, row=2)
-    async def main(self, interaction: discord.Interaction, _b):
-        await interaction.response.edit_message(content=status(self.store.get(self.user_id), display_name=getattr(self, "display_name", "Survivor")), view=ZombieMenuView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
-
-
 
 
 class ZoneView(PlayerView):
@@ -2187,6 +2186,7 @@ class ZoneView(PlayerView):
     @discord.ui.button(label="🏠 Main menu", style=discord.ButtonStyle.secondary, row=2)
     async def main(self, interaction: discord.Interaction, _b):
         await interaction.response.edit_message(content=status(self.store.get(self.user_id), display_name=getattr(self, "display_name", "Survivor")), view=ZombieMenuView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+
 
 
 
