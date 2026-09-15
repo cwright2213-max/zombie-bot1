@@ -105,19 +105,19 @@ def combat_embed(player, last_msgs=None):
 MAX_PAINKILLERS_PER_RUN = 3
 MAX_FULL_RESTORES_PER_RUN = 1
 ZONES: dict[str, dict[str, Any]] = {
-    "Graveyard": {"min_level": 1, "hp_mult": 0.9, "dmg_mult": 0.9, "money_mult": 1.5, "xp_mult": 1.6, "desc": "Foggy, quiet, and good for learning.", "weights": [60, 25, 12, 3], "ammo_mods": {"Standard": 1.00, "Bleed": 1.00, "Incendiary": 1.00, "Frostbite": 1.00, "Toxic": 1.00, "Shock": 1.00}},
-    "Mega Death City": {"min_level": 50, "hp_mult": 2.2, "dmg_mult": 1.4, "money_mult": 1.6, "xp_mult": 1.6, "desc": "A concrete jungle with tougher, richer zombies.", "weights": [30, 30, 25, 15], "ammo_mods": {"Standard": 1.00, "Bleed": 1.00, "Incendiary": 1.20, "Frostbite": 0.90, "Toxic": 1.00, "Shock": 1.15}},
-    "Frostbitten Outskirts": {"min_level": 100, "hp_mult": 3.8, "dmg_mult": 1.8, "money_mult": 2.2, "xp_mult": 2.4, "desc": "Freezing rain and frost armor.", "weights": [20, 20, 35, 25], "ammo_mods": {"Standard": 1.00, "Bleed": 0.90, "Incendiary": 1.40, "Frostbite": 0.70, "Toxic": 1.00, "Shock": 1.15}},
-    "Toxic Wasteland": {"min_level": 150, "hp_mult": 6.0, "dmg_mult": 2.3, "money_mult": 3.0, "xp_mult": 3.2, "desc": "A green haze where toxic rounds shine.", "weights": [15, 15, 35, 35], "ammo_mods": {"Standard": 1.00, "Bleed": 1.00, "Incendiary": 1.10, "Frostbite": 1.00, "Toxic": 1.50, "Shock": 0.90}},
-    "The Void": {"min_level": 200, "hp_mult": 10.0, "dmg_mult": 3.0, "money_mult": 4.0, "xp_mult": 4.5, "desc": "Endgame. Everything wants you dead.", "weights": [10, 10, 30, 50], "ammo_mods": {"Standard": 1.00, "Bleed": 1.10, "Incendiary": 1.15, "Frostbite": 1.10, "Toxic": 1.25, "Shock": 1.50}},
+    "Graveyard": {"min_level": 1, "hp_mult": 0.9, "dmg_mult": 0.9, "money_mult": 2.0, "xp_mult": 1.6, "desc": "Foggy, quiet, and good for learning.", "weights": [60, 25, 12, 3], "ammo_mods": {"Standard": 1.00, "Bleed": 1.00, "Incendiary": 1.00, "Frostbite": 1.00, "Toxic": 1.00, "Shock": 1.00}},
+    "Mega Death City": {"min_level": 50, "hp_mult": 2.2, "dmg_mult": 1.4, "money_mult": 3.5, "xp_mult": 1.6, "desc": "A concrete jungle with tougher, richer zombies.", "weights": [30, 30, 25, 15], "ammo_mods": {"Standard": 1.00, "Bleed": 1.00, "Incendiary": 1.20, "Frostbite": 0.90, "Toxic": 1.00, "Shock": 1.15}},
+    "Frostbitten Outskirts": {"min_level": 100, "hp_mult": 3.8, "dmg_mult": 1.8, "money_mult": 5.0, "xp_mult": 2.4, "desc": "Freezing rain and frost armor.", "weights": [20, 20, 35, 25], "ammo_mods": {"Standard": 1.00, "Bleed": 0.90, "Incendiary": 1.40, "Frostbite": 0.70, "Toxic": 1.00, "Shock": 1.15}},
+    "Toxic Wasteland": {"min_level": 150, "hp_mult": 6.0, "dmg_mult": 2.3, "money_mult": 7.5, "xp_mult": 3.2, "desc": "A green haze where toxic rounds shine.", "weights": [15, 15, 35, 35], "ammo_mods": {"Standard": 1.00, "Bleed": 1.00, "Incendiary": 1.10, "Frostbite": 1.00, "Toxic": 1.50, "Shock": 0.90}},
+    "The Void": {"min_level": 200, "hp_mult": 10.0, "dmg_mult": 3.0, "money_mult": 10.0, "xp_mult": 4.5, "desc": "Endgame. Everything wants you dead.", "weights": [10, 10, 30, 50], "ammo_mods": {"Standard": 1.00, "Bleed": 1.10, "Incendiary": 1.15, "Frostbite": 1.10, "Toxic": 1.25, "Shock": 1.50}},
 }
 AMMO: dict[str, dict[str, Any]] = {
     "Standard": {"unlock_level": 1, "price": 0, "desc": "Reliable regular lead.", "effect": None, "cost_per_attack": 1, "box_price": 30, "box_amount": 24},
-    "Bleed": {"unlock_level": 10, "price": 200, "desc": "25% bleed 8 dmg x3", "effect": "bleed", "cost_per_attack": 2, "box_price": 100, "box_amount": 24},
-    "Incendiary": {"unlock_level": 35, "price": 600, "desc": "30% burn 12 dmg x2", "effect": "burn", "cost_per_attack": 3, "box_price": 200, "box_amount": 24},
-    "Frostbite": {"unlock_level": 70, "price": 1200, "desc": "20% halve dmg x3", "effect": "freeze", "cost_per_attack": 4, "box_price": 200, "box_amount": 24},
-    "Toxic": {"unlock_level": 110, "price": 2500, "desc": "35% poison 10 dmg x4", "effect": "poison", "cost_per_attack": 5, "box_price": 300, "box_amount": 24},
-    "Shock": {"unlock_level": 160, "price": 5000, "desc": "15% stun 1 turn", "effect": "shock", "cost_per_attack": 6, "box_price": 375, "box_amount": 24},
+    "Bleed": {"unlock_level": 10, "price": 200, "desc": "25% bleed 15 dmg x3", "effect": "bleed", "cost_per_attack": 2, "box_price": 100, "box_amount": 24},
+    "Incendiary": {"unlock_level": 35, "price": 600, "desc": "30% burn 20 dmg x3", "effect": "burn", "cost_per_attack": 3, "box_price": 200, "box_amount": 24},
+    "Frostbite": {"unlock_level": 70, "price": 1200, "desc": "20% freeze halves dmg x4 + 10 dmg x2", "effect": "freeze", "cost_per_attack": 4, "box_price": 200, "box_amount": 24},
+    "Toxic": {"unlock_level": 110, "price": 2500, "desc": "35% poison 15 dmg x5", "effect": "poison", "cost_per_attack": 5, "box_price": 300, "box_amount": 24},
+    "Shock": {"unlock_level": 160, "price": 5000, "desc": "15% stun 1 turn + 20 dmg", "effect": "shock", "cost_per_attack": 6, "box_price": 375, "box_amount": 24},
 }
 WEAPONS: dict[str, dict[str, Any]] = {
     "Pistol": {"damage": 20, "mag": 12, "price": 0, "unlock_level": 1, "shots": 1},
@@ -455,8 +455,8 @@ def _apply_damage_over_time(player: Survivor) -> list[str]:
     messages: list[str] = []
     for effect in list(enemy.effects):
         if effect in {"bleed", "burn", "poison"}:
-            base = {"bleed": 8, "burn": 12, "poison": 10}[effect]
-            mod_name = {"bleed": "Bleed", "burn": "Incendiary", "poison": "Toxic"}[effect]
+            base = {"bleed": 15, "burn": 20, "poison": 15, "freeze": 10}[effect]
+            mod_name = {"bleed": "Bleed", "burn": "Incendiary", "poison": "Toxic", "freeze": "Frostbite"}[effect]
             damage = int(base * ammo_modifier(player, mod_name))
             enemy.health = max(0, enemy.health - damage)
             enemy.effects[effect] -= 1
@@ -633,9 +633,14 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
         effect = ammo_data["effect"]
         chances = {"bleed": 0.25, "burn": 0.30, "freeze": 0.20, "poison": 0.35, "shock": 0.15}
         if effect and random.random() < chances[effect]:
-            durations = {"bleed": 3, "burn": 2, "freeze": 3, "poison": 4, "shock": 1}
+            durations = {"bleed": 3, "burn": 3, "freeze": 4, "poison": 5, "shock": 1}
             enemy.effects[effect] = durations[effect]
             messages.append(f"💥 {player.ammo_name} procs **{effect}**!")
+            # Shock also does instant 20 dmg
+            if effect == "shock":
+                shock_dmg = int(20 * ammo_modifier(player, "Shock"))
+                enemy.health = max(0, enemy.health - shock_dmg)
+                messages.append(f"⚡ Shock deals {shock_dmg} dmg!")
     elif action == "reload":
         if player.magazine == player.magazine_size:
             return ["✅ Mag full!"]
@@ -769,14 +774,14 @@ def get_upgrade_cost(player: Survivor, stat: str) -> int:
         "armor": 450,
         "scavenger": 700,
     }
-    # Multipliers per level (how fast it gets expensive)
+    # Multipliers per level (how fast it gets expensive) - increased for high wave balance
     mults = {
-        "damage": 1.35,
-        "health": 1.30,
-        "mag": 1.45,
-        "crit": 1.50,
-        "armor": 1.40,
-        "scavenger": 1.60,
+        "damage": 1.55,
+        "health": 1.45,
+        "mag": 1.60,
+        "crit": 1.70,
+        "armor": 1.60,
+        "scavenger": 1.85,
     }
     if stat not in bases:
         return 999999
