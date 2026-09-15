@@ -1,4 +1,3 @@
-
 """Ultimate clean bot v4 - waves + kills, no Total Money Earned"""
 import os, sys, json, random, logging
 from dataclasses import asdict, dataclass, field
@@ -18,7 +17,11 @@ DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 def _get_conn():
     import sqlite3
-    conn = sqlite3.connect(str(DB_PATH))
+    # timeout 10s + WAL mode to prevent "database is locked" under spammy Attack buttons
+    conn = sqlite3.connect(str(DB_PATH), timeout=10.0, check_same_thread=False)
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA busy_timeout=10000;")
+    conn.execute("PRAGMA synchronous=NORMAL;")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS players (
             user_id TEXT PRIMARY KEY,
@@ -47,13 +50,25 @@ def load_all_players():
         return {}
 
 def save_player(user_id, player_dict):
-    try:
-        conn = _get_conn()
-        conn.execute("INSERT OR REPLACE INTO players (user_id, data, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)", (str(user_id), json.dumps(player_dict)))
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        print(f"Save failed: {e}")
+    import time
+    # Retry loop for database locked
+    for attempt in range(5):
+        try:
+            conn = _get_conn()
+            conn.execute("INSERT OR REPLACE INTO players (user_id, data, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)", (str(user_id), json.dumps(player_dict)))
+            conn.commit()
+            conn.close()
+            return
+        except Exception as e:
+            if "locked" in str(e).lower() and attempt < 4:
+                time.sleep(0.2 * (attempt+1))
+                continue
+            print(f"Save failed: {e}")
+            try:
+                conn.close()
+            except:
+                pass
+            return
 
 SAVE_FILE = DB_PATH
 
@@ -108,17 +123,17 @@ MAX_FULL_RESTORES_PER_RUN = 1
 ZONES: dict[str, dict[str, Any]] = {
     "Graveyard": {"min_level": 1, "hp_mult": 0.9, "dmg_mult": 0.9, "money_mult": 2.0, "xp_mult": 1.6, "desc": "Foggy, quiet, and good for learning.", "weights": [60, 25, 12, 3], "ammo_mods": {"Standard": 1.00, "Bleed": 1.00, "Incendiary": 1.00, "Frostbite": 1.00, "Toxic": 1.00, "Shock": 1.00}},
     "Mega Death City": {"min_level": 50, "hp_mult": 2.2, "dmg_mult": 1.4, "money_mult": 3.5, "xp_mult": 1.6, "desc": "A concrete jungle with tougher, richer zombies.", "weights": [30, 30, 25, 15], "ammo_mods": {"Standard": 1.00, "Bleed": 1.00, "Incendiary": 1.20, "Frostbite": 0.90, "Toxic": 1.00, "Shock": 1.15}},
-    "Frostbitten Outskirts": {"min_level": 100, "hp_mult": 3.8, "dmg_mult": 1.8, "money_mult": 5.0, "xp_mult": 2.4, "desc": "Freezing rain and frost armor.", "weights": [20, 20, 35, 25], "ammo_mods": {"Standard": 1.00, "Bleed": 0.90, "Incendiary": 1.40, "Frostbite": 0.70, "Toxic": 1.00, "Shock": 1.15}},
-    "Toxic Wasteland": {"min_level": 150, "hp_mult": 6.0, "dmg_mult": 2.3, "money_mult": 7.5, "xp_mult": 3.2, "desc": "A green haze where toxic rounds shine.", "weights": [15, 15, 35, 35], "ammo_mods": {"Standard": 1.00, "Bleed": 1.00, "Incendiary": 1.10, "Frostbite": 1.00, "Toxic": 1.50, "Shock": 0.90}},
-    "The Void": {"min_level": 200, "hp_mult": 10.0, "dmg_mult": 3.0, "money_mult": 10.0, "xp_mult": 4.5, "desc": "Endgame. Everything wants you dead.", "weights": [10, 10, 30, 50], "ammo_mods": {"Standard": 1.00, "Bleed": 1.10, "Incendiary": 1.15, "Frostbite": 1.10, "Toxic": 1.25, "Shock": 1.50}},
+    "Frostbitten Outskirts": {"min_level": 100, "hp_mult": 5.5, "dmg_mult": 2.0, "money_mult": 5.0, "xp_mult": 2.4, "desc": "Freezing rain and frost armor - NOT for level 50s.", "weights": [20, 20, 35, 25], "ammo_mods": {"Standard": 1.00, "Bleed": 0.90, "Incendiary": 1.40, "Frostbite": 0.70, "Toxic": 1.00, "Shock": 1.15}},
+    "Toxic Wasteland": {"min_level": 150, "hp_mult": 9.0, "dmg_mult": 2.6, "money_mult": 7.5, "xp_mult": 3.2, "desc": "A green haze where toxic rounds shine. Bring real gear.", "weights": [15, 15, 35, 35], "ammo_mods": {"Standard": 1.00, "Bleed": 1.00, "Incendiary": 1.10, "Frostbite": 1.00, "Toxic": 1.50, "Shock": 0.90}},
+    "The Void": {"min_level": 200, "hp_mult": 14.0, "dmg_mult": 3.4, "money_mult": 10.0, "xp_mult": 4.5, "desc": "Endgame. Everything wants you dead. 3-4 shots? Not here.", "weights": [10, 10, 30, 50], "ammo_mods": {"Standard": 1.00, "Bleed": 1.10, "Incendiary": 1.15, "Frostbite": 1.10, "Toxic": 1.25, "Shock": 1.50}},
 }
 AMMO: dict[str, dict[str, Any]] = {
-    "Standard": {"unlock_level": 1, "price": 0, "desc": "Reliable regular lead.", "effect": None, "cost_per_attack": 1, "box_price": 30, "box_amount": 24},
-    "Bleed": {"unlock_level": 10, "price": 200, "desc": "25% bleed 15 dmg x3", "effect": "bleed", "cost_per_attack": 2, "box_price": 100, "box_amount": 24},
-    "Incendiary": {"unlock_level": 35, "price": 600, "desc": "30% burn 20 dmg x3", "effect": "burn", "cost_per_attack": 3, "box_price": 200, "box_amount": 24},
-    "Frostbite": {"unlock_level": 70, "price": 1200, "desc": "20% freeze halves dmg x4 + 10 dmg x2", "effect": "freeze", "cost_per_attack": 4, "box_price": 200, "box_amount": 24},
-    "Toxic": {"unlock_level": 110, "price": 2500, "desc": "35% poison 15 dmg x5", "effect": "poison", "cost_per_attack": 5, "box_price": 300, "box_amount": 24},
-    "Shock": {"unlock_level": 160, "price": 5000, "desc": "15% stun 1 turn + 20 dmg", "effect": "shock", "cost_per_attack": 6, "box_price": 375, "box_amount": 24},
+    "Standard": {"unlock_level": 1, "price": 0, "desc": "Reliable regular lead.", "effect": None, "cost_per_attack": 1, "box_price": 15, "box_amount": 24},
+    "Bleed": {"unlock_level": 10, "price": 200, "desc": "25% bleed 15 dmg x3", "effect": "bleed", "cost_per_attack": 2, "box_price": 50, "box_amount": 24},
+    "Incendiary": {"unlock_level": 35, "price": 600, "desc": "30% burn 20 dmg x3", "effect": "burn", "cost_per_attack": 3, "box_price": 100, "box_amount": 24},
+    "Frostbite": {"unlock_level": 70, "price": 1200, "desc": "20% freeze halves dmg x4 + 10 dmg x2", "effect": "freeze", "cost_per_attack": 4, "box_price": 100, "box_amount": 24},
+    "Toxic": {"unlock_level": 110, "price": 2500, "desc": "35% poison 15 dmg x5", "effect": "poison", "cost_per_attack": 5, "box_price": 150, "box_amount": 24},
+    "Shock": {"unlock_level": 160, "price": 5000, "desc": "15% stun 1 turn + 20 dmg", "effect": "shock", "cost_per_attack": 6, "box_price": 185, "box_amount": 24},
 }
 WEAPONS: dict[str, dict[str, Any]] = {
     "Pistol": {"damage": 20, "mag": 12, "price": 0, "unlock_level": 1, "shots": 1},
@@ -205,7 +220,7 @@ class Survivor:
         return min(self.armor_upgrades * 2, 35)
     @property
     def scavenger_bonus(self) -> float:
-        return 1.0 + self.scavenger_upgrades * 0.05
+        return 1.0 + self.scavenger_upgrades * 0.10
     # --- STAR UPGRADE PROPERTIES ---
     @property
     def dodge_chance(self) -> float:
@@ -482,7 +497,7 @@ def _finish_enemy(player: Survivor) -> list[str]:
     player.run_xp_earned += enemy.xp_reward
     player.run_zombies_killed += 1
     player.zombies_remaining -= 1
-    messages = [f"✅ **{enemy.name} defeated!** +${enemy.money_reward} • +{enemy.xp_reward} XP"]
+    messages = [f"✅ **{enemy.name} defeated!** +${money_gain} (Base ${enemy.money_reward} + {int((player.scavenger_bonus-1)*100)}% Loot) • +{enemy.xp_reward} XP"] if player.scavenger_bonus > 1.0 else [f"✅ **{enemy.name} defeated!** +${money_gain} • +{enemy.xp_reward} XP"]
     if player.level > level_for_xp(player.xp - enemy.xp_reward):
         ups = player.level - level_for_xp(player.xp - enemy.xp_reward)
         if ups > 0:
@@ -497,7 +512,9 @@ def _finish_enemy(player: Survivor) -> list[str]:
             else:
                 player.full_restores += 1
                 messages.append(f"✨ **Medic drop!** +1 full restore on wave clear! ({player.medic_chance*100:.2f}% chance)")
-        bonus = int(10 * player.wave * zone_for(player)["money_mult"])
+        # FIX: Wave bonus now also respects Loot upgrade
+        base_bonus = int(10 * player.wave * zone_for(player)["money_mult"])
+        bonus = int(base_bonus * player.scavenger_bonus)
         player.money += bonus
         player.run_money_earned += bonus
         player.spare_ammo[player.ammo_name] = player.spare_ammo.get(player.ammo_name, 0) + 5
@@ -843,7 +860,7 @@ def upgrade(player: Survivor, stat: str) -> list[str]:
         return [f"🛡️ Armor → **-{player.armor_reduction} dmg** (cap -35). ${player.money} left. Lvl {player.armor_upgrades}"]
     elif canonical == "scavenger":
         player.scavenger_upgrades += 1
-        return [f"💰 Loot bonus → **+{int((player.scavenger_bonus-1)*100)}%** (+5% per lvl). ${player.money} left. Lvl {player.scavenger_upgrades}"]
+        return [f"💰 Loot bonus → **+{int((player.scavenger_bonus-1)*100)}%** (+10% per lvl). ${player.money} left. Lvl {player.scavenger_upgrades}"]
     else:
         # Refund if unknown
         player.money += cost
@@ -1080,7 +1097,11 @@ class GameStore:
         key = str(user_id)
         if key not in self.players:
             self.players[key] = Survivor()
-            self.save_one(key)
+            # Don't block on creation - fire and forget save
+            try:
+                save_player(key, self.players[key].to_dict())
+            except:
+                save_player(key, asdict(self.players[key]))
         return self.players[key]
     def save_one(self, key: str):
         p = self.players.get(key)
@@ -1089,12 +1110,33 @@ class GameStore:
                 save_player(key, p.to_dict())
             except:
                 save_player(key, asdict(p))
+    async def save_one_async(self, key: str):
+        # Async version - runs in thread pool, doesn't block event loop
+        import asyncio
+        p = self.players.get(key)
+        if p:
+            try:
+                d = p.to_dict()
+            except:
+                d = asdict(p)
+            await asyncio.to_thread(save_player, key, d)
     def save(self):
         for k, p in self.players.items():
             try:
                 save_player(k, p.to_dict())
             except:
                 save_player(k, asdict(p))
+    async def save_async(self):
+        import asyncio
+        tasks = []
+        for k, p in self.players.items():
+            try:
+                d = p.to_dict()
+            except:
+                d = asdict(p)
+            tasks.append(asyncio.to_thread(save_player, k, d))
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
     def load(self):
         raw = load_all_players()
         loaded = {}
@@ -1193,9 +1235,12 @@ class ZombieMenuView(PlayerView):
 class CombatView(PlayerView):
     @discord.ui.button(label="🔫 Attack", style=discord.ButtonStyle.danger, row=0)
     async def attack(self, interaction: discord.Interaction, _b):
+        # Defer immediately to avoid "This interaction failed" - we have 3s limit
+        await interaction.response.defer()
         player = self.store.get(self.user_id)
         msgs = take_action(player, "attack")
-        self.store.save()
+        # Async save - doesn't block event loop, prevents DB lock timeouts
+        await self.store.save_one_async(str(self.user_id))
         if not player.run_active:
             embed = discord.Embed(
                 title="☠️ Run Ended",
@@ -1206,16 +1251,17 @@ class CombatView(PlayerView):
             embed.add_field(name="🧟 Kills", value=f"{player.run_zombies_killed} zombies", inline=True)
             embed.add_field(name="💰 Rewards", value=f"+${player.run_money_earned}\n+{player.run_xp_earned} XP", inline=True)
             embed.set_footer(text=f"HP restored to {player.max_health}/{player.max_health} • Use Start run for another go")
-            await interaction.response.edit_message(content=None, embed=embed, view=ZombieMenuView(self.user_id, self.store))
+            await interaction.edit_original_response(content=None, embed=embed, view=ZombieMenuView(self.user_id, self.store))
         else:
             embed = combat_embed(player, msgs)
-            await interaction.response.edit_message(content=None, embed=embed, view=CombatView(self.user_id, self.store))
+            await interaction.edit_original_response(content=None, embed=embed, view=CombatView(self.user_id, self.store))
 
     @discord.ui.button(label="🔄 Reload", style=discord.ButtonStyle.primary, row=0)
     async def reload(self, interaction: discord.Interaction, _b):
+        await interaction.response.defer()
         player = self.store.get(self.user_id)
         msgs = take_action(player, "reload")
-        self.store.save()
+        await self.store.save_one_async(str(self.user_id))
         if not player.run_active:
             embed = discord.Embed(
                 title="☠️ Run Ended",
@@ -1226,10 +1272,10 @@ class CombatView(PlayerView):
             embed.add_field(name="🧟 Kills", value=f"{player.run_zombies_killed} zombies", inline=True)
             embed.add_field(name="💰 Rewards", value=f"+${player.run_money_earned}\n+{player.run_xp_earned} XP", inline=True)
             embed.set_footer(text=f"HP restored to {player.max_health}/{player.max_health}")
-            await interaction.response.edit_message(content=None, embed=embed, view=ZombieMenuView(self.user_id, self.store))
+            await interaction.edit_original_response(content=None, embed=embed, view=ZombieMenuView(self.user_id, self.store))
         else:
             embed = combat_embed(player, msgs)
-            await interaction.response.edit_message(content=None, embed=embed, view=CombatView(self.user_id, self.store))
+            await interaction.edit_original_response(content=None, embed=embed, view=CombatView(self.user_id, self.store))
 
     @discord.ui.button(label="💊 Heal", style=discord.ButtonStyle.success, row=0)
     async def heal(self, interaction: discord.Interaction, _b):
@@ -1239,9 +1285,10 @@ class CombatView(PlayerView):
 
     @discord.ui.button(label="🏃 Flee", style=discord.ButtonStyle.secondary, row=0)
     async def flee(self, interaction: discord.Interaction, _b):
+        await interaction.response.defer()
         player = self.store.get(self.user_id)
         msgs = take_action(player, "flee")
-        self.store.save()
+        await self.store.save_one_async(str(self.user_id))
         embed = discord.Embed(
             title="🏃 You Fled!",
             description="\n".join(msgs),
@@ -1251,7 +1298,7 @@ class CombatView(PlayerView):
         embed.add_field(name="🧟 Kills", value=f"{player.run_zombies_killed} zombies", inline=True)
         embed.add_field(name="💰 Kept", value=f"+${player.run_money_earned}\n+{player.run_xp_earned} XP", inline=True)
         embed.set_footer(text=f"HP restored to {player.max_health}/{player.max_health} • Fleeing keeps all rewards")
-        await interaction.response.edit_message(content=None, embed=embed, view=ZombieMenuView(self.user_id, self.store))
+        await interaction.edit_original_response(content=None, embed=embed, view=ZombieMenuView(self.user_id, self.store))
 
 
 class HealView(PlayerView):
@@ -1267,11 +1314,12 @@ class HealView(PlayerView):
         pk_label = f"💊 Painkillers ({player.painkillers}x - {pk_left} left this run)"
         pk_btn = discord.ui.Button(label=pk_label[:80], style=discord.ButtonStyle.success, row=0)
         async def pk_cb(interaction,):
+            await interaction.response.defer()
             p=self.store.get(self.user_id)
             msgs=take_action(p,"heal","painkillers")
-            self.store.save()
+            await self.store.save_one_async(str(self.user_id))
             embed = combat_embed(p, msgs)
-            await interaction.response.edit_message(content=None, embed=embed, view=CombatView(self.user_id, self.store))
+            await interaction.edit_original_response(content=None, embed=embed, view=CombatView(self.user_id, self.store))
         pk_btn.callback = pk_cb
         self.add_item(pk_btn)
 
@@ -1279,11 +1327,12 @@ class HealView(PlayerView):
         fr_label = f"✨ Full restore ({player.full_restores}x - {fr_left} left)"
         fr_btn = discord.ui.Button(label=fr_label[:80], style=discord.ButtonStyle.success, row=0)
         async def fr_cb(interaction,):
+            await interaction.response.defer()
             p=self.store.get(self.user_id)
             msgs=take_action(p,"heal","full_restore")
-            self.store.save()
+            await self.store.save_one_async(str(self.user_id))
             embed = combat_embed(p, msgs)
-            await interaction.response.edit_message(content=None, embed=embed, view=CombatView(self.user_id, self.store))
+            await interaction.edit_original_response(content=None, embed=embed, view=CombatView(self.user_id, self.store))
         fr_btn.callback = fr_cb
         self.add_item(fr_btn)
 
@@ -1647,7 +1696,7 @@ class UpgradeView(PlayerView):
         self.add_item(make_btn("mag","📦","Mag","+1",0))
         self.add_item(make_btn("crit","🎯","Crit","+2%",1))
         self.add_item(make_btn("armor","🛡️","Armor","-2",1))
-        self.add_item(make_btn("scavenger","💰","Loot","+5%",1))
+        self.add_item(make_btn("scavenger","💰","Loot","+10%",1))
     @discord.ui.button(label="⭐ Star Upgrades", style=discord.ButtonStyle.primary, row=2)
     async def stars(self, interaction: discord.Interaction, _b):
         p=self.store.get(self.user_id)
