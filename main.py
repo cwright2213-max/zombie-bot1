@@ -1195,33 +1195,23 @@ class PlayerView(discord.ui.View):
 
 class ZombieMenuView(PlayerView):
     def __init__(self, user_id: int, store, display_name: str = "Survivor"):
-        super().__init__(user_id, store)
+        super().__init__(user_id, store, display_name)
         self.display_name = display_name
         player = self.store.get(user_id)
         
-        # Dynamic Start/Continue button
         is_active = getattr(player, 'run_active', False) and player.enemy is not None
-        if is_active:
-            label = f"▶️ Continue Run (W{player.wave})"
-            style = discord.ButtonStyle.success
-            emoji_text = f"Wave {player.wave} - {player.zombies_remaining} left"
-        else:
-            label = "▶️ Start Run"
-            style = discord.ButtonStyle.success
+        label = f"▶️ Continue Run (W{player.wave})" if is_active else "▶️ Start Run"
 
-        # --- ROW 0: Main actions ---
-        btn_start = discord.ui.Button(label=label, style=style, row=0)
+        # ROW 0: Start + Shop (primary actions)
+        btn_start = discord.ui.Button(label=label, style=discord.ButtonStyle.success, row=0)
         async def start_cb(interaction: discord.Interaction):
             p = self.store.get(self.user_id)
-            # RESUME LOGIC - if already in run, go back to combat (boss caught you at work mode)
             if p.run_active and p.enemy:
                 embed = combat_embed(p, [f"🔄 Resumed your run! Wave {p.wave} | {p.zombies_remaining} zombies left"])
                 await interaction.response.edit_message(content=None, embed=embed, view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
                 return
-            # Otherwise start fresh run
             msgs = start_run(p)
             self.store.save()
-            # Show combat immediately
             embed = combat_embed(p, msgs)
             await interaction.response.edit_message(content=None, embed=embed, view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
         btn_start.callback = start_cb
@@ -1229,39 +1219,62 @@ class ZombieMenuView(PlayerView):
 
         btn_shop = discord.ui.Button(label="🛒 Shop", style=discord.ButtonStyle.primary, row=0)
         async def shop_cb(interaction: discord.Interaction):
-            await interaction.response.edit_message(content=status(self.store.get(self.user_id), display_name=getattr(self, "display_name", "Survivor")), embed=None, view=ShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+            p = self.store.get(self.user_id)
+            hub = ShopHubView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"))
+            await interaction.response.edit_message(content=hub.get_shop_text(p), view=hub)
         btn_shop.callback = shop_cb
         self.add_item(btn_shop)
 
-        # --- ROW 1: Progression ---
+        # ROW 1: Zones + Ammo + Upgrades
         btn_zones = discord.ui.Button(label="🗺️ Zones", style=discord.ButtonStyle.secondary, row=1)
         async def zones_cb(interaction: discord.Interaction):
-            await interaction.response.edit_message(content=status(self.store.get(self.user_id), display_name=getattr(self, "display_name", "Survivor")), embed=None, view=ZoneView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+            p = self.store.get(self.user_id)
+            lines = [
+                "**Zone Shop**",
+                "",
+                f"Your level: **{p.level}** | Current: **{p.zone_name}**",
+                "---",
+            ]
+            for zn, zd in ZONES.items():
+                unlocked = p.level >= zd["min_level"]
+                sel = " ← SELECTED" if zn == p.zone_name else ""
+                status_icon = "✅" if unlocked else f"🔒 Lvl {zd['min_level']}"
+                lines.append(f"🗺️ **{zn}** {status_icon}{sel}")
+                lines.append(f"{zd['desc']} | Money x{zd['money_mult']} | XP x{zd['xp_mult']}")
+                lines.append("")
+            await interaction.response.edit_message(content="\n".join(lines), view=ZoneView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
         btn_zones.callback = zones_cb
         self.add_item(btn_zones)
 
-        btn_ammo = discord.ui.Button(label="🧪 Ammo Lab", style=discord.ButtonStyle.secondary, row=1)
+        btn_ammo = discord.ui.Button(label="🧪 Ammo", style=discord.ButtonStyle.secondary, row=1)
         async def ammo_cb(interaction: discord.Interaction):
-            await interaction.response.edit_message(content=status(self.store.get(self.user_id), display_name=getattr(self, "display_name", "Survivor")), embed=None, view=AmmoView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+            p = self.store.get(self.user_id)
+            view = AmmoShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"))
+            await interaction.response.edit_message(content=view.get_shop_text(p), view=view)
         btn_ammo.callback = ammo_cb
         self.add_item(btn_ammo)
 
         btn_up = discord.ui.Button(label="⬆️ Upgrades", style=discord.ButtonStyle.secondary, row=1)
         async def up_cb(interaction: discord.Interaction):
             p = self.store.get(self.user_id)
-            await interaction.response.edit_message(content=status(p) + chr(10) + f"💰 ${p.money} | ⭐ {p.stars} flex", embed=None, view=UpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+            view = UpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"))
+            await interaction.response.edit_message(content=view.get_shop_text(p), view=view)
         btn_up.callback = up_cb
         self.add_item(btn_up)
 
-        # --- ROW 2: Utility ---
+        # ROW 2: Refresh
         btn_refresh = discord.ui.Button(label="🔄 Refresh", style=discord.ButtonStyle.secondary, row=2)
         async def refresh_cb(interaction: discord.Interaction):
-            await interaction.response.edit_message(content=status(self.store.get(self.user_id), display_name=getattr(self, "display_name", "Survivor")), embed=None, view=ZombieMenuView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+            p = self.store.get(self.user_id)
+            name = getattr(self, "display_name", "Survivor")
+            try:
+                name = getattr(interaction.user, "display_name", None) or getattr(interaction.user, "global_name", None) or interaction.user.name
+                self.display_name = name
+            except:
+                pass
+            await interaction.response.edit_message(content=status(p, display_name=name), view=ZombieMenuView(self.user_id, self.store, display_name=name))
         btn_refresh.callback = refresh_cb
         self.add_item(btn_refresh)
-
-
-
 
 
 class CombatView(PlayerView):
