@@ -4,4 +4,4 @@ builder = "nixpacks"
 [deploy]
 startCommand = "python main.py"
 restartPolicyType = "onFailure"
-# V6 - Postgres only - constant save - FIXED STATUS
+# V6 FULL RESTORED - Postgres only - constant save
