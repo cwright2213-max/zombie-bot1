@@ -1,4 +1,4 @@
-"""Ultimate clean bot v4 - waves + kills, no Total Money Earned"""
+"""Ultimate clean bot v4.1 VOLUME FORCED - waves + kills, no Total Money Earned - FORCED /data"""
 import os, sys, json, random, logging
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
