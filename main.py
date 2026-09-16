@@ -1243,9 +1243,6 @@ def get_detailed_status(player: Survivor, display_name: str = "Survivor") -> str
     return status_detailed(player, display_name)
 
 
-
-
-
 class GameStore:
     """CONSTANT SAVE - every single player action triggers instant Postgres save - zero loss"""
     def __init__(self):
@@ -1304,29 +1301,37 @@ class GameStore:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
     def load(self):
-        raw=load_all_players()
-        loaded={}
-        for k,v in raw.items():
+        import time
+        raw = load_all_players()
+        # Robust retry: if DB returns empty and we have no players yet, retry once after 2s
+        if not raw and not self.players:
+            time.sleep(2)
+            raw = load_all_players()
+        # If still empty -> keep empty, but never overwrite existing with 0
+        if not raw:
+            if self.players:
+                print(f"[STORAGE] GameStore loaded {len(self.players)} players - POSTGRES ONLY (kept existing, DB returned 0)")
+                return
+            self.players = {}
+            print(f"[STORAGE] GameStore loaded 0 players - POSTGRES ONLY")
+            return
+        loaded = {}
+        for k, v in raw.items():
             try:
                 if isinstance(v, dict):
-                    loaded[k]=Survivor.from_dict(v)
+                    loaded[k] = Survivor.from_dict(v)
             except Exception as e:
                 print(f"Corrupt {k}: {e}")
                 continue
-        self.players=loaded
-        print(f"[STORE] Loaded {len(loaded)} players - PERSISTENT")
+        # If parsing gave 0 but we had existing data, keep existing
+        if not loaded and self.players:
+            print(f"[STORAGE] GameStore loaded {len(self.players)} players - POSTGRES ONLY (kept existing, parse returned 0)")
+            return
+        self.players = loaded
+        print(f"[STORAGE] GameStore loaded {len(loaded)} players - POSTGRES ONLY")
 
-game_store = GameStore()
 
-async def background_autosave():
-    import asyncio
-    await asyncio.sleep(60)
-    while True:
-        try:
-            game_store.save()
-        except Exception as e:
-            print(f"[AUTOSAVE ERROR] {e}")
-        await asyncio.sleep(60)
+
 
 
 
