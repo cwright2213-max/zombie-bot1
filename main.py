@@ -2433,7 +2433,7 @@ def main():
     if not token:
         print("DISCORD_BOT_TOKEN missing")
         sys.exit(1)
-    print(f"Token found {token[:10]}... Starting FIXED V14 - crit/armor/loot/medic/pet fixed")
+    print(f"Token found {token[:10]}... Starting V6 FULL RESTORED + 3 FEEDBACK FIXES - star lock / ammo save / XP scaling")
     bot.run(token, log_handler=None)
 
 if __name__ == "__main__":
