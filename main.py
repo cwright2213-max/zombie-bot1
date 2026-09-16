@@ -9,68 +9,12 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger('zombie-bot')
 from discord import app_commands
 
-if Path("/data").exists():
-    DB_PATH = Path("/data/players.db")
-else:
-    DB_PATH = Path("data/players.db")
-DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+# --- VOLUME PERSISTENT STORAGE - NEVER WIPES AFTER THIS ---
+from storage import load_all_players, save_player, DB_PATH, SAVE_FILE
+print(f"[STORAGE] Using {DB_PATH} - this is persistent if /data volume mounted")
 
-def _get_conn():
-    import sqlite3
-    # timeout 10s + WAL mode to prevent "database is locked" under spammy Attack buttons
-    conn = sqlite3.connect(str(DB_PATH), timeout=10.0, check_same_thread=False)
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("PRAGMA busy_timeout=10000;")
-    conn.execute("PRAGMA synchronous=NORMAL;")
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS players (
-            user_id TEXT PRIMARY KEY,
-            data TEXT NOT NULL,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    conn.commit()
-    return conn
-
-def load_all_players():
-    try:
-        conn = _get_conn()
-        cur = conn.execute("SELECT user_id, data FROM players")
-        result = {}
-        for uid, jdata in cur.fetchall():
-            try:
-                result[uid] = json.loads(jdata)
-            except:
-                pass
-        conn.close()
-        print(f"[STORAGE] Loaded {len(result)} players")
-        return result
-    except Exception as e:
-        print(f"[STORAGE] Load failed: {e}")
-        return {}
-
-def save_player(user_id, player_dict):
-    import time
-    # Retry loop for database locked
-    for attempt in range(5):
-        try:
-            conn = _get_conn()
-            conn.execute("INSERT OR REPLACE INTO players (user_id, data, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)", (str(user_id), json.dumps(player_dict)))
-            conn.commit()
-            conn.close()
-            return
-        except Exception as e:
-            if "locked" in str(e).lower() and attempt < 4:
-                time.sleep(0.2 * (attempt+1))
-                continue
-            print(f"Save failed: {e}")
-            try:
-                conn.close()
-            except:
-                pass
-            return
-
-SAVE_FILE = DB_PATH
+# Anti double-click lock for upgrades
+_purchase_locks: set[int] = set()
 
 def make_bar(current: int, max_val: int, length: int = 12) -> str:
     if max_val <= 0:
@@ -124,10 +68,10 @@ MAX_PAINKILLERS_PER_RUN = 3
 MAX_FULL_RESTORES_PER_RUN = 1
 ZONES: dict[str, dict[str, Any]] = {
     "Graveyard": {"min_level": 1, "hp_mult": 0.9, "dmg_mult": 0.9, "money_mult": 2.0, "xp_mult": 1.6, "desc": "Foggy, quiet, and good for learning.", "weights": [60, 25, 12, 3], "ammo_mods": {"Standard": 1.00, "Bleed": 1.00, "Incendiary": 1.00, "Frostbite": 1.00, "Toxic": 1.00, "Shock": 1.00}},
-    "Mega Death City": {"min_level": 50, "hp_mult": 2.2, "dmg_mult": 1.4, "money_mult": 3.5, "xp_mult": 1.6, "desc": "A concrete jungle with tougher, richer zombies.", "weights": [30, 30, 25, 15], "ammo_mods": {"Standard": 1.00, "Bleed": 1.00, "Incendiary": 1.20, "Frostbite": 0.90, "Toxic": 1.00, "Shock": 1.15}},
-    "Frostbitten Outskirts": {"min_level": 100, "hp_mult": 5.5, "dmg_mult": 2.0, "money_mult": 5.0, "xp_mult": 2.4, "desc": "Freezing rain and frost armor - NOT for level 50s.", "weights": [20, 20, 35, 25], "ammo_mods": {"Standard": 1.00, "Bleed": 0.90, "Incendiary": 1.40, "Frostbite": 0.70, "Toxic": 1.00, "Shock": 1.15}},
-    "Toxic Wasteland": {"min_level": 150, "hp_mult": 9.0, "dmg_mult": 2.6, "money_mult": 7.5, "xp_mult": 3.2, "desc": "A green haze where toxic rounds shine. Bring real gear.", "weights": [15, 15, 35, 35], "ammo_mods": {"Standard": 1.00, "Bleed": 1.00, "Incendiary": 1.10, "Frostbite": 1.00, "Toxic": 1.50, "Shock": 0.90}},
-    "The Void": {"min_level": 200, "hp_mult": 14.0, "dmg_mult": 3.4, "money_mult": 10.0, "xp_mult": 4.5, "desc": "Endgame. Everything wants you dead. 3-4 shots? Not here.", "weights": [10, 10, 30, 50], "ammo_mods": {"Standard": 1.00, "Bleed": 1.10, "Incendiary": 1.15, "Frostbite": 1.10, "Toxic": 1.25, "Shock": 1.50}},
+    "Mega Death City": {"min_level": 50, "hp_mult": 2.2, "dmg_mult": 1.4, "money_mult": 3.5, "xp_mult": 2.1, "desc": "A concrete jungle with tougher, richer zombies.", "weights": [30, 30, 25, 15], "ammo_mods": {"Standard": 1.00, "Bleed": 1.00, "Incendiary": 1.20, "Frostbite": 0.90, "Toxic": 1.00, "Shock": 1.15}},
+    "Frostbitten Outskirts": {"min_level": 100, "hp_mult": 5.5, "dmg_mult": 2.0, "money_mult": 5.0, "xp_mult": 2.8, "desc": "Freezing rain and frost armor - NOT for level 50s.", "weights": [20, 20, 35, 25], "ammo_mods": {"Standard": 1.00, "Bleed": 0.90, "Incendiary": 1.40, "Frostbite": 0.70, "Toxic": 1.00, "Shock": 1.15}},
+    "Toxic Wasteland": {"min_level": 150, "hp_mult": 9.0, "dmg_mult": 2.6, "money_mult": 7.5, "xp_mult": 3.6, "desc": "A green haze where toxic rounds shine. Bring real gear.", "weights": [15, 15, 35, 35], "ammo_mods": {"Standard": 1.00, "Bleed": 1.00, "Incendiary": 1.10, "Frostbite": 1.00, "Toxic": 1.50, "Shock": 0.90}},
+    "The Void": {"min_level": 200, "hp_mult": 14.0, "dmg_mult": 3.4, "money_mult": 10.0, "xp_mult": 4.8, "desc": "Endgame. Everything wants you dead. 3-4 shots? Not here.", "weights": [10, 10, 30, 50], "ammo_mods": {"Standard": 1.00, "Bleed": 1.10, "Incendiary": 1.15, "Frostbite": 1.10, "Toxic": 1.25, "Shock": 1.50}},
 }
 ZONE_ORDER = ["Graveyard", "Mega Death City", "Frostbitten Outskirts", "Toxic Wasteland", "The Void"]
 # Bloater config - run ender
@@ -631,13 +575,19 @@ def _apply_damage_over_time(player: Survivor) -> list[str]:
         return []
     messages: list[str] = []
     for effect in list(enemy.effects):
-        if effect in {"bleed", "burn", "poison"}:
+        if effect in {"bleed", "burn", "poison", "freeze"}:
             base = {"bleed": 15, "burn": 20, "poison": 15, "freeze": 10}[effect]
             mod_name = {"bleed": "Bleed", "burn": "Incendiary", "poison": "Toxic", "freeze": "Frostbite"}[effect]
             damage = int(base * ammo_modifier(player, mod_name))
             enemy.health = max(0, enemy.health - damage)
-            enemy.effects[effect] -= 1
-            messages.append(f"☠️ {effect.title()} {damage} dmg.")
+            # freeze doesn't tick down here, it ticks in _enemy_damage when halving dmg, but we still show dot
+            if effect != "freeze":
+                enemy.effects[effect] -= 1
+                messages.append(f"☠️ {effect.title()} {damage} dmg.")
+            else:
+                # Frostbite: 10 dmg + freeze effect stays for 4 attacks
+                enemy.effects[effect] -= 1
+                messages.append(f"🧊 Frostbite {damage} dmg + frozen!")
             if enemy.effects[effect] <= 0:
                 del enemy.effects[effect]
     return messages
@@ -647,13 +597,24 @@ def _finish_enemy(player: Survivor) -> list[str]:
     if enemy is None or enemy.health > 0:
         return []
     money_gain = int(enemy.money_reward * player.scavenger_bonus)
+    # XP bonus from star upgrade
+    xp_gain = int(enemy.xp_reward * (1.0 + player.xp_bonus))
     player.money += money_gain
-    player.xp += enemy.xp_reward
+    player.xp += xp_gain
     player.run_money_earned += money_gain
-    player.run_xp_earned += enemy.xp_reward
+    player.run_xp_earned += xp_gain
     player.run_zombies_killed += 1
     player.zombies_remaining -= 1
-    messages = [f"✅ **{enemy.name} defeated!** +${money_gain} (Base ${enemy.money_reward} + {int((player.scavenger_bonus-1)*100)}% Loot) • +{enemy.xp_reward} XP"] if player.scavenger_bonus > 1.0 else [f"✅ **{enemy.name} defeated!** +${money_gain} • +{enemy.xp_reward} XP"]
+    if player.scavenger_bonus > 1.0 or player.xp_bonus > 0:
+        bonus_parts = []
+        if player.scavenger_bonus > 1.0:
+            bonus_parts.append(f"{int((player.scavenger_bonus-1)*100)}% Loot")
+        if player.xp_bonus > 0:
+            bonus_parts.append(f"{int(player.xp_bonus*100)}% XP")
+        bonus_str = " + ".join(bonus_parts)
+        messages = [f"✅ **{enemy.name} defeated!** +${money_gain} • +{xp_gain} XP ({bonus_str})"]
+    else:
+        messages = [f"✅ **{enemy.name} defeated!** +${money_gain} • +{xp_gain} XP"]
     if player.level > level_for_xp(player.xp - enemy.xp_reward):
         ups = player.level - level_for_xp(player.xp - enemy.xp_reward)
         if ups > 0:
@@ -1731,10 +1692,10 @@ class WeaponShopView(PlayerView):
             btn = discord.ui.Button(label=label[:80], style=style, row=0 if i < 3 else 1)
             async def cb(interaction, wn=wname):
                 p=self.store.get(self.user_id)
-                if wn not in p.owned_weapons:
-                    msgs = buy_item(p, wn)
-                    self.store.save()
-                content = self.get_shop_text(p, selected_override=wn, extra_msgs=None)
+                # FIX: Always equip, even if already owned - was only buying when not owned, so switching between owned guns did nothing (SMG -> Sawn-off bug)
+                msgs = buy_item(p, wn)
+                self.store.save()
+                content = self.get_shop_text(p, selected_override=wn, extra_msgs=msgs)
                 await interaction.response.edit_message(content=content, view=WeaponShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_weapon=wn))
             btn.callback = cb
             self.add_item(btn)
@@ -1746,11 +1707,28 @@ class WeaponShopView(PlayerView):
             buy_label = f"Equip {self.selected_weapon}"
         btn_buy = discord.ui.Button(label=buy_label[:80], style=discord.ButtonStyle.primary, row=2)
         async def buy_cb(interaction):
-            p=self.store.get(self.user_id)
-            msgs = buy_item(p, self.selected_weapon)
-            self.store.save()
-            content = self.get_shop_text(p, selected_override=self.selected_weapon, extra_msgs=msgs)
-            await interaction.response.edit_message(content=content, view=WeaponShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_weapon=self.selected_weapon))
+            if self.user_id in _purchase_locks:
+                try:
+                    await interaction.response.defer()
+                except:
+                    pass
+                return
+            _purchase_locks.add(self.user_id)
+            try:
+                try:
+                    await interaction.response.defer()
+                except:
+                    pass
+                p=self.store.get(self.user_id)
+                msgs = buy_item(p, self.selected_weapon)
+                try:
+                    await self.store.save_one_async(str(self.user_id))
+                except:
+                    self.store.save()
+                content = self.get_shop_text(p, selected_override=self.selected_weapon, extra_msgs=msgs)
+                await interaction.edit_original_response(content=content, view=WeaponShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_weapon=self.selected_weapon))
+            finally:
+                _purchase_locks.discard(self.user_id)
         btn_buy.callback = buy_cb
         self.add_item(btn_buy)
 
@@ -1837,13 +1815,29 @@ class AmmoShopView(PlayerView):
                 style = discord.ButtonStyle.secondary
             btn = discord.ui.Button(label=label[:80], style=style, row=0 if i < 3 else 1)
             async def cb(interaction, an=ammo_name):
-                p=self.store.get(self.user_id)
-                if an not in p.owned_ammo:
+                if self.user_id in _purchase_locks:
+                    try:
+                        await interaction.response.defer()
+                    except:
+                        pass
+                    return
+                _purchase_locks.add(self.user_id)
+                try:
+                    try:
+                        await interaction.response.defer()
+                    except:
+                        pass
+                    p=self.store.get(self.user_id)
                     msgs = equip_ammo(p, an)
-                    self.store.save()
-                self.selected_ammo = an
-                content = self.get_shop_text(p)
-                await interaction.response.edit_message(content=content, view=AmmoShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_ammo=an))
+                    try:
+                        await self.store.save_one_async(str(self.user_id))
+                    except:
+                        self.store.save()
+                    self.selected_ammo = an
+                    content = self.get_shop_text(p, extra_msgs=msgs)
+                    await interaction.edit_original_response(content=content, view=AmmoShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_ammo=an))
+                finally:
+                    _purchase_locks.discard(self.user_id)
             btn.callback = cb
             self.add_item(btn)
         
@@ -2073,16 +2067,35 @@ class UpgradeView(PlayerView):
             btn.callback = cb
             self.add_item(btn)
 
-        # Single buy button for selected upgrade - no bulk as requested
+        # Single buy button for selected upgrade - no bulk as requested + anti double-click
         cost = get_upgrade_cost(player, self.selected_up)
         buy_label = f"Buy {self.selected_up.capitalize()} ${cost}"
         btn_buy = discord.ui.Button(label=buy_label[:80], style=discord.ButtonStyle.success, row=2)
         async def buy_cb(interaction):
-            p=self.store.get(self.user_id)
-            msgs = upgrade(p, self.selected_up)
-            self.store.save()
-            content = self.get_shop_text(p, selected_override=self.selected_up, extra_msgs=msgs)
-            await interaction.response.edit_message(content=content, view=UpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_up=self.selected_up))
+            # Prevent double-click race
+            if self.user_id in _purchase_locks:
+                try:
+                    await interaction.response.defer()
+                except:
+                    pass
+                return
+            _purchase_locks.add(self.user_id)
+            try:
+                try:
+                    await interaction.response.defer()
+                except:
+                    pass
+                p=self.store.get(self.user_id)
+                msgs = upgrade(p, self.selected_up)
+                # Use async save to ensure DB write completes before next click
+                try:
+                    await self.store.save_one_async(str(self.user_id))
+                except:
+                    self.store.save()
+                content = self.get_shop_text(p, selected_override=self.selected_up, extra_msgs=msgs)
+                await interaction.edit_original_response(content=content, view=UpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_up=self.selected_up))
+            finally:
+                _purchase_locks.discard(self.user_id)
         btn_buy.callback = buy_cb
         self.add_item(btn_buy)
 
@@ -2172,16 +2185,39 @@ class StarUpgradeView(PlayerView):
             btn.callback = cb
             self.add_item(btn)
 
-        # Single buy button for selected star - no bulk as requested
+        # Single buy button for selected star - no bulk + anti double-click fix for Twiitcchy bug
         cost = get_star_upgrade_cost(player, self.selected_star)
         buy_label = f"Buy {self.selected_star.capitalize()} ⭐{cost}"
         btn_buy = discord.ui.Button(label=buy_label[:80], style=discord.ButtonStyle.success, row=2)
         async def buy_cb(interaction):
-            p=self.store.get(self.user_id)
-            msgs = upgrade_star(p, self.selected_star)
-            self.store.save()
-            content = self.get_shop_text(p, selected_override=self.selected_star, extra_msgs=msgs)
-            await interaction.response.edit_message(content=content, view=StarUpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_star=self.selected_star))
+            # Prevent double-click race - this was causing stars to go up in price without level up
+            if self.user_id in _purchase_locks:
+                try:
+                    await interaction.response.defer()
+                except:
+                    pass
+                return
+            _purchase_locks.add(self.user_id)
+            try:
+                try:
+                    await interaction.response.defer()
+                except:
+                    pass
+                p=self.store.get(self.user_id)
+                # Re-check cost with fresh data
+                fresh_cost = get_star_upgrade_cost(p, self.selected_star)
+                msgs = upgrade_star(p, self.selected_star)
+                try:
+                    await self.store.save_one_async(str(self.user_id))
+                except:
+                    self.store.save()
+                content = self.get_shop_text(p, selected_override=self.selected_star, extra_msgs=msgs)
+                # If cost mismatch due to race, show warning
+                if fresh_cost != cost:
+                    content = f"⚠️ Race prevented! Cost was ⭐{cost} but fresh was ⭐{fresh_cost}.\n" + content
+                await interaction.edit_original_response(content=content, view=StarUpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_star=self.selected_star))
+            finally:
+                _purchase_locks.discard(self.user_id)
         btn_buy.callback = buy_cb
         self.add_item(btn_buy)
 
