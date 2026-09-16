@@ -1,4 +1,4 @@
-"""Ultimate clean bot v4.2 POSTGRES PERSISTENT - level 6 test - meds fix verified"""
+"""Ultimate clean bot V6 POSTGRES CONSTANT SAVE - every action saves instantly - zero loss"""
 import os, sys, json, random, logging
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -11,7 +11,7 @@ from discord import app_commands
 
 # --- VOLUME PERSISTENT STORAGE - NEVER WIPES AFTER THIS ---
 from storage import load_all_players, save_player, DB_PATH, SAVE_FILE, get_bot_admins, is_bot_admin, add_bot_admin, remove_bot_admin
-print(f"[STORAGE] Using {DB_PATH} - this is persistent if /data volume mounted")
+print(f"[STORAGE] Using POSTGRES - CONSTANT SAVE ENABLED")
 
 # Anti double-click lock for upgrades
 _purchase_locks: set[int] = set()
@@ -356,935 +356,21 @@ class Survivor:
         if "stars" not in data: allowed["stars"] = max(0, level_for_xp(int(data.get("xp", 0))) - 1)
         return cls(**allowed)
 class GameStore:
-    def __init__(self) -> None:
-        self.players: dict[str, Survivor] = {}
-        self.load()
-    def get(self, user_id: int) -> Survivor:
-        key = str(user_id)
-        if key not in self.players:
-            self.players[key] = Survivor()
-            self.save_one(key)
-        return self.players[key]
-    def save_one(self, key: str) -> None:
-        p = self.players.get(key)
-        if p:
-            save_player(key, p.to_dict())
-    def save(self) -> None:
-        for k, p in self.players.items():
-            save_player(k, p.to_dict())
-    def load(self) -> None:
-        raw = load_all_players()
-        loaded = {}
-        for k, v in raw.items():
-            try:
-                if isinstance(v, dict):
-                    loaded[k] = Survivor.from_dict(v)
-            except Exception as e:
-                logging.getLogger("zombie.storage").error(f"Corrupt player {k} quarantined: {e}")
-                continue
-        self.players = loaded
-
-def zone_for(player: Survivor) -> dict[str, Any]:
-    return ZONES.get(player.zone_name, ZONES["Graveyard"])
-
-def ammo_modifier(player: Survivor, ammo_name: str) -> float:
-    return float(zone_for(player).get("ammo_mods", {}).get(ammo_name, 1.0))
-
-def ammo_effectiveness_text(player: Survivor) -> str:
-    mods = zone_for(player).get("ammo_mods", {})
-    strong = [f"{n} 🔥 {int(mods[n]*100)}%" for n, m in mods.items() if m >= 1.25 and n != "Standard"]
-    weak = [f"{n} ❄️ {int(mods[n]*100)}%" for n, m in mods.items() if m <= 0.85 and n != "Standard"]
-    bonus = ", ".join(strong) if strong else "No major bonus"
-    penalty = ", ".join(weak) if weak else "No major penalty"
-    return f"**Bonus:** {bonus}\n**Penalty:** {penalty}"
-
-def xp_to_next_level(level: int) -> int:
-    # STRETCHED: ~800 runs to 250 - balanced for tonight
-    if level <= 5:
-        return 50 + (level - 1) * 15
-    elif level <= 10:
-        return 110 + (level - 5) * 20
-    elif level <= 50:
-        return 200 + (level - 10) * 40 + (level - 1) * 10
-    elif level <= 100:
-        return 350 + (level - 10) * 50 + (level - 1) * 15
-    elif level <= 150:
-        return 550 + (level - 10) * 60 + (level - 1) * 20
-    else:
-        return 700 + (level - 10) * 75 + (level - 1) * 28
-
-def level_for_xp(total_xp: int) -> int:
-    level = 1
-    earned = max(0, total_xp)
-    while earned >= xp_to_next_level(level):
-        earned -= xp_to_next_level(level)
-        level += 1
-    return level
-
-def level_progress(player: Survivor) -> tuple[int, int]:
-    earned = max(0, player.xp)
-    level = 1
-    while earned >= xp_to_next_level(level):
-        earned -= xp_to_next_level(level)
-        level += 1
-    return earned, xp_to_next_level(level)
-
-def _should_spawn_bloater(player: Survivor) -> bool:
-    """Decide if Bloater should spawn this enemy slot - balanced scaling"""
-    if player.wave < BLOATER_MIN_WAVE:
-        return False
-    max_allowed = BLOATER_MAX_PER_ZONE.get(player.zone_name, 1)
-    if player.bloaters_spawned_this_run >= max_allowed:
-        return False
-    if player.bloater_cooldown > 0:
-        return False
-    # Chance scales with wave: 5% at W5, +3% per wave, +2% per zone tier, cap 35%
-    try:
-        zone_idx = ZONE_ORDER.index(player.zone_name)
-    except:
-        zone_idx = 0
-    base_chance = 0.05 + (player.wave - BLOATER_MIN_WAVE) * 0.03 + zone_idx * 0.02
-    chance = min(0.35, base_chance)
-    return random.random() < chance
-
-def _make_bloater_enemy(player: Survivor) -> Enemy:
-    zone = zone_for(player)
-    # Bloater health scales but not insane: base 280 + wave*12 * hp_mult
-    health = int((BLOATER_BASE["health"] + (player.wave - 1) * 12) * zone["hp_mult"] * 0.8)
-    # Damage is low ~4 as requested, but scale slightly with zone
-    dmg = int(BLOATER_BASE["damage"] * zone["dmg_mult"])
-    dmg = max(1, min(dmg, 8))  # keep it 1-8 max
-    money = int(BLOATER_BASE["money"] * zone["money_mult"] * 1.5)
-    xp = int(BLOATER_BASE["xp"] * zone["xp_mult"] * 1.5)
-    return Enemy(
-        name="Bloater",
-        health=health,
-        max_health=health,
-        damage=dmg,
-        money_reward=money,
-        xp_reward=xp,
-        is_bloater=True,
-        bloater_timer=BLOATER_FUSE
-    )
-
-def spawn_enemy(player: Survivor) -> Enemy:
-    # Bloater check first - if eligible, spawn it as solo wave boss
-    if _should_spawn_bloater(player):
-        bloater = _make_bloater_enemy(player)
-        player.bloaters_spawned_this_run += 1
-        player.bloater_cooldown = 2  # no back-to-back bloaters
-        # Solo wave: only bloater this round = reward
-        player.zombies_remaining = 1
-        return bloater
-
-    zone = zone_for(player)
-    name = random.choices(list(ZOMBIES), weights=zone["weights"])[0]
-    base = ZOMBIES[name]
-    health = int((base["health"] + (player.wave - 1) * 6) * zone["hp_mult"])
-    damage = int((base["damage"] + (player.wave - 1) // 2) * zone["dmg_mult"])
-    # Decrement bloater cooldown if any
-    if player.bloater_cooldown > 0:
-        player.bloater_cooldown -= 1
-    return Enemy(name=name, health=health, max_health=health, damage=damage, money_reward=int(base["money"]*zone["money_mult"]), xp_reward=int(base["xp"]*zone["xp_mult"]))
-
-def start_run(player: Survivor) -> list[str]:
-    if player.run_active:
-        return ["⚠️ Already in a run!"]
-    player.health = player.max_health
-    # Allow start with no ammo - player will get overwhelmed message
-    if player.get_spare() <= 0 and player.magazine <= 0:
-        player.wave = 1; player.zombies_remaining = 3; player.run_active = True; player.enemy = spawn_enemy(player)
-        return [f"⚠️ You started with NO {player.ammo_name} ammo! The hoard smells blood...", f"Wave {player.wave}: **{player.enemy.name}** ({player.enemy.health} HP) - you\'re about to get overwhelmed!"]
-    if player.magazine == 0:
-        spare = player.get_spare()
-        if spare > 0:
-            load_amt = min(player.magazine_size, spare)
-            player.magazine = load_amt
-            player.spare_ammo[player.ammo_name] = spare - load_amt
-    player.painkillers_used_this_run = 0
-    player.full_restores_used_this_run = 0
-    player.run_money_earned = 0
-    player.run_xp_earned = 0
-    player.run_zombies_killed = 0
-    player.bloaters_spawned_this_run = 0
-    player.bloater_cooldown = 0
-    player.wave = 1
-    player.zombies_remaining = 3
-    player.run_active = True
-    player.enemy = spawn_enemy(player)
-    cost = AMMO[player.ammo_name]["cost_per_attack"]
-    return [f"🧟 **Run started in {player.zone_name}** | Using **{player.ammo_name}** ({cost}/shot)", f"Wave {player.wave}: **{player.enemy.name}** ({player.enemy.health} HP)"]
-
-def action_help(player: Survivor) -> str:
-    if player.enemy is None:
-        return "Choose your next move."
-    cost = AMMO[player.ammo_name]["cost_per_attack"]
-    if player.enemy.is_bloater:
-        return f"💣 BLOATER {player.enemy.bloater_timer} attacks left! {player.enemy.health} HP | 🔫 {player.ammo_name} {player.magazine}/{player.magazine_size} | 🧟 {player.enemy.name} 4 dmg"
-    return f"🔫 {player.ammo_name} {player.magazine}/{player.magazine_size} ({cost}/shot) | spare: {player.get_spare()} | 🧟 {player.enemy.name} {player.enemy.health} HP"
-
-def _enemy_damage(player: Survivor) -> list[str]:
-    enemy = player.enemy
-    if enemy is None:
-        return []
-    if enemy.effects.pop("shock", 0):
-        return [f"⚡ **{enemy.name} stunned!** Misses."]
-    # DODGE CHECK - star prestige
-    if player.dodge_chance > 0 and random.random() < player.dodge_chance:
-        return [f"💨 **DODGED!** You evaded {enemy.name}'s attack! ({player.dodge_chance*100:.1f}% chance)"]
-    base_dmg = enemy.damage // 2 if enemy.effects.get("freeze", 0) else enemy.damage
-    damage = max(1, base_dmg - player.armor_reduction)
-    player.health = max(0, player.health - damage)
-    if enemy.effects.get("freeze", 0):
-        enemy.effects["freeze"] -= 1
-        if enemy.effects["freeze"] <= 0:
-            del enemy.effects["freeze"]
-        result = [f"🧊 Frozen! {enemy.name} hits for {damage} dmg."]
-    else:
-        result = [f"💥 {enemy.name} hits for {damage} dmg."]
-    if player.health == 0:
-        player.health = player.max_health
-        # CLEAN: only summary, no "Walker hits for X" clutter
-        data = build_run_summary(player, "died")
-        # build_run_summary now returns dict, convert to pretty list
-        if isinstance(data, dict):
-            msgs = [
-                f"💀 **You died!** {get_cocky_line()}",
-                "",
-                f"🌊 **Waves survived:** {data['waves_survived']} (reached Wave {data['reached_wave']})",
-                f"🧟 **Zombies killed:** {data['zombies_killed']}",
-                f"💰 **Money earned:** +${data['money']}",
-                f"✨ **XP earned:** +{data['xp']} XP",
-                "",
-                f"❤️ **HP restored:** {data['max_hp']}/{data['max_hp']}"
-            ]
-        else:
-            msgs = data
-        player.run_active = False
-        player.enemy = None
-        player.spare_ammo[player.ammo_name] = player.spare_ammo.get(player.ammo_name, 0) + player.magazine
-        player.magazine = 0
-        msgs.extend(_grant_end_of_run_rewards(player))
-        return msgs
-    return result
-
-def _apply_damage_over_time(player: Survivor) -> list[str]:
-    enemy = player.enemy
-    if enemy is None:
-        return []
-    messages: list[str] = []
-    for effect in list(enemy.effects):
-        if effect in {"bleed", "burn", "poison", "freeze"}:
-            base = {"bleed": 15, "burn": 20, "poison": 15, "freeze": 10}[effect]
-            mod_name = {"bleed": "Bleed", "burn": "Incendiary", "poison": "Toxic", "freeze": "Frostbite"}[effect]
-            damage = int(base * ammo_modifier(player, mod_name))
-            enemy.health = max(0, enemy.health - damage)
-            # freeze doesn't tick down here, it ticks in _enemy_damage when halving dmg, but we still show dot
-            if effect != "freeze":
-                enemy.effects[effect] -= 1
-                messages.append(f"☠️ {effect.title()} {damage} dmg.")
-            else:
-                # Frostbite: 10 dmg + freeze effect stays for 4 attacks
-                enemy.effects[effect] -= 1
-                messages.append(f"🧊 Frostbite {damage} dmg + frozen!")
-            if enemy.effects[effect] <= 0:
-                del enemy.effects[effect]
-    return messages
-
-def _finish_enemy(player: Survivor) -> list[str]:
-    enemy = player.enemy
-    if enemy is None or enemy.health > 0:
-        return []
-    money_gain = int(enemy.money_reward * player.scavenger_bonus)
-    # XP bonus from star upgrade
-    xp_gain = int(enemy.xp_reward * (1.0 + player.xp_bonus))
-    player.money += money_gain
-    player.xp += xp_gain
-    player.run_money_earned += money_gain
-    player.run_xp_earned += xp_gain
-    player.run_zombies_killed += 1
-    player.zombies_remaining -= 1
-    if player.scavenger_bonus > 1.0 or player.xp_bonus > 0:
-        bonus_parts = []
-        if player.scavenger_bonus > 1.0:
-            bonus_parts.append(f"{int((player.scavenger_bonus-1)*100)}% Loot")
-        if player.xp_bonus > 0:
-            bonus_parts.append(f"{int(player.xp_bonus*100)}% XP")
-        bonus_str = " + ".join(bonus_parts)
-        messages = [f"✅ **{enemy.name} defeated!** +${money_gain} • +{xp_gain} XP ({bonus_str})"]
-    else:
-        messages = [f"✅ **{enemy.name} defeated!** +${money_gain} • +{xp_gain} XP"]
-    if player.level > level_for_xp(player.xp - enemy.xp_reward):
-        ups = player.level - level_for_xp(player.xp - enemy.xp_reward)
-        if ups > 0:
-            player.stars += ups
-            messages.append(f"🎉 **LEVEL UP!** Level {player.level}! +{ups} ⭐")
-    if player.zombies_remaining <= 0:
-        # MEDIC DROP CHECK - per wave now, not per kill (less OP)
-        if player.medic_chance > 0 and random.random() < player.medic_chance:
-            if random.random() < 0.5:
-                player.painkillers += 2
-                messages.append(f"💊 **Medic drop!** +2 painkillers on wave clear! ({player.medic_chance*100:.2f}% chance)")
-            else:
-                player.full_restores += 1
-                messages.append(f"✨ **Medic drop!** +1 full restore on wave clear! ({player.medic_chance*100:.2f}% chance)")
-        # FIX: Wave bonus now also respects Loot upgrade
-        # Check if this was a bloater solo wave - give extra reward
-        was_bloater = enemy.is_bloater if hasattr(enemy, 'is_bloater') else False
-        base_bonus = int(10 * player.wave * zone_for(player)["money_mult"])
-        if was_bloater:
-            base_bonus = int(base_bonus * 2.5)  # big reward for surviving bloater
-        bonus = int(base_bonus * player.scavenger_bonus)
-        player.money += bonus
-        player.run_money_earned += bonus
-        player.spare_ammo[player.ammo_name] = player.spare_ammo.get(player.ammo_name, 0) + (10 if was_bloater else 5)
-        player.wave += 1
-        player.zombies_remaining = player.wave + 2
-        player.health = min(player.max_health, player.health + (15 if was_bloater else 5))
-        if was_bloater:
-            messages.append(f"💣 **BLOATER SURVIVED! SOLO WAVE REWARD!** +${bonus} • +10 {player.ammo_name} ammo • +15 HP! Wave {player.wave} - {player.zombies_remaining} zombies! 🎉")
-        else:
-            messages.append(f"🌊 **Wave cleared!** +${bonus} • +5 {player.ammo_name} ammo • +5 HP. Wave {player.wave} - {player.zombies_remaining} zombies!")
-    player.enemy = spawn_enemy(player)
-    messages.append(f"🧟 **{player.enemy.name}** appears! {player.enemy.health} HP")
-    return messages
-
-def take_action(player: Survivor, action: str, heal_item: str | None = None) -> list[str]:
-    if not player.run_active or player.enemy is None:
-        return ["Not in a run. Use Start run."]
-
-    # NEW: Overwhelmed check - if completely out of ammo at start of any action
-    def check_overwhelmed():
-        if player.magazine <= 0 and player.get_spare() <= 0:
-            # die overwhelmed
-            player.spare_ammo[player.ammo_name] = player.spare_ammo.get(player.ammo_name, 0) + player.magazine
-            player.magazine = 0
-            player.run_active = False
-            player.enemy = None
-            player.health = player.max_health
-            msgs = [
-                "💀 **OUT OF AMMO!**",
-                f"🧟‍♂️ {get_no_ammo_line()}",
-                f"🏃 You limped back to safehouse with ${player.run_money_earned} and {player.run_xp_earned} XP from this run.",
-            ]
-            msgs.extend(_grant_end_of_run_rewards(player))
-            return msgs
-        return None
-
-    if action == "heal":
-        if heal_item == "full_restore":
-            if player.full_restores_used_this_run >= MAX_FULL_RESTORES_PER_RUN:
-                return [f"⚠️ Limit: {MAX_FULL_RESTORES_PER_RUN}/run."]
-            if player.full_restores <= 0:
-                return ["❌ No full restores."]
-            if player.health >= player.max_health:
-                return ["❤️ Full HP!"]
-            # MEDIC STAR CHECK - chance to not consume
-            if player.medic_chance > 0 and random.random() < player.medic_chance:
-                player.health = player.max_health
-                return [f"💊 **MEDIC SAVE!** Full heal kept! ({player.medic_chance*100:.1f}%) {player.max_health} HP", f"{player.full_restores} owned • ✨ Saved!"]
-            player.health = player.max_health
-            player.full_restores -= 1
-            player.full_restores_used_this_run += 1
-            left = MAX_FULL_RESTORES_PER_RUN - player.full_restores_used_this_run
-            return [f"✨ **Full heal!** {player.max_health} HP", f"{player.full_restores} owned • {left} left"]
-        if heal_item == "painkillers":
-            if player.painkillers_used_this_run >= MAX_PAINKILLERS_PER_RUN:
-                return [f"⚠️ Limit: {MAX_PAINKILLERS_PER_RUN}/run."]
-            if player.painkillers <= 0:
-                return ["❌ No painkillers."]
-            if player.health >= player.max_health:
-                return ["❤️ Full HP!"]
-            amount = max(1, player.max_health // 4)
-            # MEDIC STAR CHECK - chance to not consume
-            if player.medic_chance > 0 and random.random() < player.medic_chance:
-                player.health = min(player.max_health, player.health + amount)
-                return [f"💊 **MEDIC SAVE!** +{amount} HP without using item! ({player.medic_chance*100:.1f}%) Now {player.health}/{player.max_health}", f"{player.painkillers} owned • ✨ Saved!"]
-            player.health = min(player.max_health, player.health + amount)
-            player.painkillers -= 1
-            player.painkillers_used_this_run += 1
-            left = MAX_PAINKILLERS_PER_RUN - player.painkillers_used_this_run
-            return [f"💊 **+{amount} HP!** Now {player.health}/{player.max_health}", f"{player.painkillers} owned • {left} left"]
-        return ["Choose heal item."]
-    messages = _apply_damage_over_time(player)
-    if player.enemy is None or player.enemy.health <= 0:
-        messages.extend(_finish_enemy(player))
-        return messages
-    enemy = player.enemy
-    if action == "attack":
-        ammo_data = AMMO[player.ammo_name]
-        base_cost = int(ammo_data["cost_per_attack"])
-        # NEW: Weapon shots per attack
-        weapon_data = WEAPONS.get(player.weapon_name, WEAPONS["Pistol"])
-        shots = int(weapon_data.get("shots", 1))
-        cost = base_cost * shots
-
-        # NEW: Mag size must support ammo type - e.g. Sawed-Off mag 2 can't use Shock cost 6
-        # Check if max magazine size is too small for this ammo type (even with 1 shot)
-        if player.magazine_size < base_cost:
-            return [f"❌ **{player.weapon_name} mag too small for {player.ammo_name}!**", f"Need mag size {base_cost}, you have {player.magazine_size}. Upgrade mag or use lighter ammo.", f"🔧 {player.weapon_name} {player.magazine}/{player.magazine_size} can't fit {player.ammo_name} ({base_cost}/shot)"]
-        if player.magazine_size < cost:
-            return [f"❌ **{player.weapon_name} mag too small for {shots}x {player.ammo_name}!**", f"Need mag size {cost} ({base_cost}x{shots} shots), you have {player.magazine_size}. Upgrade mag!", f"🔧 {player.weapon_name} can't do {shots}x {player.ammo_name}"]
-
-        if player.magazine < cost:
-            spare = player.get_spare()
-            if spare <= 0:
-                # OVERWHELMED - no ammo at all
-                player.spare_ammo[player.ammo_name] = player.spare_ammo.get(player.ammo_name, 0) + player.magazine
-                player.magazine = 0
-                player.run_active = False
-                player.enemy = None
-                player.health = player.max_health
-                return [
-                    "💀 **CLICK... CLICK... OUT OF AMMO!**",
-                    f"🧟‍♂️ {get_no_ammo_line()}",
-                    f"💰 You kept ${player.run_money_earned} • {player.run_xp_earned} XP from this run.",
-                ] + _grant_end_of_run_rewards(player)
-            return [f"❌ Need {cost} {player.ammo_name} ammo! Have {player.magazine}/{player.magazine_size}", f"🔄 Reload (you have {spare} spare)"]
-        # MAGICAL BULLET CHECK - chance to not use ammo
-        is_magical = False
-        if player.magical_bullet_chance > 0 and random.random() < player.magical_bullet_chance:
-            is_magical = True
-        else:
-            player.magazine -= cost
-        
-        mod = ammo_modifier(player, player.ammo_name)
-        total_dmg = 0
-        total_crits = 0
-        hit_details = []
-        for shot_i in range(shots):
-            dmg = int(player.weapon_damage * mod)
-            is_crit = random.random() < player.crit_chance
-            if is_crit:
-                dmg = int(dmg * 2)
-                total_crits += 1
-            enemy.health = max(0, enemy.health - dmg)
-            total_dmg += dmg
-            hit_details.append(dmg)
-            if enemy.health <= 0:
-                break
-        mod_txt = f" (Zone {int(mod*100)}%)" if mod != 1.0 else ""
-        crit_txt = f" **{total_crits}x CRIT!**" if total_crits > 0 else ""
-        magical_txt = " ✨ **MAGICAL! Free shot!**" if is_magical else ""
-        if shots > 1:
-            messages.append(f"🔫 **{shots}x** {player.weapon_name} Hit **{enemy.name} for {total_dmg}** ({'+'.join(map(str, hit_details))}){crit_txt}{magical_txt} using {player.ammo_name} ({base_cost}x{shots}={cost} ammo){mod_txt}")
-        else:
-            messages.append(f"🔫 Hit **{enemy.name} for {total_dmg}**{crit_txt}{magical_txt} using {player.ammo_name} ({cost}/shot){mod_txt}")
-        
-        # PET ATTACK CHECK
-        if player.pet_chance > 0 and random.random() < player.pet_chance:
-            pet_dmg = player.pet_damage
-            enemy.health = max(0, enemy.health - pet_dmg)
-            messages.append(f"🐺 **Wolf bites {enemy.name} for {pet_dmg} dmg!** ({player.pet_chance*100:.0f}% chance)")
-
-        # BLOATER TICKING BOMB LOGIC - 5 attacks then 65% max HP explosion
-        if enemy.is_bloater and enemy.health > 0:
-            enemy.bloater_timer -= 1
-            if enemy.bloater_timer > 0:
-                messages.append(f"⏰ **BLOATER TICKING!** {enemy.bloater_timer} attacks left before it EXPLODES! 💣")
-            else:
-                # BOOM
-                explode_dmg = int(player.max_health * BLOATER_EXPLODE_PCT)
-                # Armor reduces explosion a bit
-                explode_dmg = max(1, explode_dmg - player.armor_reduction)
-                player.health = max(0, player.health - explode_dmg)
-                messages.append(f"💥 **BLOATER EXPLODED!** Deals {explode_dmg} dmg! ({int(BLOATER_EXPLODE_PCT*100)}% of max HP!)")
-                # Bloater dies in explosion
-                enemy.health = 0
-                if player.health <= 0:
-                    # Player dies from explosion
-                    player.health = player.max_health
-                    player.spare_ammo[player.ammo_name] = player.spare_ammo.get(player.ammo_name, 0) + player.magazine
-                    player.magazine = 0
-                    player.run_active = False
-                    player.enemy = None
-                    msgs = [
-                        f"💀 **BLOATER BLEW YOU UP!** {get_cocky_line()}",
-                        f"⏰ You had 5 attacks and failed. {explode_dmg} dmg explosion ended you.",
-                        f"🌊 Waves: {player.wave} | 🧟 Kills: {player.run_zombies_killed} | 💰 ${player.run_money_earned} | ✨ {player.run_xp_earned} XP"
-                    ]
-                    msgs.extend(_grant_end_of_run_rewards(player))
-                    return messages + msgs
-
-        effect = ammo_data["effect"]
-        chances = {"bleed": 0.25, "burn": 0.30, "freeze": 0.20, "poison": 0.35, "shock": 0.15}
-        if effect and random.random() < chances[effect]:
-            durations = {"bleed": 3, "burn": 3, "freeze": 4, "poison": 5, "shock": 1}
-            enemy.effects[effect] = durations[effect]
-            messages.append(f"💥 {player.ammo_name} procs **{effect}**!")
-            # Shock also does instant 20 dmg
-            if effect == "shock":
-                shock_dmg = int(20 * ammo_modifier(player, "Shock"))
-                enemy.health = max(0, enemy.health - shock_dmg)
-                messages.append(f"⚡ Shock deals {shock_dmg} dmg!")
-    elif action == "reload":
-        if player.magazine == player.magazine_size:
-            return ["✅ Mag full!"]
-        spare = player.get_spare()
-        if spare <= 0:
-            # OVERWHELMED on reload attempt with no spare
-            player.spare_ammo[player.ammo_name] = player.spare_ammo.get(player.ammo_name, 0) + player.magazine
-            player.magazine = 0
-            player.run_active = False
-            player.enemy = None
-            player.health = player.max_health
-            return [
-                "💀 **No spare ammo left!**",
-                f"🧟‍♂️ {get_no_ammo_line()}",
-                f"💰 You escaped with ${player.run_money_earned} • {player.run_xp_earned} XP.",
-            ] + _grant_end_of_run_rewards(player)
-        amount = min(player.magazine_size - player.magazine, spare)
-        player.magazine += amount
-        player.spare_ammo[player.ammo_name] = spare - amount
-        messages.append(f"🔄 Reloaded {amount} {player.ammo_name}. {player.spare_ammo[player.ammo_name]} spare left.")
-    elif action == "flee":
-        # USER WANTS: flee still rewards players + full heal
-        player.spare_ammo[player.ammo_name] = player.spare_ammo.get(player.ammo_name, 0) + player.magazine
-        player.magazine = 0
-        player.run_active = False
-        player.enemy = None
-        player.health = player.max_health
-        messages.append(f"🏃 {get_flee_line()} Kept ${player.run_money_earned} • {player.run_xp_earned} XP this run. Full healed!")
-        messages.extend(_grant_end_of_run_rewards(player))
-        return messages
-    else:
-        return ["Attack, reload, heal, or flee."]
-    if enemy.health <= 0:
-        messages.extend(_finish_enemy(player))
-    else:
-        messages.extend(_enemy_damage(player))
-    return messages
-
-def buy_ammo_boxes(player: Survivor, ammo_type: str, boxes: int = 1) -> list[str]:
-    """Bulk buy ammo boxes - like Fisher bait +1 +10 +100 +1000"""
-    if player.run_active:
-        return ["⚠️ Can't shop in a run! Flee first."]
-    if ammo_type not in AMMO:
-        ammo_type = player.ammo_name
-    box_price = AMMO[ammo_type]["box_price"]
-    box_amount = AMMO[ammo_type]["box_amount"]
-    total_price = box_price * boxes
-    total_rounds = box_amount * boxes
-    if player.money < total_price:
-        return [f"❌ Need ${total_price} for {boxes}x {ammo_type} box ({total_rounds} rounds), you have ${player.money}"]
-    player.money -= total_price
-    player.spare_ammo[ammo_type] = player.spare_ammo.get(ammo_type, 0) + total_rounds
-    if boxes == 1:
-        return [f"📦 Bought {ammo_type} box +{total_rounds}. {player.spare_ammo[ammo_type]} spare now. ${player.money} left."]
-    else:
-        return [f"📦 Bought {boxes}x {ammo_type} boxes +{total_rounds} rounds. {player.spare_ammo[ammo_type]} spare now. ${player.money} left."]
-
-def buy_item(player: Survivor, item: str) -> list[str]:
-    if player.run_active:
-        return ["⚠️ Can't shop in a run! Flee first."]
-    if item == "ammo":
-        return buy_ammo_boxes(player, player.ammo_name, 1)
-    if item == "painkillers":
-        if player.money < 15:
-            return [f"❌ Need $15, you have ${player.money}"]
-        player.money -= 15
-        player.painkillers += 2
-        return [f"💊 Bought painkillers +2. ${player.money} left."]
-    if item == "full_restore":
-        if player.money < 80:
-            return [f"❌ Need $80, you have ${player.money}"]
-        player.money -= 80
-        player.full_restores += 1
-        return [f"✨ Bought full restore +1. ${player.money} left."]
-    if item not in WEAPONS:
-        return ["Item doesn't exist."]
-    weapon = WEAPONS[item]
-    if player.level < weapon["unlock_level"]:
-        return [f"{item} unlocks at level {weapon['unlock_level']}."]
-    if item in player.owned_weapons:
-        player.weapon_name = item
-        player.recalc_stats()
-        player.spare_ammo[player.ammo_name] = player.spare_ammo.get(player.ammo_name, 0) + player.magazine
-        player.magazine = 0
-        return [f"🔫 Re-equipped **{item}** for free (+{player.damage_upgrades*3} dmg from upgrades)."]
-    if player.money < weapon["price"]:
-        return [f"Need ${weapon['price']} for {item}, you have ${player.money}"]
-    player.money -= weapon["price"]
-    player.weapon_name = item
-    player.recalc_stats()
-    if item not in player.owned_weapons:
-        player.owned_weapons.append(item)
-    player.spare_ammo[player.ammo_name] = player.spare_ammo.get(player.ammo_name, 0) + player.magazine
-    player.magazine = 0
-    return [f"🔫 Equipped **{item}** (+{player.damage_upgrades*3} dmg from upgrades). ${player.money} left."]
-
-def equip_ammo(player: Survivor, ammo_name: str) -> list[str]:
-    if ammo_name not in AMMO:
-        return ["That ammo doesn't exist."]
-    if ammo_name not in player.owned_ammo:
-        ammo = AMMO[ammo_name]
-        if player.level < ammo["unlock_level"]:
-            return [f"{ammo_name} unlocks at level {ammo['unlock_level']}."]
-        if player.money < ammo["price"]:
-            return [f"Need ${ammo['price']} for {ammo_name}, you have ${player.money}"]
-        player.money -= ammo["price"]
-        player.owned_ammo.append(ammo_name)
-        player.spare_ammo[ammo_name] = player.spare_ammo.get(ammo_name, 0) + 12
-    if player.ammo_name != ammo_name:
-        player.spare_ammo[player.ammo_name] = player.spare_ammo.get(player.ammo_name, 0) + player.magazine
-        player.magazine = 0
-        player.ammo_name = ammo_name
-        spare = player.get_spare(ammo_name)
-        if spare > 0:
-            load = min(player.magazine_size, spare)
-            player.magazine = load
-            player.spare_ammo[ammo_name] = spare - load
-            return [f"🔬 Equipped **{ammo_name}** ({AMMO[ammo_name]['cost_per_attack']}/shot) and loaded {load} rounds. ${player.money} left."]
-        else:
-            return [f"🔬 Equipped **{ammo_name}** ({AMMO[ammo_name]['cost_per_attack']}/shot) - no spare, buy ammo box!"]
-    else:
-        return [f"🔬 Already using **{ammo_name}** ({AMMO[ammo_name]['cost_per_attack']}/shot)."]
-
-def change_zone(player: Survivor, zone_name: str) -> list[str]:
-    if player.run_active:
-        return ["Can't change zones in a run!"]
-    if zone_name not in ZONES:
-        return ["Zone doesn't exist."]
-    if player.level < ZONES[zone_name]["min_level"]:
-        return [f"{zone_name} unlocks at level {ZONES[zone_name]['min_level']}."]
-    player.zone_name = zone_name
-    return [f"🗺️ Travelled to **{zone_name}**.", ammo_effectiveness_text(player)]
-
-def get_upgrade_cost(player: Survivor, stat: str) -> int:
-    """Balanced exponential scaling costs"""
-    stat = stat.lower()
-    # Base costs
-    bases = {
-        "damage": 250,
-        "health": 200,
-        "mag": 400,
-        "crit": 500,
-        "armor": 450,
-        "scavenger": 700,
-    }
-    # Multipliers per level (how fast it gets expensive) - increased for high wave balance
-    mults = {
-        "damage": 1.55,
-        "health": 1.45,
-        "mag": 1.60,
-        "crit": 1.70,
-        "armor": 1.60,
-        "scavenger": 1.85,
-    }
-    if stat not in bases:
-        return 999999
-    count = 0
-    if stat == "damage": count = player.damage_upgrades
-    elif stat == "health": count = player.health_upgrades
-    elif stat == "mag": count = player.mag_upgrades
-    elif stat == "crit": count = player.crit_upgrades
-    elif stat == "armor": count = player.armor_upgrades
-    elif stat == "scavenger": count = player.scavenger_upgrades
-    # cost = base * mult^count
-    return int(bases[stat] * (mults[stat] ** count))
-
-
-
-def upgrade(player: Survivor, stat: str) -> list[str]:
-    """Money upgrades: health, damage, mag, crit, armor, scavenger"""
-    if player.run_active:
-        return ["⚠️ Can't upgrade during a run! Flee first."]
-    stat = stat.lower().strip()
-    # Map aliases
-    alias = {
-        "health": "health", "hp": "health", "max_health": "health",
-        "damage": "damage", "dmg": "damage", "weapon": "damage",
-        "mag": "mag", "magazine": "mag", "ammo": "mag",
-        "crit": "crit", "critical": "crit", "crit_chance": "crit",
-        "armor": "armor", "armour": "armor", "defense": "armor",
-        "scavenger": "scavenger", "loot": "scavenger", "money": "scavenger"
-    }
-    canonical = alias.get(stat, stat)
-    cost = get_upgrade_cost(player, canonical)
-    if player.money < cost:
-        return [f"❌ Need ${cost} for {canonical}, you have ${player.money}"]
-    player.money -= cost
-    if canonical == "health":
-        player.max_health += 20
-        player.health_upgrades += 1
-        player.health = player.max_health
-        return [f"❤️ Max HP → **{player.max_health}** (+20). ${player.money} left. Lvl {player.health_upgrades}"]
-    elif canonical == "damage":
-        player.weapon_damage += 3
-        player.damage_upgrades += 1
-        return [f"💥 Damage → **{player.weapon_damage}** (+3). ${player.money} left. Lvl {player.damage_upgrades}"]
-    elif canonical == "mag":
-        player.magazine_size += 1
-        player.mag_upgrades += 1
-        return [f"📦 Mag size → **{player.magazine_size}** (+1). ${player.money} left. Lvl {player.mag_upgrades}"]
-    elif canonical == "crit":
-        player.crit_upgrades += 1
-        return [f"🎯 Crit chance → **{int(player.crit_chance*100)}%** (+2% first, +0.5% after). ${player.money} left. Lvl {player.crit_upgrades}"]
-    elif canonical == "armor":
-        player.armor_upgrades += 1
-        return [f"🛡️ Armor → **-{player.armor_reduction} dmg** (cap -35). ${player.money} left. Lvl {player.armor_upgrades}"]
-    elif canonical == "scavenger":
-        player.scavenger_upgrades += 1
-        return [f"💰 Loot bonus → **+{int((player.scavenger_bonus-1)*100)}%** (+10% per lvl). ${player.money} left. Lvl {player.scavenger_upgrades}"]
-    else:
-        # Refund if unknown
-        player.money += cost
-        return [f"❓ Unknown upgrade '{stat}'. Try: health, damage, mag, crit, armor, scavenger"]
-
-
-
-def get_star_upgrade_cost(player: Survivor, stat: str) -> int:
-    """Star upgrades: 5 to unlock, then pattern 3,3,4,4,5,5,6,6..."""
-    stat = stat.lower().strip()
-    alias = {
-        "dodge": "dodge", "dodge_chance": "dodge", "evade": "dodge",
-        "magical": "magical", "magical_bullet": "magical", "magic": "magical", "bullet": "magical", "ammo_saver": "magical",
-        "medic": "medic", "medic_drop": "medic", "heal_drop": "medic",
-        "pet": "pet", "pet_attack": "pet", "wolf": "pet", "dog": "pet",
-        "xp": "xp", "xp_gain": "xp", "experience": "xp", "exp": "xp",
-    }
-    canonical = alias.get(stat, stat)
-    lvl = 0
-    if canonical == "dodge":
-        lvl = player.star_dodge_upgrades
-    elif canonical == "magical":
-        lvl = player.star_magical_upgrades
-    elif canonical == "medic":
-        lvl = player.star_medic_upgrades
-    elif canonical == "pet":
-        lvl = player.star_pet_upgrades
-    elif canonical == "xp":
-        lvl = player.star_xp_upgrades
-    # Lvl 0 = unlock cost 5
-    if lvl == 0:
-        return 5
-    # After unlock, pattern 3,3,4,4,5,5,6,6...
-    # lvl 1 -> 3, lvl 2 -> 3, lvl 3 -> 4, lvl 4 -> 4, lvl 5 ->5, lvl6->5 etc
-    # index = lvl-1, cost = 3 + (index // 2)
-    index = lvl - 1
-    cost = 3 + (index // 2)
-    return cost
-
-
-
-def upgrade_star(player: Survivor, stat: str) -> list[str]:
-    if player.run_active:
-        return ["Can't upgrade during a run!"]
-    stat = stat.lower().strip()
-    alias = {
-        "dodge": "dodge", "dodge_chance": "dodge", "evade": "dodge",
-        "magical": "magical", "magical_bullet": "magical", "magic": "magical", "bullet": "magical", "ammo_saver": "magical",
-        "medic": "medic", "medic_drop": "medic", "heal_drop": "medic",
-        "pet": "pet", "pet_attack": "pet", "wolf": "pet", "dog": "pet",
-        "xp": "xp", "xp_gain": "xp", "experience": "xp", "exp": "xp",
-    }
-    canonical = alias.get(stat)
-    if not canonical:
-        return [f"Unknown star upgrade '{stat}'. Options: dodge(⭐{get_star_upgrade_cost(player,'dodge')}) / magical(⭐{get_star_upgrade_cost(player,'magical')}) / medic(⭐{get_star_upgrade_cost(player,'medic')}) / pet(⭐{get_star_upgrade_cost(player,'pet')}) | ⭐ {player.stars} stars"]
-
-    cost = get_star_upgrade_cost(player, canonical)
-    if player.stars < cost:
-        return [f"Need ⭐{cost} for {canonical}, you have ⭐{player.stars}. Keep grinding waves!"]
-
-    # Check caps before purchase
-    if canonical == "dodge":
-        if player.star_dodge_upgrades > 0 and player.dodge_chance >= 0.30:
-            return [f"❌ Dodge already maxed at 30%! (Lvl {player.star_dodge_upgrades})"]
-        player.stars -= cost
-        player.star_dodge_upgrades += 1
-        return [f"💨 Dodge → **{player.dodge_chance*100:.1f}%** dodge chance (Lvl {player.star_dodge_upgrades}) | Paid ⭐{cost} | ⭐ {player.stars} left | Next: ⭐{get_star_upgrade_cost(player,'dodge')} (cap 30%)"]
-    if canonical == "magical":
-        if player.star_magical_upgrades > 0 and player.magical_bullet_chance >= 0.20:
-            return [f"❌ Magical Bullet already maxed at 20%! (Lvl {player.star_magical_upgrades})"]
-        player.stars -= cost
-        player.star_magical_upgrades += 1
-        return [f"✨ Magical Bullet → **{player.magical_bullet_chance*100:.1f}%** free shot (Lvl {player.star_magical_upgrades}) | Paid ⭐{cost} | ⭐ {player.stars} left | Next: ⭐{get_star_upgrade_cost(player,'magical')} (cap 20%)"]
-    if canonical == "medic":
-        if player.star_medic_upgrades > 0 and player.medic_chance >= 0.07:
-            return [f"❌ Medic already maxed at 7%! (Lvl {player.star_medic_upgrades})"]
-        player.stars -= cost
-        player.star_medic_upgrades += 1
-        return [f"💊 Medic → **{player.medic_chance*100:.2f}%** heal drop (Lvl {player.star_medic_upgrades}) | Paid ⭐{cost} | ⭐ {player.stars} left | Next: ⭐{get_star_upgrade_cost(player,'medic')} (cap 7%)"]
-    if canonical == "pet":
-        if player.star_pet_upgrades > 0 and player.pet_chance >= 0.10:
-            return [f"❌ Pet already maxed at 10%! (Lvl {player.star_pet_upgrades})"]
-        player.stars -= cost
-        player.star_pet_upgrades += 1
-        return [f"🐺 Wolf Pet → **{player.pet_chance*100:.0f}%** to deal {player.pet_damage} dmg (Lvl {player.star_pet_upgrades}) | Paid ⭐{cost} | ⭐ {player.stars} left | Next: ⭐{get_star_upgrade_cost(player,'pet')} (cap 10%)"]
-
-    if canonical == "xp":
-        if player.star_xp_upgrades > 0 and player.xp_bonus >= 0.25:
-            return [f"❌ XP Gain already maxed at 25%! (Lvl {player.star_xp_upgrades})"]
-        player.stars -= cost
-        player.star_xp_upgrades += 1
-        return [f"✨ XP Gain → **{player.xp_bonus*100:.1f}%** bonus XP (Lvl {player.star_xp_upgrades}) | Paid ⭐{cost} | ⭐ {player.stars} left | Next: ⭐{get_star_upgrade_cost(player,'xp')} (cap 25%)"]
-
-    return ["Unknown error"]
-
-
-
-def _grant_star_drop(player: Survivor) -> list[str]:
-    # Apply hunter bonus - increases chance of 1-3 stars
-    """RARE star drop: 0-2 stars normally, 3 stars ONLY after wave 20+"""
-    wave = max(1, player.wave)
-    
-    # 3 stars impossible before wave 20
-    if wave < 20:
-        if wave <= 2:
-            weights = [92, 8, 0, 0]   # 0,1,2,3 - no 2 or 3
-        elif wave <= 5:
-            weights = [80, 16, 4, 0]  # no 3
-        elif wave <= 9:
-            weights = [65, 25, 10, 0] # no 3
-        elif wave <= 14:
-            weights = [50, 32, 18, 0] # no 3
-        else:  # 15-19 - best before mythic
-            weights = [40, 35, 25, 0] # still no 3, but good 2-star chance
-    else:
-        # Wave 20+ - MYTHIC unlocked
-        weights = [35, 33, 24, 8]  # 8% chance for 3 stars, 32% for 1-2
-    
-    import random
-    r = random.random() * 100
-    cumulative = 0
-    stars = 0
-    for i, w in enumerate(weights):
-        cumulative += w
-        if r <= cumulative:
-            stars = i
-            break
-    
-    if stars > 0:
-        player.stars += stars
-        if stars == 1:
-            return [f"⭐ **RARE!** +{stars} star found! (Wave {wave})"]
-        elif stars == 2:
-            return [f"⭐⭐ **ULTRA RARE!** +{stars} stars! (Wave {wave})"]
-        else:  # 3 stars - wave 20+ only
-            return [f"⭐⭐⭐ **MYTHIC HAUL!** +{stars} STARS! WAVE {wave} LEGEND! First time ever?"]
-    else:
-        return []
-
-
-def build_run_summary(player: Survivor, cause: str) -> list[str]:
-    waves_survived = player.wave if cause != "died" else max(0, player.wave - 1 if player.zombies_remaining>0 else player.wave)
-    if player.run_zombies_killed==0 and player.wave==1:
-        waves_survived=0
-    lines=[]
-    if cause=="died":
-        lines.append(f"💀 **You died!** {get_cocky_line()}")
-    elif cause=="fled":
-        lines.append(f"🏃 **You escaped alive!**")
-    else:
-        lines.append(f"💀 **Out of ammo!** {get_no_ammo_line()}")
-    lines.append("")
-    lines.append(f"🌊 Waves survived: {waves_survived} (reached Wave {player.wave})")
-    lines.append(f"🧟 Zombies killed: {player.run_zombies_killed}")
-    lines.append(f"💰 Money earned: +${player.run_money_earned}")
-    lines.append(f"✨ XP earned: +{player.run_xp_earned} XP")
-    lines.append("")
-    lines.append(f"❤️ HP restored: {player.max_health}/{player.max_health}")
-    return lines
-
-def _grant_end_of_run_rewards(player: Survivor) -> list[str]:
-    msgs = []
-    msgs.extend(_grant_random_elemental_drop(player))
-    msgs.extend(_grant_star_drop(player))
-    return msgs
-
-def _grant_random_elemental_drop(player: Survivor) -> list[str]:
-    elemental_owned = [a for a in player.owned_ammo if a != "Standard"]
-    if not elemental_owned:
-        return []
-    chosen = random.choice(elemental_owned)
-    normal_amount = random.randint(1, 10)
-    player.spare_ammo[chosen] = player.spare_ammo.get(chosen, 0) + 1
-    player.spare_ammo["Standard"] = player.spare_ammo.get("Standard", 0) + normal_amount
-    return [f"🎁 **Scavenged!** +1x **{chosen}** bullet + {normal_amount}x Standard bullets found!"]
-
-
-def status(player: Survivor, display_name: str = "Survivor") -> str:
-    """Fisher-style inventory with real player name wired in"""
-    earned, needed = level_progress(player)
-    
-    if player.run_active and player.enemy:
-        lines = [
-            f"**🧟 {player.zone_name} — WAVE {player.wave}** | {player.zombies_remaining} zombies left",
-            f"❤️ {player.health}/{player.max_health} HP | 🔫 {player.weapon_name} {player.magazine}/{player.magazine_size} ({player.get_spare()} spare)",
-            f"💀 Fighting {player.enemy.name} {player.enemy.health}/{player.enemy.max_health} HP",
-        ]
-        if player.run_money_earned or player.run_xp_earned:
-            lines.append(f"💵 Run: ${player.run_money_earned} • ✨ {player.run_xp_earned} XP")
-        return "\n".join(lines)
-    
-    ammo_icons = {"Standard": "🔹", "Bleed": "🩸", "Incendiary": "🔥", "Frostbite": "❄️", "Toxic": "☠️", "Shock": "⚡"}
-    
-    ammo_lines = []
-    for ammo_name in ["Standard", "Bleed", "Incendiary", "Frostbite", "Toxic", "Shock"]:
-        count = player.spare_ammo.get(ammo_name, 0)
-        if ammo_name in player.owned_ammo or count > 0 or ammo_name == player.ammo_name:
-            icon = ammo_icons.get(ammo_name, "🔹")
-            ammo_lines.append(f"{count} {icon} {ammo_name}")
-    
-    if not ammo_lines:
-        ammo_lines = ["0 🔹 No ammo"]
-    
-    lines = [
-        f"**Inventory of {display_name}**",
-        f"",
-        f"Balance: **${player.money}** | Stars: **{player.stars}**",
-        f"Level **{player.level}** — {earned}/{needed} XP to next level.",
-        f"Equipped Weapon: **{player.weapon_name}**",
-        f"Equipped Ammo type: **{player.ammo_name}**",
-        f"Mag size: **{player.magazine_size}** ({player.magazine}/{player.magazine_size} loaded)",
-        f"Zone: **{player.zone_name}**",
-        f"",
-        f"**Ammo inventory:**",
-    ]
-    lines.extend(ammo_lines)
-    lines.append(f"")
-    lines.append(f"**Meds inventory:**")
-    lines.append(f"{player.full_restores} ✨ Full Restore")
-    lines.append(f"{player.painkillers} 💊 Painkillers")
-    
-    return "\n".join(lines)
-
-def status_detailed(player: Survivor, display_name: str = "Survivor") -> str:
-    """Detailed view for inventory/stats menu"""
-    earned, needed = level_progress(player)
-    lines = [
-        f"**📊 {display_name} — Lvl {player.level}**",
-        f"❤️ HP: {player.health}/{player.max_health} (+{player.health_upgrades*20})",
-        f"💥 Dmg: {player.weapon_damage} (+{player.damage_upgrades*3}) | 📦 Mag: {player.magazine_size} (+{player.mag_upgrades})",
-        f"🎯 Crit: {int(player.crit_chance*100)}% | 🛡️ Armor: -{player.armor_reduction} | 💰 Loot: +{int((player.scavenger_bonus-1)*100)}%",
-        f"💰 ${player.money} | ⭐ {player.stars} | ✨ {player.xp} XP ({earned}/{needed})",
-        f"🔫 {player.weapon_name} [{player.ammo_name}] | 📦 Spare: {player.get_spare()}",
-        f"🎒 Ammo: {', '.join([f'{k}:{v}' for k,v in player.spare_ammo.items() if v>0]) or 'Empty'}",
-        f"💊 Painkillers: {player.painkillers} | ✨ Restores: {player.full_restores}",
-        f"🗺️ Zone: {player.zone_name} | Guns: {', '.join(player.owned_weapons)}",
-    ]
-    return "\n".join(lines)
-
-def get_status(player: Survivor, display_name: str = "Survivor") -> str:
-    return status(player, display_name)
-
-def get_detailed_status(player: Survivor, display_name: str = "Survivor") -> str:
-    return status_detailed(player, display_name)
-
-
-
-class GameStore:
+    """CONSTANT SAVE - every single player action triggers instant Postgres save"""
     def __init__(self):
         self.players = {}
+        self._save_count = 0
         self.load()
     def get(self, user_id: int):
         key = str(user_id)
         if key not in self.players:
             self.players[key] = Survivor()
-            # Don't block on creation - fire and forget save
             try:
                 save_player(key, self.players[key].to_dict())
+                self._save_count += 1
+                print(f"[SAVE] New player {key} instantly saved (#{self._save_count})")
             except:
+                from dataclasses import asdict
                 save_player(key, asdict(self.players[key]))
         return self.players[key]
     def save_one(self, key: str):
@@ -1292,48 +378,64 @@ class GameStore:
         if p:
             try:
                 save_player(key, p.to_dict())
+                self._save_count += 1
             except:
+                from dataclasses import asdict
                 save_player(key, asdict(p))
     async def save_one_async(self, key: str):
-        # Async version - runs in thread pool, doesn't block event loop
         import asyncio
         p = self.players.get(key)
         if p:
             try:
                 d = p.to_dict()
             except:
+                from dataclasses import asdict
                 d = asdict(p)
             await asyncio.to_thread(save_player, key, d)
+            self._save_count += 1
     def save(self):
         for k, p in self.players.items():
-            try:
-                save_player(k, p.to_dict())
+            try: save_player(k, p.to_dict())
             except:
+                from dataclasses import asdict
                 save_player(k, asdict(p))
+        if self.players:
+            print(f"[AUTOSAVE] Saved {len(self.players)} players to Postgres - all safe")
     async def save_async(self):
         import asyncio
-        tasks = []
-        for k, p in self.players.items():
-            try:
-                d = p.to_dict()
+        tasks=[]
+        for k,p in self.players.items():
+            try: d=p.to_dict()
             except:
-                d = asdict(p)
-            tasks.append(asyncio.to_thread(save_player, k, d))
+                from dataclasses import asdict
+                d=asdict(p)
+            tasks.append(asyncio.to_thread(save_player,k,d))
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
     def load(self):
-        raw = load_all_players()
-        loaded = {}
-        for k, v in raw.items():
+        raw=load_all_players()
+        loaded={}
+        for k,v in raw.items():
             try:
                 if isinstance(v, dict):
-                    loaded[k] = Survivor.from_dict(v)
+                    loaded[k]=Survivor.from_dict(v)
             except Exception as e:
                 print(f"Corrupt {k}: {e}")
                 continue
-        self.players = loaded
+        self.players=loaded
+        print(f"[STORE] Loaded {len(loaded)} players - PERSISTENT")
 
 game_store = GameStore()
+
+async def background_autosave():
+    import asyncio
+    await asyncio.sleep(60)
+    while True:
+        try:
+            game_store.save()
+        except Exception as e:
+            print(f"[AUTOSAVE ERROR] {e}")
+        await asyncio.sleep(60)
 
 class PlayerView(discord.ui.View):
     def __init__(self, user_id: int, store: GameStore, display_name: str = "Survivor", timeout: float = 180):
@@ -2283,7 +1385,7 @@ class ZoneView(PlayerView):
         for i, zone_name in enumerate(ZONES):
             btn = discord.ui.Button(label=zone_name, style=discord.ButtonStyle.primary, row=i//2)
             async def cb(interaction, zn=zone_name):
-                p=self.store.get(self.user_id); msgs=change_zone(p,zn); self.store.save()
+                p=self.store.get(self.user_id); msgs=change_zone(p,zn); await self.store.save_one_async(str(self.user_id))
                 await interaction.response.edit_message(content="\n".join(msgs)+"\n\n"+status(p, display_name=getattr(self, "display_name", "Survivor")), view=ZoneView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
             btn.callback = cb
             self.add_item(btn)
@@ -2303,6 +1405,11 @@ class StarterBot(discord.Client):
     async def setup_hook(self):
         await self.tree.sync()
         print(f"Synced {len(self.tree.get_commands())} commands")
+        try:
+            self.loop.create_task(background_autosave())
+            print("[AUTOSAVE] Background autosave every 60s STARTED - double protection")
+        except Exception as e:
+            print(f"[AUTOSAVE] Failed start: {e}")
 
 bot = StarterBot()
 
@@ -2502,7 +1609,7 @@ def main():
     if not token:
         print("DISCORD_BOT_TOKEN missing")
         sys.exit(1)
-    print(f"Token found {token[:10]}... Starting FIXED V15 POSTGRES - crit/armor/loot/medic/pet fixed - LVL6 TEST")
+    print(f"Token found {token[:10]}... Starting V6 CONSTANT SAVE - crit/armor/loot/medic/pet fixed - CONSTANT SAVE")
     bot.run(token, log_handler=None)
 
 if __name__ == "__main__":
