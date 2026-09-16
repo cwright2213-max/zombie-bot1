@@ -72,7 +72,7 @@ MAX_PAINKILLERS_PER_RUN = 3
 MAX_FULL_RESTORES_PER_RUN = 1
 ZONES: dict[str, dict[str, Any]] = {
     "Graveyard": {"min_level": 1, "hp_mult": 0.9, "dmg_mult": 0.9, "money_mult": 2.0, "xp_mult": 1.6, "desc": "Foggy, quiet, and good for learning.", "weights": [60, 25, 12, 3], "ammo_mods": {"Standard": 1.00, "Bleed": 1.00, "Incendiary": 1.00, "Frostbite": 1.00, "Toxic": 1.00, "Shock": 1.00}},
-    "Mega Death City": {"min_level": 50, "hp_mult": 2.2, "dmg_mult": 1.4, "money_mult": 3.5, "xp_mult": 1.6, "desc": "A concrete jungle with tougher, richer zombies.", "weights": [30, 30, 25, 15], "ammo_mods": {"Standard": 1.00, "Bleed": 1.00, "Incendiary": 1.20, "Frostbite": 0.90, "Toxic": 1.00, "Shock": 1.15}},
+    "Mega Death City": {"min_level": 50, "hp_mult": 2.2, "dmg_mult": 1.4, "money_mult": 3.5, "xp_mult": 2.0, "desc": "A concrete jungle with tougher, richer zombies.", "weights": [30, 30, 25, 15], "ammo_mods": {"Standard": 1.00, "Bleed": 1.00, "Incendiary": 1.20, "Frostbite": 0.90, "Toxic": 1.00, "Shock": 1.15}},
     "Frostbitten Outskirts": {"min_level": 100, "hp_mult": 5.5, "dmg_mult": 2.0, "money_mult": 5.0, "xp_mult": 2.4, "desc": "Freezing rain and frost armor - NOT for level 50s.", "weights": [20, 20, 35, 25], "ammo_mods": {"Standard": 1.00, "Bleed": 0.90, "Incendiary": 1.40, "Frostbite": 0.70, "Toxic": 1.00, "Shock": 1.15}},
     "Toxic Wasteland": {"min_level": 150, "hp_mult": 9.0, "dmg_mult": 2.6, "money_mult": 7.5, "xp_mult": 3.2, "desc": "A green haze where toxic rounds shine. Bring real gear.", "weights": [15, 15, 35, 35], "ammo_mods": {"Standard": 1.00, "Bleed": 1.00, "Incendiary": 1.10, "Frostbite": 1.00, "Toxic": 1.50, "Shock": 0.90}},
     "The Void": {"min_level": 200, "hp_mult": 14.0, "dmg_mult": 3.4, "money_mult": 10.0, "xp_mult": 4.5, "desc": "Endgame. Everything wants you dead. 3-4 shots? Not here.", "weights": [10, 10, 30, 50], "ammo_mods": {"Standard": 1.00, "Bleed": 1.10, "Incendiary": 1.15, "Frostbite": 1.10, "Toxic": 1.25, "Shock": 1.50}},
@@ -566,14 +566,23 @@ def _finish_enemy(player: Survivor) -> list[str]:
     enemy = player.enemy
     if enemy is None or enemy.health > 0:
         return []
+    # FIXED XP SCALING - Feedback #3
+    # Wave scaling: +8% XP per wave - Wave 20 = 2.6x, Wave 30 = 3.4x
+    wave_mult = 1.0 + (player.wave * 0.08)
+    # Zone mult already in enemy.xp_reward, but add wave
+    # Star XP bonus: +10% base +1% per level, max 25%
+    xp_bonus_mult = 1.0 + player.xp_bonus
+    # Final XP: base (already includes zone_mult) * wave_mult * xp_bonus
+    xp_gain = int(enemy.xp_reward * wave_mult * xp_bonus_mult)
+    
     money_gain = int(enemy.money_reward * player.scavenger_bonus)
     player.money += money_gain
-    player.xp += enemy.xp_reward
+    player.xp += xp_gain
     player.run_money_earned += money_gain
-    player.run_xp_earned += enemy.xp_reward
+    player.run_xp_earned += xp_gain
     player.run_zombies_killed += 1
     player.zombies_remaining -= 1
-    messages = [f"✅ **{enemy.name} defeated!** +${money_gain} (Base ${enemy.money_reward} + {int((player.scavenger_bonus-1)*100)}% Loot) • +{enemy.xp_reward} XP"] if player.scavenger_bonus > 1.0 else [f"✅ **{enemy.name} defeated!** +${money_gain} • +{enemy.xp_reward} XP"]
+    messages = [f"✅ **{enemy.name} defeated!** +${money_gain} (Base ${enemy.money_reward} + {int((player.scavenger_bonus-1)*100)}% Loot) • +{xp_gain} XP (x{wave_mult:.1f} wave x{xp_bonus_mult:.1f} bonus)"] if player.scavenger_bonus > 1.0 else [f"✅ **{enemy.name} defeated!** +${money_gain} • +{xp_gain} XP (Base {enemy.xp_reward} x{wave_mult:.1f} wave x{xp_bonus_mult:.1f} bonus)"]
     if player.level > level_for_xp(player.xp - enemy.xp_reward):
         ups = player.level - level_for_xp(player.xp - enemy.xp_reward)
         if ups > 0:
@@ -1802,12 +1811,35 @@ class AmmoShopView(PlayerView):
             btn = discord.ui.Button(label=label[:80], style=style, row=0 if i < 3 else 1)
             async def cb(interaction, an=ammo_name):
                 p=self.store.get(self.user_id)
+                msgs = []
+                success = True
                 if an not in p.owned_ammo:
                     msgs = equip_ammo(p, an)
+                    # Check if equip failed (message starts with ❌ or Need or unlocks)
+                    if msgs and any(x.startswith('❌') or 'Need $' in x or 'unlocks at level' in x.lower() for x in msgs):
+                        success = False
                     self.store.save()
-                self.selected_ammo = an
-                content = self.get_shop_text(p)
-                await interaction.response.edit_message(content=content, view=AmmoShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_ammo=an))
+                else:
+                    # Already owned, try to equip
+                    msgs = equip_ammo(p, an)
+                    if msgs and any('Already using' not in m and ('❌' in m or 'can\'t' in m.lower()) for m in msgs):
+                        # If it's already using, it's success
+                        if any('Already using' in m for m in msgs):
+                            success = True
+                        else:
+                            # Check if error
+                            if any(m.startswith('❌') for m in msgs):
+                                success = False
+                    self.store.save()
+                
+                if success:
+                    self.selected_ammo = an
+                    content = self.get_shop_text(p, extra_msgs=msgs)
+                    await interaction.response.edit_message(content=content, view=AmmoShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_ammo=an))
+                else:
+                    # Equip failed, keep old selection but show error
+                    content = self.get_shop_text(p, extra_msgs=msgs)
+                    await interaction.response.edit_message(content=content, view=AmmoShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_ammo=self.selected_ammo))
             btn.callback = cb
             self.add_item(btn)
         
@@ -2042,11 +2074,22 @@ class UpgradeView(PlayerView):
         buy_label = f"Buy {self.selected_up.capitalize()} ${cost}"
         btn_buy = discord.ui.Button(label=buy_label[:80], style=discord.ButtonStyle.success, row=2)
         async def buy_cb(interaction):
-            p=self.store.get(self.user_id)
-            msgs = upgrade(p, self.selected_up)
-            self.store.save()
-            content = self.get_shop_text(p, selected_override=self.selected_up, extra_msgs=msgs)
-            await interaction.response.edit_message(content=content, view=UpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_up=self.selected_up))
+            # FIX #1: Prevent double-click race - locks per user
+            if self.user_id in _purchase_locks:
+                try:
+                    await interaction.response.defer()
+                except:
+                    pass
+                return
+            _purchase_locks.add(self.user_id)
+            try:
+                p=self.store.get(self.user_id)
+                msgs = upgrade(p, self.selected_up)
+                self.store.save()
+                content = self.get_shop_text(p, selected_override=self.selected_up, extra_msgs=msgs)
+                await interaction.response.edit_message(content=content, view=UpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_up=self.selected_up))
+            finally:
+                _purchase_locks.discard(self.user_id)
         btn_buy.callback = buy_cb
         self.add_item(btn_buy)
 
@@ -2141,11 +2184,22 @@ class StarUpgradeView(PlayerView):
         buy_label = f"Buy {self.selected_star.capitalize()} ⭐{cost}"
         btn_buy = discord.ui.Button(label=buy_label[:80], style=discord.ButtonStyle.success, row=2)
         async def buy_cb(interaction):
-            p=self.store.get(self.user_id)
-            msgs = upgrade_star(p, self.selected_star)
-            self.store.save()
-            content = self.get_shop_text(p, selected_override=self.selected_star, extra_msgs=msgs)
-            await interaction.response.edit_message(content=content, view=StarUpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_star=self.selected_star))
+            # FIX #1: Prevent double-click race for star upgrades
+            if self.user_id in _purchase_locks:
+                try:
+                    await interaction.response.defer()
+                except:
+                    pass
+                return
+            _purchase_locks.add(self.user_id)
+            try:
+                p=self.store.get(self.user_id)
+                msgs = upgrade_star(p, self.selected_star)
+                self.store.save()
+                content = self.get_shop_text(p, selected_override=self.selected_star, extra_msgs=msgs)
+                await interaction.response.edit_message(content=content, view=StarUpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_star=self.selected_star))
+            finally:
+                _purchase_locks.discard(self.user_id)
         btn_buy.callback = buy_cb
         self.add_item(btn_buy)
 
