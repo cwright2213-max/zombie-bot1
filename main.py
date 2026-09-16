@@ -10,11 +10,24 @@ logger = logging.getLogger('zombie-bot')
 from discord import app_commands
 
 # --- VOLUME PERSISTENT STORAGE - NEVER WIPES AFTER THIS ---
-from storage import load_all_players, save_player, DB_PATH, SAVE_FILE
+from storage import load_all_players, save_player, DB_PATH, SAVE_FILE, get_bot_admins, is_bot_admin, add_bot_admin, remove_bot_admin
 print(f"[STORAGE] Using {DB_PATH} - this is persistent if /data volume mounted")
 
 # Anti double-click lock for upgrades
 _purchase_locks: set[int] = set()
+
+# Bloater config - MUST be before combat_embed
+BLOATER_BASE = {"health": 280, "damage": 4, "money": 350, "xp": 120}
+BLOATER_MAX_PER_ZONE = {
+    "Graveyard": 1,
+    "Mega Death City": 2,
+    "Frostbitten Outskirts": 3,
+    "Toxic Wasteland": 4,
+    "The Void": 5,
+}
+BLOATER_MIN_WAVE = 5
+BLOATER_FUSE = 5
+BLOATER_EXPLODE_PCT = 0.65
 
 def make_bar(current: int, max_val: int, length: int = 12) -> str:
     if max_val <= 0:
@@ -62,8 +75,6 @@ def combat_embed(player, last_msgs=None):
     embed.set_footer(text=f"💰 ${player.money} | ⭐ {player.stars} | ✨ {player.xp} XP | {player.ammo_name} {player.magazine}/{player.magazine_size}")
     return embed
 
-
-
 MAX_PAINKILLERS_PER_RUN = 3
 MAX_FULL_RESTORES_PER_RUN = 1
 ZONES: dict[str, dict[str, Any]] = {
@@ -74,18 +85,6 @@ ZONES: dict[str, dict[str, Any]] = {
     "The Void": {"min_level": 200, "hp_mult": 14.0, "dmg_mult": 3.4, "money_mult": 10.0, "xp_mult": 4.8, "desc": "Endgame. Everything wants you dead. 3-4 shots? Not here.", "weights": [10, 10, 30, 50], "ammo_mods": {"Standard": 1.00, "Bleed": 1.10, "Incendiary": 1.15, "Frostbite": 1.10, "Toxic": 1.25, "Shock": 1.50}},
 }
 ZONE_ORDER = ["Graveyard", "Mega Death City", "Frostbitten Outskirts", "Toxic Wasteland", "The Void"]
-# Bloater config - run ender
-BLOATER_BASE = {"health": 280, "damage": 4, "money": 350, "xp": 120}
-BLOATER_MAX_PER_ZONE = {
-    "Graveyard": 1,
-    "Mega Death City": 2,
-    "Frostbitten Outskirts": 3,
-    "Toxic Wasteland": 4,
-    "The Void": 5,
-}
-BLOATER_MIN_WAVE = 5
-BLOATER_FUSE = 5  # attacks before explosion
-BLOATER_EXPLODE_PCT = 0.65  # 65% max HP
 AMMO: dict[str, dict[str, Any]] = {
     "Standard": {"unlock_level": 1, "price": 0, "desc": "Reliable regular lead.", "effect": None, "cost_per_attack": 1, "box_price": 15, "box_amount": 24},
     "Bleed": {"unlock_level": 10, "price": 200, "desc": "25% bleed 15 dmg x3", "effect": "bleed", "cost_per_attack": 2, "box_price": 50, "box_amount": 24},
@@ -2339,18 +2338,45 @@ async def zombie_start_cmd(interaction: discord.Interaction):
     embed = combat_embed(player, msgs)
     await interaction.followup.send(embed=embed, view=CombatView(interaction.user.id, game_store))
 
-# --- ADMIN COMMANDS - ANY SERVER ADMIN CAN USE ---
+# --- ADMIN SYSTEM ---
+# Bot admins are stored in /data/players.db and persist across deploys
 def is_server_admin(interaction: discord.Interaction) -> bool:
-    # DM check - no guild = not admin
+    # 1. Check if user is in bot admin list (persistent team)
+    try:
+        if is_bot_admin(interaction.user.id):
+            return True
+    except:
+        pass
+    # 2. Check Discord server permissions
     if interaction.guild is None:
+        # In DMs, only bot admins can use admin commands
         return False
-    # Check if user has Administrator permission in this server
     try:
         perms = interaction.user.guild_permissions
         if perms.administrator:
             return True
-        # Also allow Manage Guild as admin fallback
         if perms.manage_guild:
+            return True
+    except:
+        pass
+    return False
+
+def is_owner_or_server_admin(interaction: discord.Interaction) -> bool:
+    """For /giveadmin - only server owners/admins can assign new bot admins"""
+    if interaction.guild is None:
+        return False
+    try:
+        # Guild owner always can
+        if interaction.guild.owner_id == interaction.user.id:
+            return True
+        perms = interaction.user.guild_permissions
+        if perms.administrator:
+            return True
+    except:
+        pass
+    # Also existing bot admins can add more (to build team)
+    try:
+        if is_bot_admin(interaction.user.id):
             return True
     except:
         pass
@@ -2426,6 +2452,61 @@ async def zombie_give(interaction: discord.Interaction, user: discord.User, mone
     player.xp += xp
     game_store.save()
     await interaction.followup.send(f"✅ Restored {user.mention}: +${money}, +{stars}⭐, +{xp} XP\nNow: ${player.money} | {player.stars}⭐ | Lvl {player.level} ({player.xp} XP)", ephemeral=True)
+
+
+@bot.tree.command(name="giveadmin", description="[ADMIN] Give bot admin permissions to a user for testing")
+@app_commands.describe(user="User to make bot admin")
+async def giveadmin(interaction: discord.Interaction, user: discord.User):
+    if not is_owner_or_server_admin(interaction):
+        await interaction.response.send_message("❌ Only **Server Owner** or existing Bot Admins can give admin permissions.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+    if is_bot_admin(user.id):
+        await interaction.followup.send(f"⚠️ {user.mention} is already a Bot Admin!", ephemeral=True)
+        return
+    success = add_bot_admin(user.id, added_by=str(interaction.user.id))
+    if success:
+        await interaction.followup.send(f"✅ **{user.mention} is now a Bot Admin!**\nThey can use: /addmoney, /addstars, /addxp, /resetplayer, /zombie_give, /giveadmin, /removeadmin\n\n*This persists across deploys (stored in /data)*", ephemeral=True)
+    else:
+        await interaction.followup.send(f"❌ Failed to add {user.mention} as admin. Check logs.", ephemeral=True)
+
+@bot.tree.command(name="removeadmin", description="[ADMIN] Remove bot admin permissions from a user")
+@app_commands.describe(user="User to remove admin from")
+async def removeadmin(interaction: discord.Interaction, user: discord.User):
+    if not is_owner_or_server_admin(interaction):
+        await interaction.response.send_message("❌ Only **Server Owner** or existing Bot Admins can remove admins.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+    if not is_bot_admin(user.id):
+        await interaction.followup.send(f"⚠️ {user.mention} is not a Bot Admin.", ephemeral=True)
+        return
+    if user.id == interaction.user.id:
+        await interaction.followup.send(f"⚠️ You are removing yourself! Removing...", ephemeral=True)
+    success = remove_bot_admin(user.id)
+    if success:
+        await interaction.followup.send(f"✅ **{user.mention} is no longer a Bot Admin.**", ephemeral=True)
+    else:
+        await interaction.followup.send(f"❌ Failed to remove {user.mention}.", ephemeral=True)
+
+@bot.tree.command(name="listadmins", description="[ADMIN] List all bot admins")
+async def listadmins(interaction: discord.Interaction):
+    if not is_server_admin(interaction):
+        await interaction.response.send_message("❌ You need Bot Admin or Server Admin permission.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+    admins = get_bot_admins()
+    if not admins:
+        await interaction.followup.send("📋 **No Bot Admins yet.**\nAnyone with Discord Administrator can add the first one with /giveadmin", ephemeral=True)
+        return
+    lines = []
+    for uid in admins:
+        try:
+            u = await bot.fetch_user(int(uid))
+            lines.append(f"- {u.mention} ({u.name}) - `{uid}`")
+        except:
+            lines.append(f"- <@{uid}> - `{uid}` (not cached)")
+    await interaction.followup.send(f"📋 **Bot Admins ({len(admins)}):**\n" + "\n".join(lines), ephemeral=True)
+
 
 def main():
     import os, sys
