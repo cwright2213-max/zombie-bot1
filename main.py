@@ -1,4 +1,4 @@
-"""Ultimate clean bot v4.1 VOLUME FORCED - waves + kills, no Total Money Earned - FORCED /data"""
+"""Ultimate clean bot v4.2 POSTGRES PERSISTENT - level 6 test - meds fix verified"""
 import os, sys, json, random, logging
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -2502,7 +2502,7 @@ def main():
     if not token:
         print("DISCORD_BOT_TOKEN missing")
         sys.exit(1)
-    print(f"Token found {token[:10]}... Starting FIXED V14 - crit/armor/loot/medic/pet fixed")
+    print(f"Token found {token[:10]}... Starting FIXED V15 POSTGRES - crit/armor/loot/medic/pet fixed - LVL6 TEST")
     bot.run(token, log_handler=None)
 
 if __name__ == "__main__":
