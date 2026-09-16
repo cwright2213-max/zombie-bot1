@@ -4,6 +4,4 @@ builder = "nixpacks"
 [deploy]
 startCommand = "python main.py"
 restartPolicyType = "onFailure"
-
-[[deploy.volumes]]
-mountPath = "/data"
+# V6 - Postgres only persistence - zero volume needed
