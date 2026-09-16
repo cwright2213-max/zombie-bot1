@@ -70,6 +70,80 @@ def save_player(user_id, player_dict):
                 pass
             return
 
+# --- BOT ADMIN SYSTEM ---
+def _get_admin_conn():
+    return _get_conn()
+
+def get_bot_admins():
+    """Returns set of user_id strings who are bot admins"""
+    try:
+        conn = _get_conn()
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS bot_admins (
+                user_id TEXT PRIMARY KEY,
+                added_by TEXT,
+                added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.commit()
+        cur = conn.execute("SELECT user_id FROM bot_admins")
+        admins = {row[0] for row in cur.fetchall()}
+        conn.close()
+        return admins
+    except Exception as e:
+        print(f"[ADMIN] get_bot_admins failed: {e}")
+        return set()
+
+def is_bot_admin(user_id):
+    try:
+        conn = _get_conn()
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS bot_admins (
+                user_id TEXT PRIMARY KEY,
+                added_by TEXT,
+                added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.commit()
+        cur = conn.execute("SELECT 1 FROM bot_admins WHERE user_id=?", (str(user_id),))
+        exists = cur.fetchone() is not None
+        conn.close()
+        return exists
+    except Exception as e:
+        print(f"[ADMIN] is_bot_admin check failed: {e}")
+        return False
+
+def add_bot_admin(user_id, added_by="system"):
+    try:
+        conn = _get_conn()
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS bot_admins (
+                user_id TEXT PRIMARY KEY,
+                added_by TEXT,
+                added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.execute("INSERT OR REPLACE INTO bot_admins (user_id, added_by, added_at) VALUES (?, ?, CURRENT_TIMESTAMP)", (str(user_id), str(added_by)))
+        conn.commit()
+        conn.close()
+        print(f"[ADMIN] Added bot admin {user_id} by {added_by}")
+        return True
+    except Exception as e:
+        print(f"[ADMIN] add_bot_admin failed: {e}")
+        return False
+
+def remove_bot_admin(user_id):
+    try:
+        conn = _get_conn()
+        conn.execute("DELETE FROM bot_admins WHERE user_id=?", (str(user_id),))
+        conn.commit()
+        conn.close()
+        print(f"[ADMIN] Removed bot admin {user_id}")
+        return True
+    except Exception as e:
+        print(f"[ADMIN] remove failed: {e}")
+        return False
+
 def get_db():
     return _get_conn()
 
