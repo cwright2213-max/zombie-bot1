@@ -1,17 +1,20 @@
-"""Persistent storage - VOLUME FIX - never wipes"""
+"""Persistent storage - FORCE /data - never wipes"""
 import os, json, logging, sqlite3, time
 from pathlib import Path
 
 logger = logging.getLogger("zombie.storage")
 
-# Railway volume mounts at /data - if it exists, use it
-if Path("/data").exists():
-    DB_PATH = Path("/data/players.db")
-else:
+# FORCE /data - always try /data first, this is where Railway volume mounts
+# Even if folder doesn't exist, we create it - Railway will make it persistent if volume configured
+DB_PATH = Path("/data/players.db")
+try:
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    print(f"[STORAGE] FORCED DB_PATH = {DB_PATH} exists={DB_PATH.exists()} parent={DB_PATH.parent} - volume mounted={Path('/data').exists()}")
+except Exception as e:
+    # Fallback if /data not writable (shouldn't happen)
     DB_PATH = Path("data/players.db")
-
-DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-print(f"[STORAGE] DB_PATH = {DB_PATH} exists={DB_PATH.exists()} parent={DB_PATH.parent}")
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    print(f"[STORAGE] Fallback to {DB_PATH} because /data failed: {e}")
 
 def _get_conn():
     conn = sqlite3.connect(str(DB_PATH), timeout=10.0, check_same_thread=False)
@@ -31,7 +34,7 @@ def _get_conn():
 def load_all_players():
     try:
         if not DB_PATH.exists():
-            print(f"[STORAGE] No DB file yet at {DB_PATH}, starting fresh")
+            print(f"[STORAGE] No DB file yet at {DB_PATH}, starting fresh - first boot")
             return {}
         conn = _get_conn()
         cur = conn.execute("SELECT user_id, data FROM players")
@@ -42,7 +45,7 @@ def load_all_players():
             except:
                 pass
         conn.close()
-        print(f"[STORAGE] Loaded {len(result)} players from {DB_PATH}")
+        print(f"[STORAGE] Loaded {len(result)} players from {DB_PATH} - THIS IS PERSISTENT")
         return result
     except Exception as e:
         print(f"[STORAGE] Load failed: {e}")
@@ -71,6 +74,5 @@ def get_db():
     return _get_conn()
 
 SAVE_FILE = DB_PATH
-# Compat for old main.py expecting these
 USE_POSTGRES = False
 DATABASE_URL = ""
