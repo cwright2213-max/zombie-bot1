@@ -1947,22 +1947,10 @@ class MedsShopView(PlayerView):
                 total_cost = (15 if med == "painkillers" else 80) * q
                 if p.money < total_cost:
                     msgs = [f"❌ Need ${total_cost} for {q}x {med}, you have ${p.money}"]
-                else:
-                    msgs = []
-                    for _ in range(q):
-                        msgs_inner = buy_item(p, med)
-                        # buy_item already deducts, we want to keep only last msg to avoid spam
-                    p.money -= 0  # already deducted in loop
-                    # Actually buy_item loop above already did q times, but we did it inefficiently - redo properly
-                    # Reset and do bulk properly
-                    pass
-                # Proper bulk implementation
-                p=self.store.get(self.user_id)
-                # We already consumed money if loop above, let's redo clean
-                # For safety, re-implement bulk here directly
-                if p.money < total_cost and q != 1:  # we already checked
-                    pass
-                # Do bulk
+                    content = self.get_shop_text(p, selected_override=med, extra_msgs=msgs)
+                    await interaction.response.edit_message(content=content, view=MedsShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_med=med))
+                    return
+                # Clean single loop - +2 per painkiller purchase, +1 per full restore
                 bought = 0
                 for _ in range(q):
                     if med == "painkillers":
@@ -1981,7 +1969,7 @@ class MedsShopView(PlayerView):
                             break
                 self.store.save()
                 if med == "painkillers":
-                    msgs = [f"💊 Bought {q}x Painkillers +{bought} | Now {p.painkillers}x | ${p.money} left"]
+                    msgs = [f"💊 Bought {q}x Painkillers +{bought} (2 per purchase) | Now {p.painkillers}x | ${p.money} left"]
                 else:
                     msgs = [f"✨ Bought {q}x Full Restore +{bought} | Now {p.full_restores}x | ${p.money} left"]
                 content = self.get_shop_text(p, selected_override=med, extra_msgs=msgs)
