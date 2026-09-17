@@ -2327,28 +2327,104 @@ async def zombie_start_cmd(interaction: discord.Interaction):
     embed = combat_embed(player, msgs)
     await interaction.followup.send(embed=embed, view=CombatView(interaction.user.id, game_store))
 
-# --- ADMIN COMMANDS - ANY SERVER ADMIN CAN USE ---
+# --- ADMIN COMMANDS ---
+# Server admins can grant the bot's admin commands to specific players.
+# Delegated bot-admins are stored by storage.py and survive bot restarts.
 def is_server_admin(interaction: discord.Interaction) -> bool:
-    # DM check - no guild = not admin
+    # DM check - no guild = not a server admin
     if interaction.guild is None:
         return False
-    # Check if user has Administrator permission in this server
     try:
         perms = interaction.user.guild_permissions
         if perms.administrator:
             return True
-        # Also allow Manage Guild as admin fallback
+        # Also allow Manage Guild as an admin fallback
         if perms.manage_guild:
             return True
-    except:
+    except Exception:
         pass
     return False
+
+
+def has_admin_commands(interaction: discord.Interaction) -> bool:
+    """True for real Discord server admins OR delegated bot admins."""
+    if interaction.guild is None:
+        return False
+    if is_server_admin(interaction):
+        return True
+    try:
+        return bool(is_bot_admin(interaction.user.id))
+    except Exception as e:
+        print(f"[ADMIN] Failed delegated-admin check for {interaction.user.id}: {e}")
+        return False
+
+
+def admin_denied_message() -> str:
+    return "❌ You need **Administrator** permission in this server (or delegated bot-admin access)."
+
+
+# /give admin @player
+# IMPORTANT: only a real Discord server admin can grant/revoke delegated access.
+give_group = app_commands.Group(name="give", description="[ADMIN] Grant bot permissions")
+
+
+@give_group.command(name="admin", description="[ADMIN] Give bot admin commands to a player")
+@app_commands.describe(user="Player who should receive the bot admin commands")
+async def give_admin(interaction: discord.Interaction, user: discord.Member):
+    if not is_server_admin(interaction):
+        await interaction.response.send_message(
+            "❌ Only a **Discord Server Administrator** can give bot admin access.",
+            ephemeral=True,
+        )
+        return
+
+    if interaction.guild is None:
+        await interaction.response.send_message("❌ This command can only be used inside a server.", ephemeral=True)
+        return
+
+    try:
+        already_admin = bool(is_bot_admin(user.id))
+    except Exception as e:
+        print(f"[ADMIN] Failed delegated-admin lookup for {user.id}: {e}")
+        already_admin = False
+
+    if already_admin:
+        await interaction.response.send_message(
+            f"ℹ️ {user.mention} already has **bot admin commands**.",
+            ephemeral=True,
+        )
+        return
+
+    try:
+        result = add_bot_admin(user.id)
+        # Support storage implementations that return a success flag, while
+        # also treating a None return as success (common for simple setters).
+        if result is False:
+            raise RuntimeError("storage.add_bot_admin returned False")
+    except Exception as e:
+        print(f"[ADMIN] Failed to grant bot admin to {user.id}: {e}")
+        await interaction.response.send_message(
+            f"❌ Could not give bot admin access to {user.mention}.",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.send_message(
+        f"✅ {user.mention} now has **bot admin commands**.\n"
+        f"They do **not** become a Discord server administrator; they only gain this bot's admin commands.",
+        ephemeral=True,
+    )
+
+
+# Register the /give command group with Discord.
+bot.tree.add_command(give_group)
+
 
 @bot.tree.command(name="addmoney", description="[ADMIN] Add money to a player")
 @app_commands.describe(user="Player to give money to (leave empty for yourself)", amount="Amount to add (e.g. 5000)")
 async def addmoney(interaction: discord.Interaction, amount: int, user: discord.User = None):
-    if not is_server_admin(interaction):
-        await interaction.response.send_message("❌ You need **Administrator** permission in this server to use this.", ephemeral=True)
+    if not has_admin_commands(interaction):
+        await interaction.response.send_message(admin_denied_message(), ephemeral=True)
         return
     await interaction.response.defer(ephemeral=True)
     target = user or interaction.user
@@ -2357,11 +2433,12 @@ async def addmoney(interaction: discord.Interaction, amount: int, user: discord.
     game_store.save()
     await interaction.followup.send(f"💰 **+${amount}** added to {target.mention} → Now has **${player.money}**", ephemeral=True)
 
+
 @bot.tree.command(name="addstars", description="[ADMIN] Add stars to a player")
 @app_commands.describe(user="Player to give stars to", amount="Amount to add")
 async def addstars(interaction: discord.Interaction, amount: int, user: discord.User = None):
-    if not is_server_admin(interaction):
-        await interaction.response.send_message("❌ You need **Administrator** permission.", ephemeral=True)
+    if not has_admin_commands(interaction):
+        await interaction.response.send_message(admin_denied_message(), ephemeral=True)
         return
     await interaction.response.defer(ephemeral=True)
     target = user or interaction.user
@@ -2370,25 +2447,26 @@ async def addstars(interaction: discord.Interaction, amount: int, user: discord.
     game_store.save()
     await interaction.followup.send(f"⭐ **+{amount} stars** to {target.mention} → Now has **{player.stars}** ⭐", ephemeral=True)
 
+
 @bot.tree.command(name="addxp", description="[ADMIN] Add XP to a player")
 @app_commands.describe(user="Player to give XP to", amount="Amount to add")
 async def addxp(interaction: discord.Interaction, amount: int, user: discord.User = None):
-    if not is_server_admin(interaction):
-        await interaction.response.send_message("❌ You need **Administrator** permission.", ephemeral=True)
+    if not has_admin_commands(interaction):
+        await interaction.response.send_message(admin_denied_message(), ephemeral=True)
         return
     await interaction.response.defer(ephemeral=True)
     target = user or interaction.user
     player = game_store.get(target.id)
     player.xp += amount
-    # Recalc level based on xp (if your Survivor has level property auto)
     game_store.save()
     await interaction.followup.send(f"✨ **+{amount} XP** to {target.mention} → Level {player.level} | XP: {player.xp}", ephemeral=True)
+
 
 @bot.tree.command(name="resetplayer", description="[ADMIN] Reset a player's progress")
 @app_commands.describe(user="Player to reset")
 async def resetplayer(interaction: discord.Interaction, user: discord.User):
-    if not is_server_admin(interaction):
-        await interaction.response.send_message("❌ Administrator only.", ephemeral=True)
+    if not has_admin_commands(interaction):
+        await interaction.response.send_message(admin_denied_message(), ephemeral=True)
         return
     await interaction.response.defer(ephemeral=True)
     # Create fresh survivor
@@ -2401,11 +2479,12 @@ async def resetplayer(interaction: discord.Interaction, user: discord.User):
     game_store.save()
     await interaction.followup.send(f"🔄 {user.mention} has been reset to level 1!", ephemeral=True)
 
+
 @bot.tree.command(name="zombie_give", description="[ADMIN] Give money/stars/xp to restore a player")
 @app_commands.describe(user="Player to restore", money="Money to give", stars="Stars to give", xp="XP to give")
 async def zombie_give(interaction: discord.Interaction, user: discord.User, money: int = 0, stars: int = 0, xp: int = 0):
-    if not is_server_admin(interaction):
-        await interaction.response.send_message("❌ Administrator permission required.", ephemeral=True)
+    if not has_admin_commands(interaction):
+        await interaction.response.send_message(admin_denied_message(), ephemeral=True)
         return
     await interaction.response.defer(ephemeral=True)
     player = game_store.get(user.id)
