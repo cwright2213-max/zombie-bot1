@@ -15,7 +15,7 @@ print(f"[STORAGE] Using POSTGRES - CONSTANT SAVE ENABLED - V6 FULL RESTORED")
 _purchase_locks: set[int] = set()
 
 BLOATER_BASE = {"health": 280, "damage": 4, "money": 350, "xp": 120}
-BLOATER_MAX_PER_ZONE = {"Graveyard": 1, "Mega Death City": 2, "Frostbitten Outskirts": 3, "Toxic Wasteland": 4, "The Void": 5}
+BLOATER_BOSS_HP_MULT = 1.5  # Bloaters are mini-bosses in every zone\nBLOATER_MAX_PER_ZONE = {"Graveyard": 1, "Mega Death City": 2, "Frostbitten Outskirts": 3, "Toxic Wasteland": 4, "The Void": 5}
 BLOATER_MIN_WAVE = 5
 BLOATER_FUSE = 6
 BLOATER_EXPLODE_PCT = 0.45
@@ -105,6 +105,7 @@ WEAPONS: dict[str, dict[str, Any]] = {
     "Rifle": {"damage": 25, "mag": 30, "price": 2500, "unlock_level": 30, "shots": 2},
     "SMG": {"damage": 15, "mag": 42, "price": 4000, "unlock_level": 60, "shots": 3},
     "Sawed-Off": {"damage": 70, "mag": 2, "price": 6000, "unlock_level": 90, "shots": 1},
+    "Tactical Sniper": {"damage": 180, "mag": 1, "price": 15000, "unlock_level": 125, "shots": 1, "desc": "Heavy late-game single-shot sniper. Massive damage, but starts with a 1-round magazine and relies on Magazine upgrades for special ammo."},
 }
 
 # --- VOID WEAPON SYSTEM ---
@@ -112,7 +113,7 @@ WEAPONS: dict[str, dict[str, Any]] = {
 # Their damage is NEVER modified by standard Damage upgrades.
 VOID_WEAPONS: dict[str, dict[str, Any]] = {
     "Void Bazooka": {
-        "damage": 700,
+        "damage": 400,
         "price": 25000,
         "unlock_level": 200,
         "boss_mult": 2.00,
@@ -124,9 +125,12 @@ VOID_UPGRADE_MAX = 10
 VOID_BAZOOKA_DAMAGE_PER_LEVEL = 20
 VOID_BAZOOKA_FREE_AMMO_PER_RUN = 1
 VOID_BAZOOKA_AMMO_COST = 10
-VOID_ESSENCE_PER_VOID_KILL = 2
-VOID_ESSENCE_PER_VOID_BLOATER = 10
-VOID_ESSENCE_PER_VOID_WAVE = 5
+# Void Essence is endgame material, so it is intentionally scarce.
+# Normal Void kills give a small amount; Bloaters and wave clears remain
+# meaningful sources without making Essence accumulate too quickly.
+VOID_ESSENCE_PER_VOID_KILL = 1
+VOID_ESSENCE_PER_VOID_BLOATER = 5
+VOID_ESSENCE_PER_VOID_WAVE = 2
 
 
 # --- DEATH LINES - SPLIT BY TYPE (BIG VARIETY - no repeats) ---
@@ -462,7 +466,11 @@ def _should_spawn_bloater(player: Survivor) -> bool:
 def _make_bloater_enemy(player: Survivor) -> Enemy:
     zone = zone_for(player)
     # Bloater health scales but not insane: base 280 + wave*12 * hp_mult
-    health = int((BLOATER_BASE["health"] + (player.wave - 1) * 12) * zone["hp_mult"] * 0.45)
+    health = int(
+        (BLOATER_BASE["health"] + (player.wave - 1) * 15)
+        * zone["hp_mult"]
+        * BLOATER_BOSS_HP_MULT
+    )
     # Damage is low ~4 as requested, but scale slightly with zone
     dmg = int(BLOATER_BASE["damage"] * zone["dmg_mult"])
     dmg = max(1, min(dmg, 8))  # keep it 1-8 max
@@ -503,7 +511,19 @@ def start_run(player: Survivor) -> list[str]:
     if player.run_active:
         return ["⚠️ Already in a run!"]
     player.health = player.max_health
-    # Allow start with no ammo - player will get overwhelmed message
+    # Reset per-run Void Bazooka state before the no-ammo check so the free Void shot is available
+    # even if the player starts the run without normal ammo.
+    player.painkillers_used_this_run = 0
+    player.full_restores_used_this_run = 0
+    player.run_money_earned = 0
+    player.run_xp_earned = 0
+    player.run_zombies_killed = 0
+    player.bloaters_spawned_this_run = 0
+    player.bloater_cooldown = 0
+    player.void_bazooka_ammo = (VOID_BAZOOKA_FREE_AMMO_PER_RUN if "Void Bazooka" in player.void_weapons_owned and player.zone_name == "The Void" else 0)
+    player.void_bazooka_boss_fired = False
+
+    # Allow start with no normal ammo - player can still use the free Void Bazooka shot in The Void.
     if player.get_spare() <= 0 and player.magazine <= 0:
         player.wave = 1; player.zombies_remaining = 3; player.run_active = True; player.enemy = spawn_enemy(player)
         return [f"⚠️ You started with NO {player.ammo_name} ammo! The hoard smells blood...", f"Wave {player.wave}: **{player.enemy.name}** ({player.enemy.health} HP) - you\'re about to get overwhelmed!"]
@@ -513,16 +533,6 @@ def start_run(player: Survivor) -> list[str]:
             load_amt = min(player.magazine_size, spare)
             player.magazine = load_amt
             player.spare_ammo[player.ammo_name] = spare - load_amt
-    player.painkillers_used_this_run = 0
-    player.full_restores_used_this_run = 0
-    player.run_money_earned = 0
-    player.run_xp_earned = 0
-    player.run_zombies_killed = 0
-    player.bloaters_spawned_this_run = 0
-    player.bloater_cooldown = 0
-    # The Void Bazooka is a dedicated backup weapon: one ready shot per run.
-    player.void_bazooka_ammo = (VOID_BAZOOKA_FREE_AMMO_PER_RUN if "Void Bazooka" in player.void_weapons_owned and player.zone_name == "The Void" else 0)
-    player.void_bazooka_boss_fired = False
     player.wave = 1
     player.zombies_remaining = 3
     player.run_active = True
@@ -1824,7 +1834,7 @@ class WeaponShopView(PlayerView):
         self.selected_weapon = selected_weapon or player.weapon_name
         self.clear_items()
 
-        for i, wname in enumerate(["Pistol", "Shotgun", "Rifle", "SMG", "Sawed-Off"]):
+        for i, wname in enumerate(WEAPONS):
             if wname not in WEAPONS:
                 continue
             owned = wname in player.owned_weapons
@@ -1899,7 +1909,7 @@ class WeaponShopView(PlayerView):
         lines.append(f"Your balance: **${player.money:,}**")
         lines.append(f"Selected: 🔫 **{sel}**")
         lines.append("---")
-        for wname in ["Pistol", "Shotgun", "Rifle", "SMG", "Sawed-Off"]:
+        for wname in WEAPONS:
             if wname not in WEAPONS:
                 continue
             w = WEAPONS[wname]
@@ -1908,7 +1918,7 @@ class WeaponShopView(PlayerView):
             marker = " ← SELECTED" if is_sel else ""
             status_str = "Owned" if owned else f"LOCKED Level {w['unlock_level']} - ${w['price']}"
             if owned:
-                status_str = f"Owned - Dmg {w.get('damage', '?')} | Mag {w.get('mag_size', '?')}"
+                status_str = f"Owned - Dmg {w.get('damage', '?')} | Mag {w.get('mag', '?')}"
             lines.append(f"🔫 **{wname}**{marker}")
             lines.append(f"{status_str}")
             lines.append(f"{w.get('desc','')}")
@@ -2486,7 +2496,7 @@ class VoidUpgradeView(PlayerView):
             if lvl < VOID_UPGRADE_MAX:
                 lines.append(f"Next: +{VOID_BAZOOKA_DAMAGE_PER_LEVEL} damage → Level {lvl+1} for **◈{next_cost:,}**")
             else:
-                lines.append("🔥 **LEVEL 10 BONUS ACTIVE: ×2.0 damage against Bloaters/Void bosses!**")
+                lines.append("🔥 **LEVEL 10 BONUS ACTIVE: ×4.0 damage against Bloaters/Void bosses!**")
         lines.append("")
         lines.append("**Void Essence is earned by killing enemies and clearing waves in The Void.**")
         return "\n".join(lines)
@@ -2507,7 +2517,7 @@ def upgrade_void_weapon(player: Survivor) -> list[str]:
     if "Void Bazooka" not in player.void_weapons_owned:
         return ["🔒 Buy the **Void Bazooka** first."]
     if player.void_weapon_level >= VOID_UPGRADE_MAX:
-        return ["🔥 **Void Bazooka is MAXED at Level 10!** ×2.0 boss damage is active."]
+        return ["🔥 **Void Bazooka is MAXED at Level 10!** ×4.0 boss damage is active."]
     cost=get_void_upgrade_cost(player)
     if player.void_essence < cost:
         return [f"❌ Need ◈{cost} Void Essence; you have ◈{player.void_essence}."]
@@ -2515,7 +2525,7 @@ def upgrade_void_weapon(player: Survivor) -> list[str]:
     player.void_weapon_level += 1
     dmg=VOID_WEAPONS["Void Bazooka"]["damage"] + player.void_weapon_level*VOID_BAZOOKA_DAMAGE_PER_LEVEL
     if player.void_weapon_level == VOID_UPGRADE_MAX:
-        return [f"🔥 **VOID BAZOOKA LEVEL 10!** Damage → **{dmg}** | Boss/Bloater damage → **×2.0**! ◈{player.void_essence} Essence left."]
+        return [f"🔥 **VOID BAZOOKA LEVEL 10!** Damage → **{dmg}** | Boss/Bloater damage → **×4.0**! ◈{player.void_essence} Essence left."]
     return [f"◈ **Void Bazooka upgraded to Level {player.void_weapon_level}!** Damage → **{dmg}** (+{VOID_BAZOOKA_DAMAGE_PER_LEVEL}) | ◈{player.void_essence} Essence left."]
 
 
