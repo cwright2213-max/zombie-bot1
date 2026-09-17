@@ -1442,7 +1442,7 @@ class ZombieMenuView(PlayerView):
         btn_shop.callback = shop_cb
         self.add_item(btn_shop)
 
-        # ROW 1: Zones + Ammo + Upgrades
+        # ROW 1: Zones
         btn_zones = discord.ui.Button(label="🗺️ Zones", style=discord.ButtonStyle.secondary, row=1)
         async def zones_cb(interaction: discord.Interaction):
             p = self.store.get(self.user_id)
@@ -1463,24 +1463,11 @@ class ZombieMenuView(PlayerView):
         btn_zones.callback = zones_cb
         self.add_item(btn_zones)
 
-        btn_ammo = discord.ui.Button(label="🧪 Ammo", style=discord.ButtonStyle.secondary, row=1)
-        async def ammo_cb(interaction: discord.Interaction):
-            p = self.store.get(self.user_id)
-            view = AmmoShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"))
-            await interaction.response.edit_message(content=view.get_shop_text(p), embed=None, view=view)
-        btn_ammo.callback = ammo_cb
-        self.add_item(btn_ammo)
-
-        btn_up = discord.ui.Button(label="⬆️ Upgrades", style=discord.ButtonStyle.secondary, row=1)
-        async def up_cb(interaction: discord.Interaction):
-            p = self.store.get(self.user_id)
-            view = UpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"))
-            await interaction.response.edit_message(content=view.get_shop_text(p), embed=None, view=view)
-        btn_up.callback = up_cb
-        self.add_item(btn_up)
+        # Ammo and permanent upgrades are accessed through the main Shop now.
+        # They are intentionally not shown as separate buttons on the main menu.
 
         # ROW 2: Refresh
-        btn_refresh = discord.ui.Button(label="🔄 Refresh", style=discord.ButtonStyle.secondary, row=2)
+        btn_refresh = discord.ui.Button(label="🔄 Refresh", style=discord.ButtonStyle.secondary, row=1)
         async def refresh_cb(interaction: discord.Interaction):
             p = self.store.get(self.user_id)
             name = getattr(self, "display_name", "Survivor")
