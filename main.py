@@ -2284,8 +2284,11 @@ class StarterBot(discord.Client):
         super().__init__(intents=intents)
         self.tree = app_commands.CommandTree(self)
     async def setup_hook(self):
-        await self.tree.sync()
-        print(f"Synced {len(self.tree.get_commands())} commands")
+        # Keep the global commands registered, but guild-sync them in on_ready
+        # so Discord servers see new slash commands immediately instead of
+        # waiting for Discord's global command propagation.
+        synced = await self.tree.sync()
+        print(f"Synced {len(synced)} global commands")
         try:
             self.loop.create_task(background_autosave())
             print("[AUTOSAVE] Background autosave every 60s STARTED - double protection")
@@ -2293,6 +2296,40 @@ class StarterBot(discord.Client):
             print(f"[AUTOSAVE] Failed start: {e}")
 
 bot = StarterBot()
+
+@bot.event
+async def on_ready():
+    # Guild-scoped slash commands update immediately. This mirrors the global
+    # command tree into every server the bot is currently in, which makes new
+    # commands such as /give admin appear without the usual global-command
+    # propagation delay.
+    if getattr(bot, "_guild_commands_synced", False):
+        return
+
+    total = 0
+    for guild in bot.guilds:
+        try:
+            bot.tree.copy_global_to(guild=guild)
+            synced = await bot.tree.sync(guild=guild)
+            total += len(synced)
+            print(f"[SLASH] Synced {len(synced)} commands to guild {guild.id} ({guild.name})")
+        except Exception as e:
+            print(f"[SLASH] Failed guild sync for {guild.id} ({guild.name}): {e}")
+
+    bot._guild_commands_synced = True
+    print(f"[SLASH] Guild command sync complete: {total} commands across {len(bot.guilds)} guild(s)")
+
+
+@bot.event
+async def on_guild_join(guild: discord.Guild):
+    # Also sync immediately if the bot is added to a new server later.
+    try:
+        bot.tree.copy_global_to(guild=guild)
+        synced = await bot.tree.sync(guild=guild)
+        print(f"[SLASH] Synced {len(synced)} commands to new guild {guild.id} ({guild.name})")
+    except Exception as e:
+        print(f"[SLASH] Failed new-guild sync for {guild.id} ({guild.name}): {e}")
+
 
 @bot.tree.command(name="zombie", description="Zombie Survival - main menu")
 async def zombie_cmd(interaction: discord.Interaction):
