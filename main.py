@@ -49,7 +49,7 @@ def combat_embed(player, last_msgs=None):
     )
     embed.add_field(
         name=f"❤️ You: {player.health}/{player.max_health} HP ({p_pct}%)",
-        value=f"`{p_bar}`\n🔫 {player.weapon_name} {player.magazine}/{player.magazine_size} ({player.get_spare()} spare) [{player.ammo_name}]",
+        value=f"`{p_bar}`\n🔫 {player.weapon_name} {player.magazine}/{player.magazine_size} ({player.get_spare()} spare) [{player.ammo_name}]\n◈ Void Bazooka: {player.void_bazooka_ammo} shot(s) ready | Lvl {player.void_weapon_level}/10",
         inline=False
     )
     embed.add_field(
@@ -106,6 +106,28 @@ WEAPONS: dict[str, dict[str, Any]] = {
     "SMG": {"damage": 15, "mag": 42, "price": 4000, "unlock_level": 60, "shots": 3},
     "Sawed-Off": {"damage": 70, "mag": 2, "price": 6000, "unlock_level": 90, "shots": 1},
 }
+
+# --- VOID WEAPON SYSTEM ---
+# Void weapons are deliberately separate from the normal WEAPONS system.
+# Their damage is NEVER modified by standard Damage upgrades.
+VOID_WEAPONS: dict[str, dict[str, Any]] = {
+    "Void Bazooka": {
+        "damage": 240,
+        "price": 25000,
+        "unlock_level": 200,
+        "boss_mult": 1.50,
+        "level_10_boss_mult": 2.00,
+        "desc": "Heavy single-target backup weapon. Massive damage to Bloaters and Void bosses.",
+    },
+}
+VOID_UPGRADE_MAX = 10
+VOID_BAZOOKA_DAMAGE_PER_LEVEL = 20
+VOID_BAZOOKA_FREE_AMMO_PER_RUN = 1
+VOID_BAZOOKA_AMMO_COST = 10
+VOID_ESSENCE_PER_VOID_KILL = 2
+VOID_ESSENCE_PER_VOID_BLOATER = 10
+VOID_ESSENCE_PER_VOID_WAVE = 5
+
 
 # --- DEATH LINES - SPLIT BY TYPE (BIG VARIETY - no repeats) ---
 NORMAL_DEATH_LINES = [
@@ -230,6 +252,7 @@ ZOMBIES: dict[str, dict[str, int]] = {
 class Enemy:
     name: str; health: int; max_health: int; damage: int; money_reward: int; xp_reward: int; effects: dict[str, int] = field(default_factory=dict)
     is_bloater: bool = False
+    is_void_boss: bool = False
     bloater_timer: int = 0  # fuse countdown for Bloater
 @dataclass
 class Survivor:
@@ -249,6 +272,10 @@ class Survivor:
     # --- STAR UPGRADES (prestige) - CUSTOM 4 ---
     star_dodge_upgrades: int = 0; star_magical_upgrades: int = 0
     star_medic_upgrades: int = 0; star_pet_upgrades: int = 0; star_xp_upgrades: int = 0
+    # --- VOID WEAPON PROGRESSION ---
+    void_essence: int = 0; void_weapon_level: int = 0
+    void_weapons_owned: list[str] = field(default_factory=list)
+    void_bazooka_ammo: int = 0; void_bazooka_boss_fired: bool = False
     @property
     def level(self) -> int: return level_for_xp(self.xp)
     def get_spare(self, ammo_type: str | None = None) -> int: return self.spare_ammo.get(ammo_type or self.ammo_name, 0)
@@ -358,6 +385,11 @@ class Survivor:
         allowed.setdefault("run_money_earned", 0); allowed.setdefault("run_xp_earned", 0)
         allowed.setdefault("bloaters_spawned_this_run", 0); allowed.setdefault("bloater_cooldown", 0)
         allowed.setdefault("owned_ammo", ["Standard"]); allowed.setdefault("owned_weapons", ["Pistol"])
+        allowed.setdefault("void_essence", 0)
+        allowed.setdefault("void_weapon_level", 0)
+        allowed.setdefault("void_weapons_owned", [])
+        allowed.setdefault("void_bazooka_ammo", 0)
+        allowed.setdefault("void_bazooka_boss_fired", False)
         if "Pistol" not in allowed["owned_weapons"]: allowed["owned_weapons"].append("Pistol")
         if "stars" not in data: allowed["stars"] = max(0, level_for_xp(int(data.get("xp", 0))) - 1)
         return cls(**allowed)
@@ -488,6 +520,9 @@ def start_run(player: Survivor) -> list[str]:
     player.run_zombies_killed = 0
     player.bloaters_spawned_this_run = 0
     player.bloater_cooldown = 0
+    # The Void Bazooka is a dedicated backup weapon: one ready shot per run.
+    player.void_bazooka_ammo = (VOID_BAZOOKA_FREE_AMMO_PER_RUN if "Void Bazooka" in player.void_weapons_owned and player.zone_name == "The Void" else 0)
+    player.void_bazooka_boss_fired = False
     player.wave = 1
     player.zombies_remaining = 3
     player.run_active = True
@@ -584,8 +619,16 @@ def _finish_enemy(player: Survivor) -> list[str]:
     player.run_money_earned += money_gain
     player.run_xp_earned += xp_gain
     player.run_zombies_killed += 1
+
+    # Void Essence is earned only in The Void. Bloaters are especially valuable.
+    if player.zone_name == "The Void":
+        essence_gain = VOID_ESSENCE_PER_VOID_BLOATER if enemy.is_bloater else VOID_ESSENCE_PER_VOID_KILL
+        player.void_essence += essence_gain
+        messages_essence = f" • ◈ +{essence_gain} Void Essence"
+    else:
+        messages_essence = ""
     player.zombies_remaining -= 1
-    messages = [f"✅ **{enemy.name} defeated!** +${money_gain} (Base ${enemy.money_reward} + {int((player.scavenger_bonus-1)*100)}% Loot) • +{xp_gain} XP (x{wave_mult:.1f} wave x{xp_bonus_mult:.1f} bonus)"] if player.scavenger_bonus > 1.0 else [f"✅ **{enemy.name} defeated!** +${money_gain} • +{xp_gain} XP (Base {enemy.xp_reward} x{wave_mult:.1f} wave x{xp_bonus_mult:.1f} bonus)"]
+    messages = [f"✅ **{enemy.name} defeated!** +${money_gain} (Base ${enemy.money_reward} + {int((player.scavenger_bonus-1)*100)}% Loot) • +{xp_gain} XP (x{wave_mult:.1f} wave x{xp_bonus_mult:.1f} bonus){messages_essence}"] if player.scavenger_bonus > 1.0 else [f"✅ **{enemy.name} defeated!** +${money_gain} • +{xp_gain} XP (Base {enemy.xp_reward} x{wave_mult:.1f} wave x{xp_bonus_mult:.1f} bonus){messages_essence}"]
     if player.level > level_for_xp(player.xp - enemy.xp_reward):
         ups = player.level - level_for_xp(player.xp - enemy.xp_reward)
         if ups > 0:
@@ -609,9 +652,14 @@ def _finish_enemy(player: Survivor) -> list[str]:
         bonus = int(base_bonus * player.scavenger_bonus)
         player.money += bonus
         player.run_money_earned += bonus
+        if player.zone_name == "The Void":
+            player.void_essence += VOID_ESSENCE_PER_VOID_WAVE
+            messages.append(f"◈ **Void Essence +{VOID_ESSENCE_PER_VOID_WAVE}** for clearing the Void wave!")
         player.spare_ammo[player.ammo_name] = player.spare_ammo.get(player.ammo_name, 0) + (10 if was_bloater else 5)
         player.wave += 1
         player.zombies_remaining = player.wave + 2
+        # New enemy/boss encounter: the once-per-boss Bazooka restriction resets.
+        player.void_bazooka_boss_fired = False
         player.health = min(player.max_health, player.health + (15 if was_bloater else 5))
         if was_bloater:
             messages.append(f"💣 **BLOATER SURVIVED! SOLO WAVE REWARD!** +${bonus} • +10 {player.ammo_name} ammo • +15 HP! Wave {player.wave} - {player.zombies_remaining} zombies! 🎉")
@@ -683,7 +731,42 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
         messages.extend(_finish_enemy(player))
         return messages
     enemy = player.enemy
-    if action == "attack":
+    if action == "void_bazooka":
+        # Dedicated single-target backup attack. It does not consume normal ammo,
+        # does not use standard weapon damage, and does not receive standard damage upgrades.
+        if player.zone_name != "The Void":
+            return ["❌ The Void Bazooka can only be fired inside **The Void**."]
+        if "Void Bazooka" not in player.void_weapons_owned:
+            return ["🔒 You do not own the **Void Bazooka** yet. Buy it in the Void shop."]
+        bazooka = VOID_WEAPONS["Void Bazooka"]
+        is_boss_target = enemy.is_bloater or getattr(enemy, "is_void_boss", False)
+        # A boss can only be hit by the Bazooka once per encounter.
+        # Normal enemies can be hit repeatedly as long as the player can pay for ammo.
+        if is_boss_target and player.void_bazooka_boss_fired:
+            return ["⚠️ **Void Bazooka already fired at this boss!** Finish it with your primary weapon."]
+        # One free round is loaded at the start of every Void run. After that,
+        # each additional shot costs 10 Void Essence.
+        if player.void_bazooka_ammo > 0:
+            player.void_bazooka_ammo -= 1
+            ammo_cost = 0
+        elif player.void_essence >= VOID_BAZOOKA_AMMO_COST:
+            player.void_essence -= VOID_BAZOOKA_AMMO_COST
+            ammo_cost = VOID_BAZOOKA_AMMO_COST
+        else:
+            return [f"❌ **No Void Bazooka ammo!** Extra shots cost ◈{VOID_BAZOOKA_AMMO_COST} Void Essence."]
+        if is_boss_target:
+            player.void_bazooka_boss_fired = True
+        void_level = max(0, min(VOID_UPGRADE_MAX, player.void_weapon_level))
+        raw_damage = int(bazooka["damage"] + void_level * VOID_BAZOOKA_DAMAGE_PER_LEVEL)
+        boss_mult = bazooka["level_10_boss_mult"] if void_level >= VOID_UPGRADE_MAX else bazooka["boss_mult"]
+        multiplier = boss_mult if is_boss_target else 1.0
+        bazooka_damage = int(raw_damage * multiplier)
+        enemy.health = max(0, enemy.health - bazooka_damage)
+        boss_text = f" ×{multiplier:.1f} BOSS DAMAGE" if is_boss_target else ""
+        ammo_text = "FREE RUN AMMO" if ammo_cost == 0 else f"-◈{ammo_cost} Essence"
+        messages.append(f"💥 **VOID BAZOOKA!** Hit **{enemy.name} for {bazooka_damage} dmg**! (Base {raw_damage}{boss_text}) ◈ Void Lvl {void_level}/{VOID_UPGRADE_MAX} • {ammo_text}")
+        # No standard crit, pet, ammo effect, or standard weapon upgrade applies.
+    elif action == "attack":
         ammo_data = AMMO[player.ammo_name]
         base_cost = int(ammo_data["cost_per_attack"])
         # NEW: Weapon shots per attack
@@ -934,14 +1017,25 @@ def get_upgrade_cost(player: Survivor, stat: str) -> int:
         "armor": 450,
         "scavenger": 700,
     }
-    # V2: still exponential, but reduces runaway costs so upgrades remain meaningful in late game
-    mults = {
+    # Two-stage scaling: strong early/mid-game growth, then a flatter late-game curve.
+    # The first 10 upgrade levels keep the existing progression. From level 10
+    # onward, each stat uses a gentler multiplier so late-game upgrades stay
+    # expensive without becoming effectively unreachable.
+    early_mults = {
         "damage": 1.50,
         "health": 1.40,
         "mag": 1.50,
         "crit": 1.60,
         "armor": 1.50,
         "scavenger": 1.65,
+    }
+    late_mults = {
+        "damage": 1.28,
+        "health": 1.25,
+        "mag": 1.28,
+        "crit": 1.28,
+        "armor": 1.28,
+        "scavenger": 1.25,
     }
     if stat not in bases:
         return 999999
@@ -952,8 +1046,15 @@ def get_upgrade_cost(player: Survivor, stat: str) -> int:
     elif stat == "crit": count = player.crit_upgrades
     elif stat == "armor": count = player.armor_upgrades
     elif stat == "scavenger": count = player.scavenger_upgrades
-    # cost = base * mult^count
-    return int(bases[stat] * (mults[stat] ** count))
+
+    # cost = base * early_mult^min(count, 10) * late_mult^max(count-10, 0)
+    early_levels = min(count, 10)
+    late_levels = max(count - 10, 0)
+    return int(
+        bases[stat]
+        * (early_mults[stat] ** early_levels)
+        * (late_mults[stat] ** late_levels)
+    )
 
 
 
@@ -1233,6 +1334,7 @@ def status_detailed(player: Survivor, display_name: str = "Survivor") -> str:
         f"🎯 Crit: {int(player.crit_chance*100)}% | 🛡️ Armor: -{player.armor_reduction} | 💰 Loot: +{int((player.scavenger_bonus-1)*100)}%",
         f"💰 ${player.money} | ⭐ {player.stars} | ✨ {player.xp} XP ({earned}/{needed})",
         f"🔫 {player.weapon_name} [{player.ammo_name}] | 📦 Spare: {player.get_spare()}",
+         f"◈ Void Essence: {player.void_essence} | Void Bazooka: {'Owned' if 'Void Bazooka' in player.void_weapons_owned else 'Locked'} | Void Lvl {player.void_weapon_level}/10",
         f"🎒 Ammo: {', '.join([f'{k}:{v}' for k,v in player.spare_ammo.items() if v>0]) or 'Empty'}",
         f"💊 Painkillers: {player.painkillers} | ✨ Restores: {player.full_restores}",
         f"🗺️ Zone: {player.zone_name} | Guns: {', '.join(player.owned_weapons)}",
@@ -1508,6 +1610,23 @@ class CombatView(PlayerView):
             embed = combat_embed(player, msgs)
             await interaction.edit_original_response(content=None, embed=embed, view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
 
+    @discord.ui.button(label="💥 Void Bazooka", style=discord.ButtonStyle.secondary, row=1)
+    async def void_bazooka(self, interaction: discord.Interaction, _b):
+        await interaction.response.defer()
+        player=self.store.get(self.user_id)
+        msgs=take_action(player, "void_bazooka")
+        await self.store.save_one_async(str(self.user_id))
+        if not player.run_active:
+            embed=discord.Embed(title="☠️ Run Ended", description="\n".join(msgs), color=discord.Color.red())
+            embed.add_field(name="🌊 Waves", value=f"{player.wave - 1 if player.run_zombies_killed>0 else 0} survived\nReached Wave {player.wave}", inline=True)
+            embed.add_field(name="🧟 Kills", value=f"{player.run_zombies_killed} zombies", inline=True)
+            embed.add_field(name="💰 Rewards", value=f"+${player.run_money_earned}\n+{player.run_xp_earned} XP", inline=True)
+            embed.set_footer(text=f"HP restored to {player.max_health}/{player.max_health} • Press any button to continue")
+            await interaction.edit_original_response(content=None, embed=embed, view=RunEndedView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), end_embed=embed))
+        else:
+            embed=combat_embed(player,msgs)
+            await interaction.edit_original_response(content=None, embed=embed, view=CombatView(self.user_id,self.store,display_name=getattr(self,"display_name","Survivor")))
+
     @discord.ui.button(label="🔄 Reload", style=discord.ButtonStyle.primary, row=0)
     async def reload(self, interaction: discord.Interaction, _b):
         await interaction.response.defer()
@@ -1643,6 +1762,7 @@ class ShopHubView(PlayerView):
             f"💊 **/shop meds** - Purchase meds for heals.",
             f"⬆️ **/shop upgrades** - Purchase various permanent upgrades.",
             f"⭐ **/shop stars** - Shop for star prestige upgrades.",
+            f"◈ **Void Upgrades** - Void weapon progression and the Void Bazooka.",
             "",
             f"Balance: **${player.money}** | Stars: **{player.stars}**",
             f"Level **{player.level}** | Zone: **{player.zone_name}**",
@@ -1669,12 +1789,18 @@ class ShopHubView(PlayerView):
         p=self.store.get(self.user_id)
         await interaction.response.edit_message(content=UpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")).get_shop_text(p), embed=None, view=UpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
 
-    @discord.ui.button(label="⭐", style=discord.ButtonStyle.primary, row=0)
+    @discord.ui.button(label="⭐", style=discord.ButtonStyle.primary, row=1)
     async def stars_btn(self, interaction: discord.Interaction, _b):
         p=self.store.get(self.user_id)
         await interaction.response.edit_message(content=StarUpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")).get_shop_text(p), embed=None, view=StarUpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
 
-    @discord.ui.button(label="Return", style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(label="◈", style=discord.ButtonStyle.primary, row=1)
+    async def void_btn(self, interaction: discord.Interaction, _b):
+        p=self.store.get(self.user_id)
+        view = VoidUpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"))
+        await interaction.response.edit_message(content=view.get_shop_text(p), embed=None, view=view)
+
+    @discord.ui.button(label="Return", style=discord.ButtonStyle.secondary, row=2)
     async def ret(self, interaction: discord.Interaction, _b):
         name = getattr(self, "display_name", "Survivor")
         # Try to get real name from interaction
@@ -2263,6 +2389,136 @@ class StarUpgradeView(PlayerView):
 
 
 
+class VoidUpgradeView(PlayerView):
+    """Dedicated Void weapon shop. Uses Void Essence, not money or standard upgrades."""
+    def __init__(self, user_id: int, store, display_name: str = "Survivor", timeout: float = 180):
+        super().__init__(user_id, store, display_name, timeout)
+        player = self.store.get(user_id)
+        self.clear_items()
+
+        owned = "Void Bazooka" in player.void_weapons_owned
+        unlock_ok = player.level >= VOID_WEAPONS["Void Bazooka"]["unlock_level"] and player.zone_name == "The Void"
+        label = "💥 Void Bazooka" + (" ✅" if owned else " 🔒")
+        btn = discord.ui.Button(label=label[:80], style=discord.ButtonStyle.success if owned else discord.ButtonStyle.primary, row=0)
+        async def bazooka_select(interaction):
+            p=self.store.get(self.user_id)
+            msgs = []
+            if not owned:
+                if p.level < VOID_WEAPONS["Void Bazooka"]["unlock_level"]:
+                    msgs=[f"🔒 Void Bazooka unlocks at level {VOID_WEAPONS['Void Bazooka']['unlock_level']}."]
+                elif p.zone_name != "The Void":
+                    msgs=["🗺️ Travel to **The Void** to obtain Void weapons."]
+                elif p.money < VOID_WEAPONS["Void Bazooka"]["price"]:
+                    msgs=[f"❌ Need ${VOID_WEAPONS['Void Bazooka']['price']:,}; you have ${p.money:,}."]
+                else:
+                    p.money -= VOID_WEAPONS["Void Bazooka"]["price"]
+                    p.void_weapons_owned.append("Void Bazooka")
+                    msgs=[f"💥 **Void Bazooka acquired!** -${VOID_WEAPONS['Void Bazooka']['price']:,}. It is a backup weapon with 1 free ammo each Void run; extra shots cost ◈10 Essence, and each boss can only be hit once."]
+                    self.store.save()
+            content=self.get_shop_text(p, extra_msgs=msgs)
+            await interaction.response.edit_message(content=content, view=VoidUpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+        btn.callback = bazooka_select
+        self.add_item(btn)
+
+        # One upgrade button for the currently available Void weapon progression.
+        cost = get_void_upgrade_cost(player)
+        buy_label = f"Upgrade Void Bazooka ◈{cost:,}"
+        btn_up = discord.ui.Button(label=buy_label[:80], style=discord.ButtonStyle.success, row=1)
+        async def upgrade_cb(interaction):
+            if self.user_id in _purchase_locks:
+                try: await interaction.response.defer()
+                except: pass
+                return
+            _purchase_locks.add(self.user_id)
+            try:
+                p=self.store.get(self.user_id)
+                msgs = upgrade_void_weapon(p)
+                self.store.save()
+                content=self.get_shop_text(p, extra_msgs=msgs)
+                await interaction.response.edit_message(content=content, view=VoidUpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+            finally:
+                _purchase_locks.discard(self.user_id)
+        btn_up.callback = upgrade_cb
+        self.add_item(btn_up)
+
+        back_btn = discord.ui.Button(label="Back", style=discord.ButtonStyle.secondary, row=2)
+        async def back_cb(interaction):
+            p=self.store.get(self.user_id)
+            hub=ShopHubView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"))
+            await interaction.response.edit_message(content=hub.get_shop_text(p), view=hub)
+        back_btn.callback=back_cb
+        self.add_item(back_btn)
+
+        main_btn = discord.ui.Button(label="🏠 Main menu", style=discord.ButtonStyle.secondary, row=2)
+        async def main_cb(interaction):
+            name=getattr(self, "display_name", "Survivor")
+            try: name=getattr(interaction.user, "display_name", None) or getattr(interaction.user, "global_name", None) or interaction.user.name
+            except: pass
+            p=self.store.get(self.user_id)
+            await interaction.response.edit_message(content=status(p, display_name=name), view=ZombieMenuView(self.user_id, self.store, display_name=name))
+        main_btn.callback=main_cb
+        self.add_item(main_btn)
+
+    def get_shop_text(self, player, extra_msgs=None):
+        bazooka=VOID_WEAPONS["Void Bazooka"]
+        lvl=max(0,min(VOID_UPGRADE_MAX,player.void_weapon_level))
+        current_damage=bazooka["damage"] + lvl*VOID_BAZOOKA_DAMAGE_PER_LEVEL
+        next_cost=get_void_upgrade_cost(player)
+        lines=[]
+        if extra_msgs:
+            lines.extend(extra_msgs); lines.append("")
+        lines.append("**◈ VOID UPGRADES SHOP**")
+        lines.append("")
+        lines.append("A separate progression system for Void weapons. Standard upgrades do **NOT** affect them.")
+        lines.append("")
+        lines.append(f"Your Void Essence: **◈{player.void_essence:,}** | Balance: **${player.money:,}** | Level **{player.level}**")
+        lines.append("---")
+        if player.level < bazooka["unlock_level"]:
+            lines.append(f"🔒 **Void Bazooka** — unlocks at Level {bazooka['unlock_level']}")
+        elif player.zone_name != "The Void" and "Void Bazooka" not in player.void_weapons_owned:
+            lines.append("🗺️ Travel to **The Void** to obtain the Void Bazooka.")
+        else:
+            owned="Void Bazooka" in player.void_weapons_owned
+            lines.append(f"💥 **Void Bazooka** {'OWNED' if owned else f'${bazooka["price"]:,} to acquire'}")
+            lines.append(f"Level **{lvl}/{VOID_UPGRADE_MAX}** | Damage **{current_damage}**")
+            lines.append(f"Bloaters/Void bosses: **×{2.0 if lvl >= VOID_UPGRADE_MAX else 1.5:.1f} damage**")
+            lines.append(f"1 free ammo per Void run | Extra ammo: **◈{VOID_BAZOOKA_AMMO_COST} Essence/shot** | Once per boss encounter | Standard Damage upgrades: **NO EFFECT**")
+            if lvl < VOID_UPGRADE_MAX:
+                lines.append(f"Next: +{VOID_BAZOOKA_DAMAGE_PER_LEVEL} damage → Level {lvl+1} for **◈{next_cost:,}**")
+            else:
+                lines.append("🔥 **LEVEL 10 BONUS ACTIVE: ×2.0 damage against Bloaters/Void bosses!**")
+        lines.append("")
+        lines.append("**Void Essence is earned by killing enemies and clearing waves in The Void.**")
+        return "\n".join(lines)
+
+
+def get_void_upgrade_cost(player: Survivor) -> int:
+    """Escalating Void Essence cost for the 10-level Void weapon track."""
+    costs = [10, 20, 35, 55, 80, 110, 150, 200, 275, 375]
+    lvl=max(0,min(VOID_UPGRADE_MAX,player.void_weapon_level))
+    return costs[lvl] if lvl < VOID_UPGRADE_MAX else 999999999
+
+
+def upgrade_void_weapon(player: Survivor) -> list[str]:
+    if player.run_active:
+        return ["⚠️ Can't upgrade during a run! Flee first."]
+    if player.level < VOID_WEAPONS["Void Bazooka"]["unlock_level"]:
+        return [f"🔒 Void upgrades unlock at level {VOID_WEAPONS['Void Bazooka']['unlock_level']}."]
+    if "Void Bazooka" not in player.void_weapons_owned:
+        return ["🔒 Buy the **Void Bazooka** first."]
+    if player.void_weapon_level >= VOID_UPGRADE_MAX:
+        return ["🔥 **Void Bazooka is MAXED at Level 10!** ×2.0 boss damage is active."]
+    cost=get_void_upgrade_cost(player)
+    if player.void_essence < cost:
+        return [f"❌ Need ◈{cost} Void Essence; you have ◈{player.void_essence}."]
+    player.void_essence -= cost
+    player.void_weapon_level += 1
+    dmg=VOID_WEAPONS["Void Bazooka"]["damage"] + player.void_weapon_level*VOID_BAZOOKA_DAMAGE_PER_LEVEL
+    if player.void_weapon_level == VOID_UPGRADE_MAX:
+        return [f"🔥 **VOID BAZOOKA LEVEL 10!** Damage → **{dmg}** | Boss/Bloater damage → **×2.0**! ◈{player.void_essence} Essence left."]
+    return [f"◈ **Void Bazooka upgraded to Level {player.void_weapon_level}!** Damage → **{dmg}** (+{VOID_BAZOOKA_DAMAGE_PER_LEVEL}) | ◈{player.void_essence} Essence left."]
+
+
 class ZoneView(PlayerView):
     def __init__(self, user_id, store, display_name: str = "Survivor", timeout: float = 180):
         super().__init__(user_id, store, display_name)
@@ -2533,6 +2789,20 @@ async def zombie_give(interaction: discord.Interaction, user: discord.User, mone
     player.xp += xp
     game_store.save()
     await interaction.followup.send(f"✅ Restored {user.mention}: +${money}, +{stars}⭐, +{xp} XP\nNow: ${player.money} | {player.stars}⭐ | Lvl {player.level} ({player.xp} XP)", ephemeral=True)
+
+@bot.tree.command(name="addvoidessence", description="[ADMIN] Add Void Essence to a player")
+@app_commands.describe(user="Player to give Void Essence to", amount="Amount of Void Essence to add")
+async def addvoidessence(interaction: discord.Interaction, amount: int, user: discord.User = None):
+    if not has_admin_commands(interaction):
+        await interaction.response.send_message(admin_denied_message(), ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+    target=user or interaction.user
+    player=game_store.get(target.id)
+    player.void_essence=max(0, player.void_essence + amount)
+    game_store.save()
+    await interaction.followup.send(f"◈ **+{amount} Void Essence** added to {target.mention} → Now has **◈{player.void_essence}**", ephemeral=True)
+
 
 def main():
     import os, sys
