@@ -17,8 +17,8 @@ _purchase_locks: set[int] = set()
 BLOATER_BASE = {"health": 280, "damage": 4, "money": 350, "xp": 120}
 BLOATER_MAX_PER_ZONE = {"Graveyard": 1, "Mega Death City": 2, "Frostbitten Outskirts": 3, "Toxic Wasteland": 4, "The Void": 5}
 BLOATER_MIN_WAVE = 5
-BLOATER_FUSE = 5
-BLOATER_EXPLODE_PCT = 0.65
+BLOATER_FUSE = 6
+BLOATER_EXPLODE_PCT = 0.45
 
 def make_bar(current: int, max_val: int, length: int = 12) -> str:
     if max_val <= 0:
@@ -68,14 +68,15 @@ def combat_embed(player, last_msgs=None):
 
 
 
+MAX_LEVEL = 500
 MAX_PAINKILLERS_PER_RUN = 3
 MAX_FULL_RESTORES_PER_RUN = 1
 ZONES: dict[str, dict[str, Any]] = {
     "Graveyard": {"min_level": 1, "hp_mult": 0.9, "dmg_mult": 0.9, "money_mult": 2.0, "xp_mult": 1.6, "desc": "Foggy, quiet, and good for learning.", "weights": [60, 25, 12, 3], "ammo_mods": {"Standard": 1.00, "Bleed": 1.00, "Incendiary": 1.00, "Frostbite": 1.00, "Toxic": 1.00, "Shock": 1.00}},
-    "Mega Death City": {"min_level": 50, "hp_mult": 2.2, "dmg_mult": 1.4, "money_mult": 3.5, "xp_mult": 2.0, "desc": "A concrete jungle with tougher, richer zombies.", "weights": [30, 30, 25, 15], "ammo_mods": {"Standard": 1.00, "Bleed": 1.00, "Incendiary": 1.20, "Frostbite": 0.90, "Toxic": 1.00, "Shock": 1.15}},
-    "Frostbitten Outskirts": {"min_level": 100, "hp_mult": 5.5, "dmg_mult": 2.0, "money_mult": 5.0, "xp_mult": 2.4, "desc": "Freezing rain and frost armor - NOT for level 50s.", "weights": [20, 20, 35, 25], "ammo_mods": {"Standard": 1.00, "Bleed": 0.90, "Incendiary": 1.40, "Frostbite": 0.70, "Toxic": 1.00, "Shock": 1.15}},
-    "Toxic Wasteland": {"min_level": 150, "hp_mult": 9.0, "dmg_mult": 2.6, "money_mult": 7.5, "xp_mult": 3.2, "desc": "A green haze where toxic rounds shine. Bring real gear.", "weights": [15, 15, 35, 35], "ammo_mods": {"Standard": 1.00, "Bleed": 1.00, "Incendiary": 1.10, "Frostbite": 1.00, "Toxic": 1.50, "Shock": 0.90}},
-    "The Void": {"min_level": 200, "hp_mult": 14.0, "dmg_mult": 3.4, "money_mult": 10.0, "xp_mult": 4.5, "desc": "Endgame. Everything wants you dead. 3-4 shots? Not here.", "weights": [10, 10, 30, 50], "ammo_mods": {"Standard": 1.00, "Bleed": 1.10, "Incendiary": 1.15, "Frostbite": 1.10, "Toxic": 1.25, "Shock": 1.50}},
+    "Mega Death City": {"min_level": 50, "hp_mult": 1.8, "dmg_mult": 1.3, "money_mult": 3.5, "xp_mult": 2.0, "desc": "A concrete jungle with tougher, richer zombies.", "weights": [30, 30, 25, 15], "ammo_mods": {"Standard": 1.00, "Bleed": 1.00, "Incendiary": 1.20, "Frostbite": 0.90, "Toxic": 1.00, "Shock": 1.15}},
+    "Frostbitten Outskirts": {"min_level": 100, "hp_mult": 3.2, "dmg_mult": 1.7, "money_mult": 5.0, "xp_mult": 2.4, "desc": "Freezing rain and frost armor - NOT for level 50s.", "weights": [20, 20, 35, 25], "ammo_mods": {"Standard": 1.00, "Bleed": 0.90, "Incendiary": 1.40, "Frostbite": 0.70, "Toxic": 1.00, "Shock": 1.15}},
+    "Toxic Wasteland": {"min_level": 150, "hp_mult": 5.0, "dmg_mult": 2.1, "money_mult": 7.5, "xp_mult": 3.2, "desc": "A green haze where toxic rounds shine. Bring real gear.", "weights": [15, 15, 35, 35], "ammo_mods": {"Standard": 1.00, "Bleed": 1.00, "Incendiary": 1.10, "Frostbite": 1.00, "Toxic": 1.50, "Shock": 0.90}},
+    "The Void": {"min_level": 200, "hp_mult": 6.5, "dmg_mult": 2.6, "money_mult": 10.0, "xp_mult": 4.5, "desc": "Endgame. Everything wants you dead. 3-4 shots? Not here.", "weights": [10, 10, 30, 50], "ammo_mods": {"Standard": 0.90, "Bleed": 1.10, "Incendiary": 1.15, "Frostbite": 1.10, "Toxic": 1.25, "Shock": 1.50}},
 }
 ZONE_ORDER = ["Graveyard", "Mega Death City", "Frostbitten Outskirts", "Toxic Wasteland", "The Void"]
 # Bloater config - run ender
@@ -94,9 +95,9 @@ AMMO: dict[str, dict[str, Any]] = {
     "Standard": {"unlock_level": 1, "price": 0, "desc": "Reliable regular lead.", "effect": None, "cost_per_attack": 1, "box_price": 15, "box_amount": 24},
     "Bleed": {"unlock_level": 10, "price": 200, "desc": "25% bleed 15 dmg x3", "effect": "bleed", "cost_per_attack": 2, "box_price": 50, "box_amount": 24},
     "Incendiary": {"unlock_level": 35, "price": 600, "desc": "30% burn 20 dmg x3", "effect": "burn", "cost_per_attack": 3, "box_price": 100, "box_amount": 24},
-    "Frostbite": {"unlock_level": 70, "price": 1200, "desc": "20% freeze halves dmg x4 + 10 dmg x2", "effect": "freeze", "cost_per_attack": 4, "box_price": 100, "box_amount": 24},
-    "Toxic": {"unlock_level": 110, "price": 2500, "desc": "35% poison 15 dmg x5", "effect": "poison", "cost_per_attack": 5, "box_price": 150, "box_amount": 24},
-    "Shock": {"unlock_level": 160, "price": 5000, "desc": "15% stun 1 turn + 20 dmg", "effect": "shock", "cost_per_attack": 6, "box_price": 185, "box_amount": 24},
+    "Frostbite": {"unlock_level": 70, "price": 1200, "desc": "25% freeze halves dmg x4 + 10 dmg x2", "effect": "freeze", "cost_per_attack": 4, "box_price": 100, "box_amount": 24},
+    "Toxic": {"unlock_level": 110, "price": 2500, "desc": "40% poison 18 dmg x5", "effect": "poison", "cost_per_attack": 5, "box_price": 150, "box_amount": 24},
+    "Shock": {"unlock_level": 160, "price": 5000, "desc": "20% stun 1 turn + 30 dmg", "effect": "shock", "cost_per_attack": 6, "box_price": 185, "box_amount": 24},
 }
 WEAPONS: dict[str, dict[str, Any]] = {
     "Pistol": {"damage": 20, "mag": 12, "price": 0, "unlock_level": 1, "shots": 1},
@@ -376,7 +377,7 @@ def ammo_effectiveness_text(player: Survivor) -> str:
     return f"**Bonus:** {bonus}\n**Penalty:** {penalty}"
 
 def xp_to_next_level(level: int) -> int:
-    # STRETCHED: ~800 runs to 250 - balanced for tonight
+    # V2: smoother late-game XP curve; keeps level 250 long-term without the sharp endgame wall.
     if level <= 5:
         return 50 + (level - 1) * 15
     elif level <= 10:
@@ -388,22 +389,24 @@ def xp_to_next_level(level: int) -> int:
     elif level <= 150:
         return 550 + (level - 10) * 60 + (level - 1) * 20
     else:
-        return 700 + (level - 10) * 75 + (level - 1) * 28
+        return 700 + (level - 10) * 60 + (level - 1) * 22
 
 def level_for_xp(total_xp: int) -> int:
     level = 1
     earned = max(0, total_xp)
-    while earned >= xp_to_next_level(level):
+    while level < MAX_LEVEL and earned >= xp_to_next_level(level):
         earned -= xp_to_next_level(level)
         level += 1
-    return level
+    return min(level, MAX_LEVEL)
 
 def level_progress(player: Survivor) -> tuple[int, int]:
     earned = max(0, player.xp)
     level = 1
-    while earned >= xp_to_next_level(level):
+    while level < MAX_LEVEL and earned >= xp_to_next_level(level):
         earned -= xp_to_next_level(level)
         level += 1
+    if level >= MAX_LEVEL:
+        return 0, 0
     return earned, xp_to_next_level(level)
 
 def _should_spawn_bloater(player: Survivor) -> bool:
@@ -427,7 +430,7 @@ def _should_spawn_bloater(player: Survivor) -> bool:
 def _make_bloater_enemy(player: Survivor) -> Enemy:
     zone = zone_for(player)
     # Bloater health scales but not insane: base 280 + wave*12 * hp_mult
-    health = int((BLOATER_BASE["health"] + (player.wave - 1) * 12) * zone["hp_mult"] * 0.8)
+    health = int((BLOATER_BASE["health"] + (player.wave - 1) * 12) * zone["hp_mult"] * 0.45)
     # Damage is low ~4 as requested, but scale slightly with zone
     dmg = int(BLOATER_BASE["damage"] * zone["dmg_mult"])
     dmg = max(1, min(dmg, 8))  # keep it 1-8 max
@@ -457,8 +460,8 @@ def spawn_enemy(player: Survivor) -> Enemy:
     zone = zone_for(player)
     name = random.choices(list(ZOMBIES), weights=zone["weights"])[0]
     base = ZOMBIES[name]
-    health = int((base["health"] + (player.wave - 1) * 6) * zone["hp_mult"])
-    damage = int((base["damage"] + (player.wave - 1) // 2) * zone["dmg_mult"])
+    health = int((base["health"] + (player.wave - 1) * 4) * zone["hp_mult"])
+    damage = int((base["damage"] + (player.wave - 1) // 3) * zone["dmg_mult"])
     # Decrement bloater cooldown if any
     if player.bloater_cooldown > 0:
         player.bloater_cooldown -= 1
@@ -552,7 +555,7 @@ def _apply_damage_over_time(player: Survivor) -> list[str]:
     messages: list[str] = []
     for effect in list(enemy.effects):
         if effect in {"bleed", "burn", "poison"}:
-            base = {"bleed": 15, "burn": 20, "poison": 15, "freeze": 10}[effect]
+            base = {"bleed": 15, "burn": 20, "poison": 18, "freeze": 10}[effect]
             mod_name = {"bleed": "Bleed", "burn": "Incendiary", "poison": "Toxic", "freeze": "Frostbite"}[effect]
             damage = int(base * ammo_modifier(player, mod_name))
             enemy.health = max(0, enemy.health - damage)
@@ -769,14 +772,14 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
                     player.enemy = None
                     msgs = [
                         f"💀 **BLOATER BLEW YOU UP!** {get_cocky_line()}",
-                        f"⏰ You had 5 attacks and failed. {explode_dmg} dmg explosion ended you.",
+                        f"⏰ You had {BLOATER_FUSE} attacks and failed. {explode_dmg} dmg explosion ended you.",
                         f"🌊 Waves: {player.wave} | 🧟 Kills: {player.run_zombies_killed} | 💰 ${player.run_money_earned} | ✨ {player.run_xp_earned} XP"
                     ]
                     msgs.extend(_grant_end_of_run_rewards(player))
                     return messages + msgs
 
         effect = ammo_data["effect"]
-        chances = {"bleed": 0.25, "burn": 0.30, "freeze": 0.20, "poison": 0.35, "shock": 0.15}
+        chances = {"bleed": 0.25, "burn": 0.30, "freeze": 0.25, "poison": 0.40, "shock": 0.20}
         if effect and random.random() < chances[effect]:
             durations = {"bleed": 3, "burn": 3, "freeze": 4, "poison": 5, "shock": 1}
             enemy.effects[effect] = durations[effect]
@@ -931,14 +934,14 @@ def get_upgrade_cost(player: Survivor, stat: str) -> int:
         "armor": 450,
         "scavenger": 700,
     }
-    # Multipliers per level (how fast it gets expensive) - increased for high wave balance
+    # V2: still exponential, but reduces runaway costs so upgrades remain meaningful in late game
     mults = {
-        "damage": 1.55,
-        "health": 1.45,
-        "mag": 1.60,
-        "crit": 1.70,
-        "armor": 1.60,
-        "scavenger": 1.85,
+        "damage": 1.50,
+        "health": 1.40,
+        "mag": 1.50,
+        "crit": 1.60,
+        "armor": 1.50,
+        "scavenger": 1.65,
     }
     if stat not in bases:
         return 999999
