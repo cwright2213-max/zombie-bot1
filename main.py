@@ -9,7 +9,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger('zombie-bot')
 from discord import app_commands
 
-from storage import load_all_players, save_player, DB_PATH, SAVE_FILE, get_bot_admins, is_bot_admin, add_bot_admin, remove_bot_admin
+from storage import load_all_players, save_player, DB_PATH, SAVE_FILE, get_bot_admins, is_bot_admin, add_bot_admin, remove_bot_admin, verify_storage
 print(f"[STORAGE] Using POSTGRES - CONSTANT SAVE ENABLED - V6 FULL RESTORED")
 
 _purchase_locks: set[int] = set()
@@ -1247,73 +1247,96 @@ def get_detailed_status(player: Survivor, display_name: str = "Survivor") -> str
 
 
 class GameStore:
-    """CONSTANT SAVE - every single player action triggers instant Postgres save - zero loss"""
+    """CONSTANT SAVE - every player action triggers an instant persistent save.
+
+    A PostgreSQL/load failure is never treated as an empty game.
+    """
     def __init__(self):
         self.players = {}
         self._save_count = 0
         self.load()
+
+    @staticmethod
+    def _player_dict(player):
+        try:
+            return player.to_dict()
+        except Exception:
+            return asdict(player)
+
     def get(self, user_id: int):
         key = str(user_id)
         if key not in self.players:
-            self.players[key] = Survivor()
-            try:
-                save_player(key, self.players[key].to_dict())
-                self._save_count += 1
-            except:
-                from dataclasses import asdict
-                save_player(key, asdict(self.players[key]))
+            player = Survivor()
+            if not save_player(key, self._player_dict(player)):
+                raise RuntimeError(f"Could not persist new player {key}")
+            self.players[key] = player
+            self._save_count += 1
         return self.players[key]
+
     def save_one(self, key: str):
+        key = str(key)
         p = self.players.get(key)
-        if p:
-            try:
-                save_player(key, p.to_dict())
-                self._save_count += 1
-            except:
-                from dataclasses import asdict
-                save_player(key, asdict(p))
+        if p is None:
+            return
+        if not save_player(key, self._player_dict(p)):
+            raise RuntimeError(f"Could not save player {key}")
+        self._save_count += 1
+
     async def save_one_async(self, key: str):
         import asyncio
+        key = str(key)
         p = self.players.get(key)
-        if p:
-            try:
-                d = p.to_dict()
-            except:
-                from dataclasses import asdict
-                d = asdict(p)
-            await asyncio.to_thread(save_player, key, d)
-            self._save_count += 1
+        if p is None:
+            return
+        ok = await asyncio.to_thread(save_player, key, self._player_dict(p))
+        if not ok:
+            raise RuntimeError(f"Could not save player {key}")
+        self._save_count += 1
+
     def save(self):
+        if not self.players:
+            print("[AUTOSAVE] REFUSING SAVE: no players are loaded")
+            return
+        failed = []
         for k, p in self.players.items():
-            try:
-                save_player(k, p.to_dict())
-            except:
-                from dataclasses import asdict
-                save_player(k, asdict(p))
-        if self.players:
-            print(f"[AUTOSAVE] Saved {len(self.players)} players to Postgres - all safe")
+            if not save_player(k, self._player_dict(p)):
+                failed.append(k)
+        if failed:
+            raise RuntimeError(f"Failed to save players: {', '.join(failed[:10])}")
+        self._save_count += len(self.players)
+        print(f"[AUTOSAVE] Saved {len(self.players)} players to Postgres - all safe")
+
     async def save_async(self):
         import asyncio
-        tasks=[]
-        for k,p in self.players.items():
-            try: d=p.to_dict()
-            except:
-                from dataclasses import asdict
-                d=asdict(p)
-            tasks.append(asyncio.to_thread(save_player,k,d))
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+        if not self.players:
+            print("[AUTOSAVE] REFUSING ASYNC SAVE: no players are loaded")
+            return
+        items = list(self.players.items())
+        results = await asyncio.gather(
+            *(asyncio.to_thread(save_player, k, self._player_dict(p)) for k, p in items),
+            return_exceptions=True,
+        )
+        failed = []
+        for (k, _), result in zip(items, results):
+            if result is not True:
+                failed.append(k)
+        if failed:
+            raise RuntimeError(f"Failed to save players: {', '.join(failed[:10])}")
+        self._save_count += len(items)
+
     def load(self):
-        raw=load_all_players()
-        loaded={}
-        for k,v in raw.items():
+        # Critical: never convert a database failure into {}.
+        verify_storage()
+        raw = load_all_players()
+        loaded = {}
+        for k, v in raw.items():
+            if not isinstance(v, dict):
+                raise RuntimeError(f"Invalid stored data for player {k}")
             try:
-                if isinstance(v, dict):
-                    loaded[k]=Survivor.from_dict(v)
+                loaded[str(k)] = Survivor.from_dict(v)
             except Exception as e:
-                print(f"Corrupt {k}: {e}")
-                continue
-        self.players=loaded
+                raise RuntimeError(f"Corrupt player save {k}: {e}") from e
+        self.players = loaded
         print(f"[STORE] Loaded {len(loaded)} players - PERSISTENT")
 
 game_store = GameStore()
@@ -1946,47 +1969,25 @@ class MedsShopView(PlayerView):
             label = f"+{qty} (${total:,})"
             btn = discord.ui.Button(label=label[:80], style=discord.ButtonStyle.primary, row=row)
             async def bulk_cb(interaction, q=qty, med=self.selected_med):
-                p=self.store.get(self.user_id)
+                p = self.store.get(self.user_id)
                 total_cost = (15 if med == "painkillers" else 80) * q
+
                 if p.money < total_cost:
                     msgs = [f"❌ Need ${total_cost} for {q}x {med}, you have ${p.money}"]
                 else:
-                    msgs = []
-                    for _ in range(q):
-                        msgs_inner = buy_item(p, med)
-                        # buy_item already deducts, we want to keep only last msg to avoid spam
-                    p.money -= 0  # already deducted in loop
-                    # Actually buy_item loop above already did q times, but we did it inefficiently - redo properly
-                    # Reset and do bulk properly
-                    pass
-                # Proper bulk implementation
-                p=self.store.get(self.user_id)
-                # We already consumed money if loop above, let's redo clean
-                # For safety, re-implement bulk here directly
-                if p.money < total_cost and q != 1:  # we already checked
-                    pass
-                # Do bulk
-                bought = 0
-                for _ in range(q):
+                    # The old callback purchased the items once with buy_item()
+                    # and then purchased them a second time in a second loop.
+                    # This performs exactly one bulk transaction.
+                    p.money -= total_cost
                     if med == "painkillers":
-                        if p.money >= 15:
-                            p.money -= 15
-                            p.painkillers += 2
-                            bought += 2
-                        else:
-                            break
+                        p.painkillers += 2 * q
+                        bought = 2 * q
+                        msgs = [f"💊 Bought {q}x Painkillers +{bought} | Now {p.painkillers}x | ${p.money} left"]
                     else:
-                        if p.money >= 80:
-                            p.money -= 80
-                            p.full_restores += 1
-                            bought += 1
-                        else:
-                            break
-                self.store.save()
-                if med == "painkillers":
-                    msgs = [f"💊 Bought {q}x Painkillers +{bought} | Now {p.painkillers}x | ${p.money} left"]
-                else:
-                    msgs = [f"✨ Bought {q}x Full Restore +{bought} | Now {p.full_restores}x | ${p.money} left"]
+                        p.full_restores += q
+                        bought = q
+                        msgs = [f"✨ Bought {q}x Full Restore +{bought} | Now {p.full_restores}x | ${p.money} left"]
+                    self.store.save_one(str(self.user_id))
                 content = self.get_shop_text(p, selected_override=med, extra_msgs=msgs)
                 await interaction.response.edit_message(content=content, view=MedsShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_med=med))
             btn.callback = bulk_cb
