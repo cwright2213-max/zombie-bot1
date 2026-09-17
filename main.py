@@ -112,11 +112,11 @@ WEAPONS: dict[str, dict[str, Any]] = {
 # Their damage is NEVER modified by standard Damage upgrades.
 VOID_WEAPONS: dict[str, dict[str, Any]] = {
     "Void Bazooka": {
-        "damage": 240,
+        "damage": 700,
         "price": 25000,
         "unlock_level": 200,
-        "boss_mult": 1.50,
-        "level_10_boss_mult": 2.00,
+        "boss_mult": 2.00,
+        "level_10_boss_mult": 4.00,
         "desc": "Heavy single-target backup weapon. Massive damage to Bloaters and Void bosses.",
     },
 }
