@@ -113,7 +113,7 @@ WEAPONS: dict[str, dict[str, Any]] = {
 # Their damage is NEVER modified by standard Damage upgrades.
 VOID_WEAPONS: dict[str, dict[str, Any]] = {
     "Void Bazooka": {
-        "damage": 400,
+        "damage": 700,
         "price": 25000,
         "unlock_level": 200,
         "boss_mult": 2.00,
