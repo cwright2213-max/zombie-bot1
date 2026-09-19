@@ -284,7 +284,7 @@ class Enemy:
 @dataclass
 class Survivor:
     max_health: int = 100; health: int = 100; money: int = 0; xp: int = 0; stars: int = 0
-    weapon_name: str = "Pistol"; weapon_damage: int = 20; magazine_size: int = 12; magazine: int = 12
+    weapon_name: str = "Pistol"; equipped_weapon: str = "Pistol"; weapon_damage: int = 20; magazine_size: int = 12; magazine: int = 12
     spare_ammo: dict[str, int] = field(default_factory=lambda: {"Standard": 36})
     full_restores: int = 1; painkillers: int = 3; painkillers_used_this_run: int = 0; full_restores_used_this_run: int = 0
     run_money_earned: int = 0; run_xp_earned: int = 0; run_zombies_killed: int = 0; zone_name: str = "Graveyard"; ammo_name: str = "Standard"
@@ -322,6 +322,9 @@ class Survivor:
     def get_spare(self, ammo_type: str | None = None) -> int: return self.spare_ammo.get(ammo_type or self.ammo_name, 0)
     def recalc_stats(self):
         """Recalculate weapon damage / max_health / mag size based on permanent upgrades"""
+        if self.weapon_name not in WEAPONS:
+            self.weapon_name = self.equipped_weapon if self.equipped_weapon in WEAPONS else "Pistol"
+        self.equipped_weapon = self.weapon_name
         base = WEAPONS.get(self.weapon_name, WEAPONS["Pistol"])
         self.weapon_damage = base["damage"] + self.damage_upgrades * 3
         self.magazine_size = base["mag"] + self.mag_upgrades * 1
@@ -375,12 +378,33 @@ class Survivor:
         bonus = 0.10 + (self.star_xp_upgrades - 1) * 0.01
         return min(bonus, 0.25)
     def to_dict(self) -> dict[str, Any]:
-        d = asdict(self); d["__version"] = 3; return d
+        # weapon_name is the persistent equipped weapon. Keep an explicit
+        # alias too so older/newer saves cannot silently fall back to Pistol
+        # when a run is resumed after a restart.
+        d = asdict(self)
+        d["equipped_weapon"] = self.weapon_name
+        d["__version"] = 4
+        return d
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Survivor":
+        data = dict(data)
         if data.get("zone_name") not in ZONES: data["zone_name"] = "Graveyard"
         if data.get("ammo_name") not in AMMO: data["ammo_name"] = "Standard"
-        if data.get("weapon_name") not in WEAPONS: data["weapon_name"] = "Pistol"
+
+        # Preserve the player's equipped weapon across run resumes/restarts.
+        # Prefer the explicit equipped_weapon field when present, then the
+        # existing weapon_name field. Only fall back to a valid owned weapon
+        # (or Pistol) if the saved weapon is actually missing/invalid.
+        saved_weapon = data.get("equipped_weapon")
+        if saved_weapon not in WEAPONS:
+            saved_weapon = data.get("weapon_name")
+        owned_saved = data.get("owned_weapons", ["Pistol"])
+        if not isinstance(owned_saved, list):
+            owned_saved = ["Pistol"]
+        if saved_weapon not in WEAPONS:
+            saved_weapon = next((w for w in owned_saved if w in WEAPONS), "Pistol")
+        data["weapon_name"] = saved_weapon
+        data["equipped_weapon"] = saved_weapon
         # Migration: ensure upgrade counters exist
         if "damage_upgrades" not in data:
             # Estimate from old saves: if weapon_damage higher than base, convert to upgrades
@@ -440,8 +464,11 @@ class Survivor:
         allowed.setdefault("leaderboard_guilds", [])
         allowed.setdefault("admin_test_mode", False)
         if "Pistol" not in allowed["owned_weapons"]: allowed["owned_weapons"].append("Pistol")
+        allowed["equipped_weapon"] = allowed.get("weapon_name", "Pistol")
         if "stars" not in data: allowed["stars"] = max(0, level_for_xp(int(data.get("xp", 0))) - 1)
-        return cls(**allowed)
+        player = cls(**allowed)
+        player.recalc_stats()
+        return player
 
 def zone_for(player: Survivor) -> dict[str, Any]:
     return ZONES.get(player.zone_name, ZONES["Graveyard"])
@@ -1249,6 +1276,7 @@ def buy_item(player: Survivor, item: str) -> list[str]:
         return [f"{item} unlocks at level {weapon['unlock_level']}."]
     if item in player.owned_weapons:
         player.weapon_name = item
+        player.equipped_weapon = item
         player.recalc_stats()
         player.spare_ammo[player.ammo_name] = player.spare_ammo.get(player.ammo_name, 0) + player.magazine
         player.magazine = 0
@@ -1257,6 +1285,7 @@ def buy_item(player: Survivor, item: str) -> list[str]:
         return [f"Need ${weapon['price']} for {item}, you have ${player.money}"]
     player.money -= weapon["price"]
     player.weapon_name = item
+    player.equipped_weapon = item
     player.recalc_stats()
     if item not in player.owned_weapons:
         player.owned_weapons.append(item)
@@ -1763,7 +1792,9 @@ async def background_autosave():
     await asyncio.sleep(60)
     while True:
         try:
-            game_store.save()
+            # Never run synchronous PostgreSQL I/O on Discord's event loop.
+            # A slow DB connection must not freeze every button interaction.
+            await game_store.save_async()
         except Exception as e:
             print(f"[AUTOSAVE ERROR] {e}")
         await asyncio.sleep(60)
@@ -2013,11 +2044,11 @@ class CombatView(PlayerView):
 
     @discord.ui.button(label="🔫 Attack", style=discord.ButtonStyle.danger, row=0)
     async def attack(self, interaction: discord.Interaction, _b):
-        # Fast path: respond with the edited combat message as the interaction
-        # acknowledgement itself. Using defer() + edit_original_response()
-        # required two Discord round trips and made the button feel sluggish.
-        # The combat calculation is synchronous and lightweight, so we can build
-        # the result and acknowledge the interaction in one request.
+        # ACK IMMEDIATELY. Never wait for the per-player lock before acknowledging
+        # the Discord interaction; rapid clicks can otherwise hit Discord's
+        # interaction timeout while another attack is being processed.
+        await interaction.response.defer()
+
         lock = self.store.action_lock(self.user_id)
         async with lock:
             player = self.store.get(self.user_id)
@@ -2033,7 +2064,7 @@ class CombatView(PlayerView):
                 embed.add_field(name="🧟 Kills", value=f"{player.run_zombies_killed} zombies", inline=True)
                 embed.add_field(name="💰 Rewards", value=f"+${player.run_money_earned}\n+{player.run_xp_earned} XP", inline=True)
                 embed.set_footer(text=f"HP restored to {player.max_health}/{player.max_health} • Press any button to continue")
-                await interaction.response.edit_message(
+                await interaction.edit_original_response(
                     content=None,
                     embed=embed,
                     view=RunEndedView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), end_embed=embed)
@@ -2042,10 +2073,11 @@ class CombatView(PlayerView):
                 # CombatView has no per-attack dynamic controls, so keep the
                 # existing View instead of constructing a fresh one every shot.
                 embed = combat_embed(player, msgs)
-                await interaction.response.edit_message(content=None, embed=embed, view=self)
+                await interaction.edit_original_response(content=None, embed=embed, view=self)
 
-        # Persist after the player has received the visible combat update. The
-        # save remains mandatory, but DB latency is never on the button response.
+        # Save only after the interaction has been acknowledged/updated and the
+        # combat lock has been released. PostgreSQL latency must never block the
+        # next attack interaction.
         await self.store.save_one_async(str(self.user_id))
 
     @discord.ui.button(label="💥 Void Bazooka", style=discord.ButtonStyle.secondary, row=1)
