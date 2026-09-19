@@ -103,7 +103,7 @@ AMMO: dict[str, dict[str, Any]] = {
     "Incendiary": {"unlock_level": 35, "price": 600, "desc": "30% burn 20 dmg x3", "effect": "burn", "cost_per_attack": 3, "box_price": 100, "box_amount": 24},
     "Frostbite": {"unlock_level": 70, "price": 1200, "desc": "25% freeze halves dmg x4 + 10 dmg x2", "effect": "freeze", "cost_per_attack": 4, "box_price": 100, "box_amount": 24},
     "Toxic": {"unlock_level": 110, "price": 2500, "desc": "40% poison 18 dmg x5", "effect": "poison", "cost_per_attack": 5, "box_price": 150, "box_amount": 24},
-    "Shock": {"unlock_level": 160, "price": 5000, "desc": "20% stun 1 turn + 20 dmg", "effect": "shock", "cost_per_attack": 6, "box_price": 185, "box_amount": 24},
+    "Shock": {"unlock_level": 160, "price": 5000, "desc": "20% stun 1 turn + 30 dmg", "effect": "shock", "cost_per_attack": 6, "box_price": 185, "box_amount": 24},
 }
 WEAPONS: dict[str, dict[str, Any]] = {
     "Pistol": {"damage": 20, "mag": 12, "price": 0, "unlock_level": 1, "shots": 1},
@@ -792,16 +792,27 @@ def _apply_damage_over_time(player: Survivor) -> list[str]:
     if enemy is None:
         return []
     messages: list[str] = []
-    for effect in list(enemy.effects):
-        if effect in {"bleed", "burn", "poison"}:
-            base = {"bleed": 15, "burn": 20, "poison": 18, "freeze": 10}[effect]
-            mod_name = {"bleed": "Bleed", "burn": "Incendiary", "poison": "Toxic", "freeze": "Frostbite"}[effect]
-            damage = int(base * ammo_modifier(player, mod_name))
-            enemy.health = max(0, enemy.health - damage)
-            enemy.effects[effect] -= 1
-            messages.append(f"☠️ {effect.title()} {damage} dmg.")
-            if enemy.effects[effect] <= 0:
-                del enemy.effects[effect]
+
+    # Damage-over-time effects tick at the start of the player's next action.
+    # Frostbite is intentionally split into two effects: its freeze lasts 4
+    # enemy attacks, while its bonus cold damage ticks twice, matching the
+    # ammo description instead of silently doing nothing.
+    dot_data = {
+        "bleed": (15, "Bleed"),
+        "burn": (20, "Incendiary"),
+        "poison": (18, "Toxic"),
+        "freeze_dot": (10, "Frostbite"),
+    }
+    for effect, (base, mod_name) in dot_data.items():
+        stacks = int(enemy.effects.get(effect, 0))
+        if stacks <= 0:
+            continue
+        damage = int(base * ammo_modifier(player, mod_name))
+        enemy.health = max(0, enemy.health - damage)
+        enemy.effects[effect] = stacks - 1
+        messages.append(f"☠️ {mod_name} {damage} dmg.")
+        if enemy.effects[effect] <= 0:
+            del enemy.effects[effect]
     return messages
 
 def _finish_enemy(player: Survivor) -> list[str]:
@@ -1147,10 +1158,14 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
         if effect and random.random() < chances[effect]:
             durations = {"bleed": 3, "burn": 3, "freeze": 4, "poison": 5, "shock": 1}
             enemy.effects[effect] = durations[effect]
+            if effect == "freeze":
+                # Frostbite: halve incoming enemy damage for 4 attacks + 10
+                # bonus damage on the next 2 player actions.
+                enemy.effects["freeze_dot"] = 2
             messages.append(f"💥 {player.ammo_name} procs **{effect}**!")
-            # Shock also does instant 20 dmg
+            # Shock also does instant 30 dmg, matching its shop description.
             if effect == "shock":
-                shock_dmg = int(20 * ammo_modifier(player, "Shock"))
+                shock_dmg = int(30 * ammo_modifier(player, "Shock"))
                 enemy.health = max(0, enemy.health - shock_dmg)
                 messages.append(f"⚡ Shock deals {shock_dmg} dmg!")
     elif action == "reload":
@@ -1998,10 +2013,11 @@ class CombatView(PlayerView):
 
     @discord.ui.button(label="🔫 Attack", style=discord.ButtonStyle.danger, row=0)
     async def attack(self, interaction: discord.Interaction, _b):
-        # Acknowledge immediately, then serialize this player's combat actions.
-        # The previous implementation waited for PostgreSQL before updating the
-        # Discord message, which could make Attack feel progressively sluggish.
-        await interaction.response.defer()
+        # Fast path: respond with the edited combat message as the interaction
+        # acknowledgement itself. Using defer() + edit_original_response()
+        # required two Discord round trips and made the button feel sluggish.
+        # The combat calculation is synchronous and lightweight, so we can build
+        # the result and acknowledge the interaction in one request.
         lock = self.store.action_lock(self.user_id)
         async with lock:
             player = self.store.get(self.user_id)
@@ -2017,22 +2033,19 @@ class CombatView(PlayerView):
                 embed.add_field(name="🧟 Kills", value=f"{player.run_zombies_killed} zombies", inline=True)
                 embed.add_field(name="💰 Rewards", value=f"+${player.run_money_earned}\n+{player.run_xp_earned} XP", inline=True)
                 embed.set_footer(text=f"HP restored to {player.max_health}/{player.max_health} • Press any button to continue")
-                await interaction.edit_original_response(
+                await interaction.response.edit_message(
                     content=None,
                     embed=embed,
                     view=RunEndedView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), end_embed=embed)
                 )
             else:
                 # CombatView has no per-attack dynamic controls, so keep the
-                # existing view instead of constructing a fresh View every shot.
-                # This reduces object churn and avoids repeatedly replacing the
-                # button callback tree during a long run.
+                # existing View instead of constructing a fresh one every shot.
                 embed = combat_embed(player, msgs)
-                await interaction.edit_original_response(content=None, embed=embed, view=self)
+                await interaction.response.edit_message(content=None, embed=embed, view=self)
 
         # Persist after the player has received the visible combat update. The
-        # save remains mandatory, but DB latency no longer sits in front of the
-        # Discord response that makes the Attack button feel responsive.
+        # save remains mandatory, but DB latency is never on the button response.
         await self.store.save_one_async(str(self.user_id))
 
     @discord.ui.button(label="💥 Void Bazooka", style=discord.ButtonStyle.secondary, row=1)
