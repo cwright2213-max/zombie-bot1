@@ -1,5 +1,5 @@
 """Ultimate clean bot V6 FULL RESTORED - POSTGRES CONSTANT SAVE - every action saves instantly - zero loss"""
-import os, sys, json, random, logging
+import os, sys, json, random, logging, time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict
@@ -295,6 +295,11 @@ class Survivor:
     void_infusion_level: int = 0; void_shield_level: int = 0; void_execution_level: int = 0
     void_infusion_cooldown: int = 0; void_shield_cooldown: int = 0; void_execution_cooldown: int = 0
     void_infusion_active: bool = False; void_shield_active: bool = False; void_execution_active: bool = False
+    # --- LEADERBOARDS ---
+    highest_waves: dict[str, int] = field(default_factory=dict)
+    highest_wave_dates: dict[str, str] = field(default_factory=dict)
+    leaderboard_name: str = "Survivor"
+    leaderboard_guilds: list[str] = field(default_factory=list)
     @property
     def level(self) -> int: return level_for_xp(self.xp)
     def get_spare(self, ammo_type: str | None = None) -> int: return self.spare_ammo.get(ammo_type or self.ammo_name, 0)
@@ -412,6 +417,10 @@ class Survivor:
         allowed.setdefault("void_infusion_level", 0); allowed.setdefault("void_shield_level", 0); allowed.setdefault("void_execution_level", 0)
         allowed.setdefault("void_infusion_cooldown", 0); allowed.setdefault("void_shield_cooldown", 0); allowed.setdefault("void_execution_cooldown", 0)
         allowed.setdefault("void_infusion_active", False); allowed.setdefault("void_shield_active", False); allowed.setdefault("void_execution_active", False)
+        allowed.setdefault("highest_waves", {})
+        allowed.setdefault("highest_wave_dates", {})
+        allowed.setdefault("leaderboard_name", data.get("leaderboard_name", "Survivor"))
+        allowed.setdefault("leaderboard_guilds", [])
         if "Pistol" not in allowed["owned_weapons"]: allowed["owned_weapons"].append("Pistol")
         if "stars" not in data: allowed["stars"] = max(0, level_for_xp(int(data.get("xp", 0))) - 1)
         return cls(**allowed)
@@ -790,6 +799,10 @@ def _finish_enemy(player: Survivor) -> list[str]:
         if player.zone_name == "The Void" and player.wave >= VOID_ESSENCE_WAVE_START:
             player.void_essence += VOID_ESSENCE_PER_VOID_WAVE
             messages.append(f"◈ **Void Essence +{VOID_ESSENCE_PER_VOID_WAVE}** for clearing Void wave {player.wave}!")
+        # Leaderboards record ONLY fully completed waves. The server list is populated whenever the player uses the bot in a guild.
+        record_completed_wave(player, player.wave)
+        if getattr(player, "leaderboard_name", None) is None:
+            player.leaderboard_name = "Survivor"
         player.spare_ammo[player.ammo_name] = player.spare_ammo.get(player.ammo_name, 0) + (10 if was_bloater else 5)
         player.wave += 1
         player.zombies_remaining = player.wave + 2
@@ -803,6 +816,73 @@ def _finish_enemy(player: Survivor) -> list[str]:
     player.enemy = spawn_enemy(player)
     messages.append(f"🧟 **{player.enemy.name}** appears! {player.enemy.health} HP")
     return messages
+
+def record_completed_wave(player: Survivor, completed_wave: int, guild_id: int | None = None, display_name: str | None = None) -> bool:
+    """Record only fully completed waves. Returns True when a personal record improves."""
+    if completed_wave <= 0:
+        return False
+    zone = player.zone_name
+    old = int(player.highest_waves.get(zone, 0))
+    if display_name:
+        player.leaderboard_name = display_name[:32]
+    if guild_id is not None:
+        gid = str(guild_id)
+        if gid not in player.leaderboard_guilds:
+            player.leaderboard_guilds.append(gid)
+    if completed_wave > old:
+        player.highest_waves[zone] = int(completed_wave)
+        player.highest_wave_dates[zone] = time.strftime("%Y-%m-%d")
+        return True
+    return False
+
+def _leaderboard_rows(store: "GameStore", zone_name: str, guild_id: int | None = None) -> list[tuple[str, int, str]]:
+    rows = []
+    gid = str(guild_id) if guild_id is not None else None
+    for player in store.players.values():
+        wave = int(player.highest_waves.get(zone_name, 0))
+        if wave <= 0:
+            continue
+        if gid is not None and gid not in {str(x) for x in player.leaderboard_guilds}:
+            continue
+        name = player.leaderboard_name or "Survivor"
+        date = player.highest_wave_dates.get(zone_name, "—")
+        rows.append((name, wave, date))
+    rows.sort(key=lambda x: (-x[1], x[0].lower()))
+    return rows
+
+def leaderboard_rank(store: "GameStore", player: Survivor, zone_name: str, guild_id: int | None = None) -> int | None:
+    target = int(player.highest_waves.get(zone_name, 0))
+    if target <= 0:
+        return None
+    rows = _leaderboard_rows(store, zone_name, guild_id)
+    for i, (name, wave, date) in enumerate(rows, 1):
+        if name == player.leaderboard_name and wave == target and date == player.highest_wave_dates.get(zone_name, "—"):
+            return i
+    return None
+
+def leaderboard_text(store: "GameStore", zone_name: str, guild_id: int | None = None, limit: int = 10) -> str:
+    scope = "Server" if guild_id is not None else "Global"
+    rows = _leaderboard_rows(store, zone_name, guild_id)[:limit]
+    if not rows:
+        return f"No completed-wave records yet for **{zone_name}**."
+    lines = [f"**{scope} • {zone_name}**", ""]
+    medals = ["🥇", "🥈", "🥉"]
+    for i, (name, wave, date) in enumerate(rows, 1):
+        icon = medals[i-1] if i <= 3 else f"**{i}.**"
+        lines.append(f"{icon} **{name}** — Wave **{wave}** · {date}")
+    return "\n".join(lines)
+
+def personal_records_text(player: Survivor) -> str:
+    if not player.highest_waves:
+        return "**👤 My Records**\n\nNo completed-wave records yet. Start a run and finish a wave!"
+    lines = ["**👤 My Records**", ""]
+    for zone in ZONES:
+        wave = int(player.highest_waves.get(zone, 0))
+        if wave > 0:
+            date = player.highest_wave_dates.get(zone, "—")
+            lines.append(f"{zone}: **Wave {wave}** · {date}")
+    return "\n".join(lines)
+
 
 def take_action(player: Survivor, action: str, heal_item: str | None = None) -> list[str]:
     if not player.run_active or player.enemy is None:
@@ -1639,6 +1719,76 @@ class RunEndedView(PlayerView):
 
 
 
+class LeaderboardView(PlayerView):
+    """Compact leaderboard browser: Global, Server, and personal records."""
+    def __init__(self, user_id: int, store, display_name: str = "Survivor", guild_id: int | None = None, zone_name: str | None = None, timeout: float = 180):
+        super().__init__(user_id, store, display_name, timeout)
+        self.guild_id = guild_id
+        self.zone_name = zone_name or store.get(user_id).zone_name
+        self.clear_items()
+
+        zone_options = list(ZONES.keys())
+        for idx, zone in enumerate(zone_options[:5]):
+            btn = discord.ui.Button(label=("📍 " if zone == self.zone_name else "") + zone[:70], style=discord.ButtonStyle.primary if zone == self.zone_name else discord.ButtonStyle.secondary, row=0)
+            async def zone_cb(interaction, zn=zone):
+                p = self.store.get(self.user_id)
+                p.leaderboard_name = getattr(interaction.user, "display_name", None) or getattr(interaction.user, "global_name", None) or interaction.user.name
+                if interaction.guild:
+                    if str(interaction.guild.id) not in p.leaderboard_guilds:
+                        p.leaderboard_guilds.append(str(interaction.guild.id))
+                self.zone_name = zn
+                await interaction.response.edit_message(content=self.render_global(p), view=LeaderboardView(self.user_id, self.store, self.display_name, self.guild_id, zn))
+            btn.callback = zone_cb
+            self.add_item(btn)
+
+        # The sixth zone is not a button if Discord row capacity is tight; The Void is shown via navigation buttons below.
+        if len(zone_options) > 5:
+            zn = zone_options[5]
+            btn = discord.ui.Button(label=("📍 " if zn == self.zone_name else "") + zn[:70], style=discord.ButtonStyle.primary if zn == self.zone_name else discord.ButtonStyle.secondary, row=1)
+            async def zone6_cb(interaction, zn=zn):
+                p = self.store.get(self.user_id)
+                p.leaderboard_name = getattr(interaction.user, "display_name", None) or getattr(interaction.user, "global_name", None) or interaction.user.name
+                if interaction.guild and str(interaction.guild.id) not in p.leaderboard_guilds:
+                    p.leaderboard_guilds.append(str(interaction.guild.id))
+                await interaction.response.edit_message(content=self.render_global(p, zn), view=LeaderboardView(self.user_id, self.store, self.display_name, self.guild_id, zn))
+            btn.callback = zone6_cb
+            self.add_item(btn)
+
+        global_btn = discord.ui.Button(label="🌎 Global", style=discord.ButtonStyle.success, row=2)
+        async def global_cb(interaction):
+            p=self.store.get(self.user_id)
+            await interaction.response.edit_message(content=self.render_global(p), view=LeaderboardView(self.user_id,self.store,self.display_name,self.guild_id,self.zone_name))
+        global_btn.callback=global_cb; self.add_item(global_btn)
+
+        server_btn = discord.ui.Button(label="🏠 Server", style=discord.ButtonStyle.success, row=2, disabled=self.guild_id is None)
+        async def server_cb(interaction):
+            p=self.store.get(self.user_id)
+            await interaction.response.edit_message(content=self.render_server(p), view=LeaderboardView(self.user_id,self.store,self.display_name,self.guild_id,self.zone_name))
+        server_btn.callback=server_cb; self.add_item(server_btn)
+
+        records_btn = discord.ui.Button(label="👤 My Records", style=discord.ButtonStyle.success, row=2)
+        async def records_cb(interaction):
+            p=self.store.get(self.user_id)
+            await interaction.response.edit_message(content=personal_records_text(p), view=LeaderboardView(self.user_id,self.store,self.display_name,self.guild_id,self.zone_name))
+        records_btn.callback=records_cb; self.add_item(records_btn)
+
+        back_btn=discord.ui.Button(label="⬅️ Back", style=discord.ButtonStyle.secondary, row=3)
+        async def back_cb(interaction):
+            p=self.store.get(self.user_id)
+            await interaction.response.edit_message(content=status(p, display_name=self.display_name), embed=None, view=ZombieMenuView(self.user_id,self.store,display_name=self.display_name))
+        back_btn.callback=back_cb; self.add_item(back_btn)
+
+    def render_global(self, player=None, zone_name=None):
+        p=player or self.store.get(self.user_id); zn=zone_name or self.zone_name
+        return leaderboard_text(self.store, zn, None)
+
+    def render_server(self, player=None):
+        p=player or self.store.get(self.user_id)
+        if self.guild_id is None:
+            return "**🏠 Server Leaderboard**\n\nUse this inside a Discord server."
+        return leaderboard_text(self.store, self.zone_name, self.guild_id)
+
+
 class ZombieMenuView(PlayerView):
     def __init__(self, user_id: int, store, display_name: str = "Survivor"):
         super().__init__(user_id, store, display_name)
@@ -1691,6 +1841,20 @@ class ZombieMenuView(PlayerView):
             await interaction.response.edit_message(content="\n".join(lines), embed=None, view=ZoneView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
         btn_zones.callback = zones_cb
         self.add_item(btn_zones)
+
+        btn_lb = discord.ui.Button(label="🏆 Leaderboards", style=discord.ButtonStyle.primary, row=1)
+        async def lb_cb(interaction: discord.Interaction):
+            p=self.store.get(self.user_id)
+            name=getattr(interaction.user, "display_name", None) or getattr(interaction.user, "global_name", None) or interaction.user.name
+            p.leaderboard_name=name[:32]
+            gid=interaction.guild.id if interaction.guild else None
+            if gid is not None and str(gid) not in p.leaderboard_guilds:
+                p.leaderboard_guilds.append(str(gid))
+            self.store.save_one(str(self.user_id))
+            await interaction.response.edit_message(content=leaderboard_text(self.store, p.zone_name, None), embed=None, view=LeaderboardView(self.user_id,self.store,display_name=name,guild_id=gid,zone_name=p.zone_name))
+        lb_cb.__name__ = "leaderboards_cb"
+        self.add_item(btn_lb)
+        btn_lb.callback = lb_cb
 
         # Ammo and permanent upgrades are accessed through the main Shop now.
         # They are intentionally not shown as separate buttons on the main menu.
@@ -1943,7 +2107,7 @@ class ShopHubView(PlayerView):
     async def void_btn(self, interaction: discord.Interaction, _b):
         p=self.store.get(self.user_id)
         view = VoidUpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"))
-        await interaction.response.edit_message(content=view.get_shop_text(p), embed=None, view=view)
+        await interaction.response.edit_message(content=None, embed=view.get_shop_embed(p), view=view)
 
     @discord.ui.button(label="Return", style=discord.ButtonStyle.secondary, row=2)
     async def ret(self, interaction: discord.Interaction, _b):
@@ -2535,147 +2699,117 @@ class StarUpgradeView(PlayerView):
 
 
 class VoidUpgradeView(PlayerView):
-    """Dedicated Void weapon shop. Uses Void Essence, not money or standard upgrades."""
+    """Clean, compact Void progression page."""
     def __init__(self, user_id: int, store, display_name: str = "Survivor", timeout: float = 180):
         super().__init__(user_id, store, display_name, timeout)
         player = self.store.get(user_id)
         self.clear_items()
 
         owned = "Void Bazooka" in player.void_weapons_owned
-        unlock_ok = player.level >= VOID_WEAPONS["Void Bazooka"]["unlock_level"] and player.zone_name == "The Void"
-        label = "💥 Void Bazooka" + (" ✅" if owned else " 🔒")
-        btn = discord.ui.Button(label=label[:80], style=discord.ButtonStyle.success if owned else discord.ButtonStyle.primary, row=0)
+        lvl = max(0, min(VOID_UPGRADE_MAX, player.void_weapon_level))
+        if lvl >= VOID_UPGRADE_MAX:
+            baz_label = "💥 Bazooka MAX"
+        else:
+            baz_label = "💥 Void Bazooka" + (" ✅" if owned else " 🔒")
+        btn = discord.ui.Button(label=baz_label, style=discord.ButtonStyle.success if owned else discord.ButtonStyle.primary, row=0)
         async def bazooka_select(interaction):
-            p=self.store.get(self.user_id)
-            msgs = []
-            if not owned:
+            p=self.store.get(self.user_id); msgs=[]
+            if "Void Bazooka" not in p.void_weapons_owned:
                 if p.level < VOID_WEAPONS["Void Bazooka"]["unlock_level"]:
-                    msgs=[f"🔒 Void Bazooka unlocks at level {VOID_WEAPONS['Void Bazooka']['unlock_level']}."]
+                    msgs=[f"🔒 Unlocks at Level {VOID_WEAPONS['Void Bazooka']['unlock_level']}." ]
                 elif p.zone_name != "The Void":
-                    msgs=["🗺️ Travel to **The Void** to obtain Void weapons."]
+                    msgs=["🗺️ Travel to **The Void** to obtain it."]
                 elif p.money < VOID_WEAPONS["Void Bazooka"]["price"]:
-                    msgs=[f"❌ Need ${VOID_WEAPONS['Void Bazooka']['price']:,}; you have ${p.money:,}."]
+                    msgs=[f"❌ Need ${VOID_WEAPONS['Void Bazooka']['price']:,}."]
                 else:
                     p.money -= VOID_WEAPONS["Void Bazooka"]["price"]
                     p.void_weapons_owned.append("Void Bazooka")
-                    msgs=[f"💥 **Void Bazooka acquired!** -${VOID_WEAPONS['Void Bazooka']['price']:,}. It is a backup weapon with 1 free ammo each Void run; extra shots cost ◈10 Essence, and each boss can only be hit once."]
+                    msgs=["💥 **Void Bazooka acquired!**"]
                     self.store.save()
-            content=self.get_shop_text(p, extra_msgs=msgs)
-            await interaction.response.edit_message(content=content, view=VoidUpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
-        btn.callback = bazooka_select
-        self.add_item(btn)
+            view=VoidUpgradeView(self.user_id,self.store,display_name=getattr(self,"display_name","Survivor"))
+            await interaction.response.edit_message(content=None, embed=view.get_shop_embed(p,msgs), view=view)
+        btn.callback=bazooka_select; self.add_item(btn)
 
-        # One upgrade button for the currently available Void weapon progression.
-        cost = get_void_upgrade_cost(player)
-        buy_label = f"Upgrade Void Bazooka ◈{cost:,}"
-        btn_up = discord.ui.Button(label=buy_label[:80], style=discord.ButtonStyle.success, row=1)
+        cost=get_void_upgrade_cost(player)
+        up_label = "⬆️ Bazooka MAX" if lvl >= VOID_UPGRADE_MAX else f"⬆️ Upgrade Bazooka • ◈{cost:,}"
+        btn_up=discord.ui.Button(label=up_label, style=discord.ButtonStyle.success, row=1, disabled=(lvl>=VOID_UPGRADE_MAX))
         async def upgrade_cb(interaction):
             if self.user_id in _purchase_locks:
-                try: await interaction.response.defer()
-                except: pass
-                return
+                await interaction.response.defer(); return
             _purchase_locks.add(self.user_id)
             try:
-                p=self.store.get(self.user_id)
-                msgs = upgrade_void_weapon(p)
-                self.store.save()
-                content=self.get_shop_text(p, extra_msgs=msgs)
-                await interaction.response.edit_message(content=content, view=VoidUpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+                p=self.store.get(self.user_id); msgs=upgrade_void_weapon(p); self.store.save()
+                view=VoidUpgradeView(self.user_id,self.store,display_name=getattr(self,"display_name","Survivor"))
+                await interaction.response.edit_message(content=None, embed=view.get_shop_embed(p,msgs), view=view)
             finally:
                 _purchase_locks.discard(self.user_id)
-        btn_up.callback = upgrade_cb
-        self.add_item(btn_up)
+        btn_up.callback=upgrade_cb; self.add_item(btn_up)
 
-        # Void perk upgrade buttons
-        perk_specs = [("Void Infusion", "⚡", 0), ("Void Shield", "🛡️", 1), ("Void Execution", "☠️", 2)]
-        for perk_name, icon, col in perk_specs:
-            lvl = void_perk_level(player, perk_name)
-            if lvl >= 10:
-                label = f"{icon} {perk_name.split()[-1]} MAX"
+        perk_specs=[("Void Infusion","⚡"),("Void Shield","🛡️"),("Void Execution","☠️")]
+        for perk_name,icon in perk_specs:
+            plvl=void_perk_level(player,perk_name)
+            if plvl>=10:
+                label=f"{icon} {perk_name.split()[-1]} MAX"
             else:
-                label = f"{icon} {perk_name.split()[-1]} L{lvl} ◈{get_void_perk_cost(player, perk_name)}"
-            btn_perk = discord.ui.Button(label=label[:80], style=discord.ButtonStyle.success if lvl else discord.ButtonStyle.primary, row=2)
-            async def perk_cb(interaction, pn=perk_name):
+                label=f"{icon} {perk_name.split()[-1]} L{plvl} • ◈{get_void_perk_cost(player,perk_name)}"
+            b=discord.ui.Button(label=label[:80], style=discord.ButtonStyle.success if plvl else discord.ButtonStyle.primary, row=2)
+            async def perk_cb(interaction,pn=perk_name):
                 if self.user_id in _purchase_locks:
-                    try: await interaction.response.defer()
-                    except: pass
-                    return
+                    await interaction.response.defer(); return
                 _purchase_locks.add(self.user_id)
                 try:
-                    p=self.store.get(self.user_id)
-                    msgs=upgrade_void_perk(p, pn)
-                    self.store.save()
-                    view=VoidUpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"))
-                    await interaction.response.edit_message(content=view.get_shop_text(p, extra_msgs=msgs), view=view)
+                    p=self.store.get(self.user_id); msgs=upgrade_void_perk(p,pn); self.store.save()
+                    view=VoidUpgradeView(self.user_id,self.store,display_name=getattr(self,"display_name","Survivor"))
+                    await interaction.response.edit_message(content=None, embed=view.get_shop_embed(p,msgs), view=view)
                 finally:
                     _purchase_locks.discard(self.user_id)
-            btn_perk.callback=perk_cb
-            self.add_item(btn_perk)
+            b.callback=perk_cb; self.add_item(b)
 
-        back_btn = discord.ui.Button(label="Back", style=discord.ButtonStyle.secondary, row=3)
+        back=discord.ui.Button(label="⬅️ Back",style=discord.ButtonStyle.secondary,row=3)
         async def back_cb(interaction):
-            p=self.store.get(self.user_id)
-            hub=ShopHubView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"))
-            await interaction.response.edit_message(content=hub.get_shop_text(p), view=hub)
-        back_btn.callback=back_cb
-        self.add_item(back_btn)
+            p=self.store.get(self.user_id); hub=ShopHubView(self.user_id,self.store,display_name=getattr(self,"display_name","Survivor"))
+            await interaction.response.edit_message(content=hub.get_shop_text(p),embed=None,view=hub)
+        back.callback=back_cb; self.add_item(back)
 
-        main_btn = discord.ui.Button(label="🏠 Main menu", style=discord.ButtonStyle.secondary, row=3)
+        main=discord.ui.Button(label="🏠 Main Menu",style=discord.ButtonStyle.secondary,row=3)
         async def main_cb(interaction):
-            name=getattr(self, "display_name", "Survivor")
-            try: name=getattr(interaction.user, "display_name", None) or getattr(interaction.user, "global_name", None) or interaction.user.name
-            except: pass
-            p=self.store.get(self.user_id)
-            await interaction.response.edit_message(content=status(p, display_name=name), view=ZombieMenuView(self.user_id, self.store, display_name=name))
-        main_btn.callback=main_cb
-        self.add_item(main_btn)
+            p=self.store.get(self.user_id); name=getattr(interaction.user,"display_name",None) or getattr(interaction.user,"global_name",None) or interaction.user.name
+            await interaction.response.edit_message(content=status(p,display_name=name),embed=None,view=ZombieMenuView(self.user_id,self.store,display_name=name))
+        main.callback=main_cb; self.add_item(main)
+
+    def get_shop_embed(self, player, extra_msgs=None):
+        baz=VOID_WEAPONS["Void Bazooka"]
+        lvl=max(0,min(VOID_UPGRADE_MAX,player.void_weapon_level))
+        dmg=baz["damage"]+lvl*VOID_BAZOOKA_DAMAGE_PER_LEVEL
+        boss_mult=baz["level_10_boss_mult"] if lvl>=VOID_UPGRADE_MAX else baz["boss_mult"]
+        embed=discord.Embed(title="🌑 The Void",description=f"◈ **Essence:** {player.void_essence:,}\n💰 **Balance:** ${player.money:,}\n🎚️ **Level:** {player.level}",color=discord.Color.dark_purple())
+        if extra_msgs:
+            embed.add_field(name="Result",value="\n".join(extra_msgs)[:1024],inline=False)
+        owned="Void Bazooka" in player.void_weapons_owned
+        if not owned:
+            baz_text=f"🔒 Unlocks at **Level {baz['unlock_level']}**\n💰 Purchase: **${baz['price']:,}**"
+        else:
+            baz_text=f"Level **{lvl}/{VOID_UPGRADE_MAX}** • Damage **{dmg}**\n💀 Bloaters/Bosses: **×{boss_mult:.1f}**\n🎁 1 free shot/run • ◈{VOID_BAZOOKA_AMMO_COST}/extra shot"
+        embed.add_field(name="💥 Void Bazooka",value=baz_text,inline=False)
+        perk_lines=[]
+        for pn,icon in (("Void Infusion","⚡"),("Void Shield","🛡️"),("Void Execution","☠️")):
+            plvl=void_perk_level(player,pn); spec=VOID_PERKS[pn]; bonus=int(void_perk_bonus(player,pn)*100)
+            if pn=="Void Infusion": effect=f"+{bonus}% next attack"
+            elif pn=="Void Shield": effect=f"-{bonus}% next hit"
+            else: effect=f"+{bonus}% vs ≤50% HP"
+            cost="MAX" if plvl>=10 else f"◈{get_void_perk_cost(player,pn)}"
+            perk_lines.append(f"{icon} **{pn.split()[-1]}** L{plvl}/10 • {effect} • Next {cost}")
+        embed.add_field(name="⚡ Void Perks",value="\n".join(perk_lines),inline=False)
+        embed.set_footer(text="Perks work in The Void and can modify the Bazooka.")
+        return embed
 
     def get_shop_text(self, player, extra_msgs=None):
-        bazooka=VOID_WEAPONS["Void Bazooka"]
-        lvl=max(0,min(VOID_UPGRADE_MAX,player.void_weapon_level))
-        current_damage=bazooka["damage"] + lvl*VOID_BAZOOKA_DAMAGE_PER_LEVEL
-        next_cost=get_void_upgrade_cost(player)
-        lines=[]
-        if extra_msgs:
-            lines.extend(extra_msgs); lines.append("")
-        lines.append("**◈ VOID UPGRADES SHOP**")
-        lines.append("")
-        lines.append("A separate progression system for Void weapons. Standard upgrades do **NOT** affect them.")
-        lines.append("")
-        lines.append(f"Your Void Essence: **◈{player.void_essence:,}** | Balance: **${player.money:,}** | Level **{player.level}**")
-        lines.append("---")
-        if player.level < bazooka["unlock_level"]:
-            lines.append(f"🔒 **Void Bazooka** — unlocks at Level {bazooka['unlock_level']}")
-        elif player.zone_name != "The Void" and "Void Bazooka" not in player.void_weapons_owned:
-            lines.append("🗺️ Travel to **The Void** to obtain the Void Bazooka.")
-        else:
-            owned="Void Bazooka" in player.void_weapons_owned
-            lines.append(f"💥 **Void Bazooka** {'OWNED' if owned else f'${bazooka["price"]:,} to acquire'}")
-            lines.append(f"Level **{lvl}/{VOID_UPGRADE_MAX}** | Damage **{current_damage}**")
-            boss_mult = bazooka["level_10_boss_mult"] if lvl >= VOID_UPGRADE_MAX else bazooka["boss_mult"]
-            lines.append(f"Bloaters/Void bosses: **×{boss_mult:.1f} damage**")
-            lines.append(f"1 free ammo per Void run | Extra ammo: **◈{VOID_BAZOOKA_AMMO_COST} Essence/shot** | Once per boss encounter | Standard Damage upgrades: **NO EFFECT**")
-            if lvl < VOID_UPGRADE_MAX:
-                lines.append(f"Next: +{VOID_BAZOOKA_DAMAGE_PER_LEVEL} damage → Level {lvl+1} for **◈{next_cost:,}**")
-            else:
-                lines.append(f"🔥 **LEVEL 10 BONUS ACTIVE: ×{bazooka["level_10_boss_mult"]:.1f} damage against Bloaters/Void bosses!**")
-        lines.append("")
-        lines.append("**⚡ VOID PERKS**")
-        perk_lines = []
-        for pn in ("Void Infusion", "Void Shield", "Void Execution"):
-            lvl = void_perk_level(player, pn)
-            perk = VOID_PERKS[pn]
-            if lvl >= 10:
-                cost_text = "MAX"
-            else:
-                cost_text = f"◈{get_void_perk_cost(player, pn)}"
-            bonus = int(void_perk_bonus(player, pn) * 100)
-            perk_lines.append(f"{pn}: **L{lvl}/10** | Effect **+{bonus}%** | Activate ◈{perk['activation_cost']} | Cooldown {perk['cooldown']} kills | Next {cost_text}")
-        lines.extend(perk_lines)
-        lines.append("Infusion = next attack • Shield = next incoming hit • Execution = next attack at ≤50% enemy HP. Perks can modify the Void Bazooka.")
-        lines.append("")
-        lines.append("**Void Essence is earned by killing enemies and clearing waves in The Void.**")
-        return "\n".join(lines)
+        # Kept for compatibility with older callers.
+        e=self.get_shop_embed(player,extra_msgs)
+        parts=[f"**{e.title}**",e.description or ""]
+        for f in e.fields: parts.append(f"**{f.name}**\n{f.value}")
+        if e.footer.text: parts.append(e.footer.text)
+        return "\n\n".join(parts)
 
 
 def get_void_upgrade_cost(player: Survivor) -> int:
@@ -2782,6 +2916,10 @@ async def zombie_cmd(interaction: discord.Interaction):
         await interaction.response.defer()
         player = game_store.get(interaction.user.id)
         name = getattr(interaction.user, "display_name", None) or getattr(interaction.user, "global_name", None) or interaction.user.name
+        player.leaderboard_name = name[:32]
+        if interaction.guild and str(interaction.guild.id) not in player.leaderboard_guilds:
+            player.leaderboard_guilds.append(str(interaction.guild.id))
+        game_store.save_one(str(interaction.user.id))
         print(f"[CMD] /zombie by {interaction.user.id} name={name} level={player.level}")
         content = status(player, display_name=name)
         view = ZombieMenuView(interaction.user.id, game_store, display_name=name)
@@ -2796,10 +2934,36 @@ async def zombie_cmd(interaction: discord.Interaction):
         except:
             pass
 
+@bot.tree.command(name="leaderboard", description="View Zombie Survival leaderboards")
+@app_commands.describe(scope="Global, server, or personal records", zone="Zone to view")
+@app_commands.choices(scope=[app_commands.Choice(name="Global",value="global"),app_commands.Choice(name="Server",value="server"),app_commands.Choice(name="My Records",value="personal")])
+async def leaderboard_cmd(interaction: discord.Interaction, scope: str = "global", zone: str | None = None):
+    await interaction.response.defer()
+    p=game_store.get(interaction.user.id)
+    name=getattr(interaction.user,"display_name",None) or getattr(interaction.user,"global_name",None) or interaction.user.name
+    p.leaderboard_name=name[:32]
+    gid=interaction.guild.id if interaction.guild else None
+    if gid is not None and str(gid) not in p.leaderboard_guilds:
+        p.leaderboard_guilds.append(str(gid))
+    if zone not in ZONES:
+        zone=p.zone_name
+    game_store.save_one(str(interaction.user.id))
+    if scope == "personal":
+        content=personal_records_text(p)
+    elif scope == "server":
+        content=leaderboard_text(game_store,zone,gid) if gid is not None else "**🏠 Server Leaderboard**\n\nUse this command inside a server."
+    else:
+        content=leaderboard_text(game_store,zone,None)
+    await interaction.followup.send(content=content,view=LeaderboardView(interaction.user.id,game_store,display_name=name,guild_id=gid,zone_name=zone))
+
 @bot.tree.command(name="zombie_start", description="Start a zombie run")
 async def zombie_start_cmd(interaction: discord.Interaction):
     await interaction.response.defer()  # Prevent timeout - fixes "didn't respond in time"
     player = game_store.get(interaction.user.id)
+    player.leaderboard_name = (getattr(interaction.user, "display_name", None) or getattr(interaction.user, "global_name", None) or interaction.user.name)[:32]
+    if interaction.guild and str(interaction.guild.id) not in player.leaderboard_guilds:
+        player.leaderboard_guilds.append(str(interaction.guild.id))
+    game_store.save_one(str(interaction.user.id))
     if player.run_active:
         embed = combat_embed(player, [f"Already in run! Wave {player.wave}"])
         await interaction.followup.send(embed=embed, view=CombatView(interaction.user.id, game_store))
