@@ -100,6 +100,7 @@ WEAPONS: dict[str, dict[str, Any]] = {
     "Rifle": {"damage": 25, "mag": 30, "price": 2500, "unlock_level": 30, "shots": 2},
     "SMG": {"damage": 15, "mag": 42, "price": 4000, "unlock_level": 60, "shots": 3},
     "Sawed-Off": {"damage": 70, "mag": 2, "price": 6000, "unlock_level": 90, "shots": 1},
+    "Tactical Sniper": {"damage": 180, "mag": 1, "price": 15000, "unlock_level": 125, "shots": 1, "desc": "Heavy late-game single-shot sniper. Massive damage, but starts with a 1-round magazine and relies on Magazine upgrades for special ammo."},
 }
 
 # --- VOID WEAPON SYSTEM ---
