@@ -301,6 +301,8 @@ class Survivor:
     highest_wave_dates: dict[str, str] = field(default_factory=dict)
     leaderboard_name: str = "Survivor"
     leaderboard_guilds: list[str] = field(default_factory=list)
+    # Persistent flag so admin test runs stay excluded from leaderboards even across restarts.
+    admin_test_mode: bool = False
     @property
     def level(self) -> int: return level_for_xp(self.xp)
     def get_spare(self, ammo_type: str | None = None) -> int: return self.spare_ammo.get(ammo_type or self.ammo_name, 0)
@@ -422,6 +424,7 @@ class Survivor:
         allowed.setdefault("highest_wave_dates", {})
         allowed.setdefault("leaderboard_name", data.get("leaderboard_name", "Survivor"))
         allowed.setdefault("leaderboard_guilds", [])
+        allowed.setdefault("admin_test_mode", False)
         if "Pistol" not in allowed["owned_weapons"]: allowed["owned_weapons"].append("Pistol")
         if "stars" not in data: allowed["stars"] = max(0, level_for_xp(int(data.get("xp", 0))) - 1)
         return cls(**allowed)
@@ -679,6 +682,28 @@ def start_run(player: Survivor) -> list[str]:
         f"🧟 **Run started in {player.zone_name}** | Using **{player.ammo_name}** ({cost}/shot){bazooka_note}",
         f"Wave {player.wave}: **{player.enemy.name}** ({player.enemy.health} HP)",
     ]
+
+def recover_stuck_run(player: Survivor) -> list[str]:
+    """Repair an active run that was persisted without a current enemy.
+
+    This can happen if a command/view is interrupted between changing run state
+    and spawning/saving the encounter. The player stays on the same wave; we
+    simply create a fresh enemy so the run can continue normally.
+    """
+    if not player.run_active:
+        return []
+    if player.enemy is not None:
+        return []
+    if player.wave < 1:
+        player.wave = 1
+    if player.zombies_remaining <= 0:
+        player.zombies_remaining = max(3, player.wave + 2)
+    player.enemy = spawn_enemy(player)
+    return [
+        f"🛠️ **Run recovered!** Your saved Wave **{player.wave}** had no active enemy.",
+        f"🧟 **{player.enemy.name}** has spawned with **{player.enemy.health} HP**. Your run can continue!",
+    ]
+
 
 def action_help(player: Survivor) -> str:
     if player.enemy is None:
@@ -1832,7 +1857,13 @@ class ZombieMenuView(PlayerView):
         btn_start = discord.ui.Button(label=label, style=discord.ButtonStyle.success, row=0)
         async def start_cb(interaction: discord.Interaction):
             p = self.store.get(self.user_id)
-            if p.run_active and p.enemy:
+            if p.run_active:
+                if p.enemy is None:
+                    msgs = recover_stuck_run(p)
+                    self.store.save_one(str(self.user_id))
+                    embed = combat_embed(p, msgs)
+                    await interaction.response.edit_message(content=None, embed=embed, view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+                    return
                 embed = combat_embed(p, [f"🔄 Resumed your run! Wave {p.wave} | {p.zombies_remaining} zombies left"])
                 await interaction.response.edit_message(content=None, embed=embed, view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
                 return
@@ -2025,6 +2056,35 @@ class CombatView(PlayerView):
         else:
             embed = combat_embed(player, msgs)
             await interaction.edit_original_response(content=None, embed=embed, view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+
+    @discord.ui.button(label="🏠 Main Menu", style=discord.ButtonStyle.secondary, row=3)
+    async def main_menu(self, interaction: discord.Interaction, _b):
+        # Always provide a safe exit from combat. This does not abandon the run;
+        # it simply returns to the menu so the player can resume it later.
+        await interaction.response.defer()
+        player = self.store.get(self.user_id)
+        if player.run_active and player.enemy is None:
+            msgs = recover_stuck_run(player)
+            self.store.save_one(str(self.user_id))
+        else:
+            msgs = []
+        name = getattr(self, "display_name", "Survivor")
+        content = status(player, display_name=name)
+        if msgs:
+            content += "\n\n" + "\n".join(msgs)
+        await interaction.edit_original_response(content=content, embed=None, view=ZombieMenuView(self.user_id, self.store, display_name=name))
+
+    @discord.ui.button(label="🛠️ Recover Run", style=discord.ButtonStyle.secondary, row=3)
+    async def recover_run(self, interaction: discord.Interaction, _b):
+        await interaction.response.defer()
+        player = self.store.get(self.user_id)
+        msgs = recover_stuck_run(player)
+        if not msgs:
+            msgs = ["✅ Your run is already healthy — an enemy is active."]
+        await self.store.save_one_async(str(self.user_id))
+        embed = combat_embed(player, msgs)
+        await interaction.edit_original_response(content=None, embed=embed, view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+
 
 
 
@@ -2961,9 +3021,15 @@ async def zombie_cmd(interaction: discord.Interaction):
         player.leaderboard_name = name[:32]
         if interaction.guild and str(interaction.guild.id) not in player.leaderboard_guilds:
             player.leaderboard_guilds.append(str(interaction.guild.id))
+        recovery_msgs = []
+        if player.run_active and player.enemy is None:
+            recovery_msgs = recover_stuck_run(player)
+            print(f"[RECOVERY] /zombie repaired player {interaction.user.id}: {recovery_msgs}")
         game_store.save_one(str(interaction.user.id))
         print(f"[CMD] /zombie by {interaction.user.id} name={name} level={player.level}")
         content = status(player, display_name=name)
+        if recovery_msgs:
+            content += "\n\n" + "\n".join(recovery_msgs)
         view = ZombieMenuView(interaction.user.id, game_store, display_name=name)
         await interaction.followup.send(content=content, view=view)
         print(f"[CMD] /zombie sent OK for {interaction.user.id}")
@@ -3007,7 +3073,12 @@ async def zombie_start_cmd(interaction: discord.Interaction):
         player.leaderboard_guilds.append(str(interaction.guild.id))
     game_store.save_one(str(interaction.user.id))
     if player.run_active:
-        embed = combat_embed(player, [f"Already in run! Wave {player.wave}"])
+        recovery_msgs = recover_stuck_run(player) if player.enemy is None else []
+        if recovery_msgs:
+            await game_store.save_one_async(str(interaction.user.id))
+            embed = combat_embed(player, recovery_msgs)
+        else:
+            embed = combat_embed(player, [f"Already in run! Wave {player.wave}"])
         await interaction.followup.send(embed=embed, view=CombatView(interaction.user.id, game_store))
         return
     msgs = start_run(player)
@@ -3111,48 +3182,73 @@ bot.tree.add_command(give_group)
 @bot.tree.command(name="setwave", description="[ADMIN] Set a player's current test wave")
 @app_commands.describe(wave="Wave to jump to (1-10000)", user="Player to set (leave empty for yourself)")
 async def setwave(interaction: discord.Interaction, wave: int, user: discord.User = None):
-    if not has_admin_commands(interaction):
-        await interaction.response.send_message(admin_denied_message(), ephemeral=True)
-        return
-    if wave < 1 or wave > 10000:
-        await interaction.response.send_message("❌ Wave must be between **1 and 10,000**.", ephemeral=True)
-        return
-
+    # Defer immediately so even a slow PostgreSQL/admin lookup cannot leave
+    # Discord showing the command as permanently "thinking...".
     await interaction.response.defer(ephemeral=True)
-    target = user or interaction.user
-    player = game_store.get(target.id)
 
-    # If the player is not currently running, initialise a normal run first.
-    # Then jump directly to the requested wave and create a fresh encounter.
-    if not player.run_active:
-        start_run(player)
+    try:
+        if not has_admin_commands(interaction):
+            await interaction.followup.send(admin_denied_message(), ephemeral=True)
+            return
 
-    player.run_active = True
-    player.wave = int(wave)
-    player.zombies_remaining = 3
-    player.enemy = None
-    player.bloater_cooldown = 0
-    player.bloaters_spawned_this_run = 0
-    player.void_bazooka_boss_fired = False
-    player.void_infusion_cooldown = 0
-    player.void_shield_cooldown = 0
-    player.void_execution_cooldown = 0
-    player.void_infusion_active = False
-    player.void_shield_active = False
-    player.void_execution_active = False
-    player.admin_test_mode = True
-    player.enemy = spawn_enemy(player)
+        if wave < 1 or wave > 10000:
+            await interaction.followup.send(
+                "❌ Wave must be between **1 and 10,000**.", ephemeral=True
+            )
+            return
 
-    game_store.save_one(str(target.id))
-    embed = combat_embed(
-        player,
-        [
-            f"🧪 **ADMIN TEST MODE** — jumped {target.mention} to **Wave {player.wave}**.",
-            f"🧟 **{player.enemy.name}** appears with **{player.enemy.health} HP**.",
-            "🏆 Waves completed in this test run **will NOT affect leaderboards**."
-        ],
-    )
-    await interaction.followup.send(embed=embed, view=CombatView(target.id, game_store), ephemeral=True)
+        target = user or interaction.user
+        player = game_store.get(target.id)
+
+        # If the player is not currently running, initialise a normal run first.
+        # Then jump directly to the requested wave and create a fresh encounter.
+        if not player.run_active:
+            start_run(player)
+
+        player.run_active = True
+        player.wave = int(wave)
+        player.zombies_remaining = 3
+        player.enemy = None
+        player.bloater_cooldown = 0
+        player.bloaters_spawned_this_run = 0
+        player.void_bazooka_boss_fired = False
+        player.void_infusion_cooldown = 0
+        player.void_shield_cooldown = 0
+        player.void_execution_cooldown = 0
+        player.void_infusion_active = False
+        player.void_shield_active = False
+        player.void_execution_active = False
+        # Admin test runs never write leaderboard records.
+        player.admin_test_mode = True
+        player.enemy = spawn_enemy(player)
+
+        # Keep the save synchronous for consistency with the rest of the bot,
+        # but it now happens after the interaction has already been deferred.
+        game_store.save_one(str(target.id))
+
+        embed = combat_embed(
+            player,
+            [
+                f"🧪 **ADMIN TEST MODE** — jumped {target.mention} to **Wave {player.wave}**.",
+                f"🧟 **{player.enemy.name}** appears with **{player.enemy.health} HP**.",
+                "🏆 Waves completed in this test run **will NOT affect leaderboards**.",
+            ],
+        )
+        await interaction.followup.send(
+            embed=embed,
+            view=CombatView(target.id, game_store),
+            ephemeral=True,
+        )
+    except Exception as e:
+        print(f"[ADMIN] /setwave failed: {type(e).__name__}: {e}")
+        try:
+            await interaction.followup.send(
+                f"❌ **/setwave failed:** `{type(e).__name__}`\n"
+                "Check the Railway logs for the full error.",
+                ephemeral=True,
+            )
+        except Exception as followup_error:
+            print(f"[ADMIN] /setwave error response failed: {followup_error}")
 
 
 @bot.tree.command(name="addmoney", description="[ADMIN] Add money to a player")
