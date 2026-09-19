@@ -76,14 +76,25 @@ ZONES: dict[str, dict[str, Any]] = {
 ZONE_ORDER = ["Graveyard", "Mega Death City", "Frostbitten Outskirts", "Toxic Wasteland", "The Void"]
 # Bloater config - run ender
 BLOATER_BASE = {"health": 280, "damage": 4, "money": 350, "xp": 120}
-BLOATER_MAX_PER_ZONE = {
-    "Graveyard": 1,
-    "Mega Death City": 2,
-    "Frostbitten Outskirts": 3,
-    "Toxic Wasteland": 4,
-    "The Void": 5,
-}
 BLOATER_MIN_WAVE = 5
+# Chance resets after every Bloater, then ramps upward on later eligible waves.
+# Different zones start higher and ramp faster, while the 35% cap always leaves
+# normal zombies in the pool.
+BLOATER_ZONE_START_CHANCE = {
+    "Graveyard": 0.05,
+    "Mega Death City": 0.07,
+    "Frostbitten Outskirts": 0.09,
+    "Toxic Wasteland": 0.11,
+    "The Void": 0.13,
+}
+BLOATER_ZONE_CHANCE_STEP = {
+    "Graveyard": 0.03,
+    "Mega Death City": 0.04,
+    "Frostbitten Outskirts": 0.05,
+    "Toxic Wasteland": 0.06,
+    "The Void": 0.07,
+}
+BLOATER_MAX_CHANCE = 0.35
 BLOATER_FUSE = 5  # attacks before explosion
 BLOATER_EXPLODE_PCT = 0.65  # 65% max HP
 AMMO: dict[str, dict[str, Any]] = {
@@ -280,8 +291,11 @@ class Survivor:
     owned_ammo: list[str] = field(default_factory=lambda: ["Standard"]); owned_weapons: list[str] = field(default_factory=lambda: ["Pistol"])
     run_active: bool = False; wave: int = 0; zombies_remaining: int = 0; enemy: Enemy | None = None
     # --- Bloater tracking ---
+    # Kept for save compatibility/history; Bloater spawning is now chance-based
+    # with only a one-wave anti-consecutive safeguard.
     bloaters_spawned_this_run: int = 0
-    bloater_cooldown: int = 0  # waves since last bloater to avoid back-to-back
+    bloater_cooldown: int = 0
+    bloater_chance_steps: int = 0  # failed eligible rolls since the last Bloater
     # --- NEW: permanent upgrade counters ---
     damage_upgrades: int = 0; health_upgrades: int = 0; mag_upgrades: int = 0
     crit_upgrades: int = 0; armor_upgrades: int = 0; scavenger_upgrades: int = 0
@@ -410,7 +424,7 @@ class Survivor:
         allowed["spare_ammo"] = spare; allowed["enemy"] = enemy
         allowed.setdefault("painkillers_used_this_run", 0); allowed.setdefault("full_restores_used_this_run", 0)
         allowed.setdefault("run_money_earned", 0); allowed.setdefault("run_xp_earned", 0)
-        allowed.setdefault("bloaters_spawned_this_run", 0); allowed.setdefault("bloater_cooldown", 0)
+        allowed.setdefault("bloaters_spawned_this_run", 0); allowed.setdefault("bloater_cooldown", 0); allowed.setdefault("bloater_chance_steps", 0)
         allowed.setdefault("owned_ammo", ["Standard"]); allowed.setdefault("owned_weapons", ["Pistol"])
         allowed.setdefault("void_essence", 0)
         allowed.setdefault("void_weapon_level", 0)
@@ -477,22 +491,31 @@ def level_progress(player: Survivor) -> tuple[int, int]:
     return earned, xp_to_next_level(level)
 
 def _should_spawn_bloater(player: Survivor) -> bool:
-    """Decide if Bloater should spawn this enemy slot - balanced scaling"""
+    """Roll Bloater chance with a per-spawn reset-and-ramp system.
+
+    Each Bloater resets the chance to the zone's starting value. A failed
+    eligible roll increases the chance for the next eligible wave. The
+    one-wave cooldown guarantees no consecutive Bloater waves, and the 35%
+    cap guarantees normal zombies remain possible forever.
+    """
     if player.wave < BLOATER_MIN_WAVE:
         return False
-    max_allowed = BLOATER_MAX_PER_ZONE.get(player.zone_name, 1)
-    if player.bloaters_spawned_this_run >= max_allowed:
-        return False
     if player.bloater_cooldown > 0:
+        # This is the protected wave immediately after a Bloater. Do not let
+        # the ramp advance while the player is guaranteed a normal encounter.
+        player.bloater_cooldown -= 1
         return False
-    # Chance scales with wave: 5% at W5, +3% per wave, +2% per zone tier, cap 35%
-    try:
-        zone_idx = ZONE_ORDER.index(player.zone_name)
-    except:
-        zone_idx = 0
-    base_chance = 0.05 + (player.wave - BLOATER_MIN_WAVE) * 0.03 + zone_idx * 0.02
-    chance = min(0.35, base_chance)
-    return random.random() < chance
+
+    start_chance = BLOATER_ZONE_START_CHANCE.get(player.zone_name, 0.05)
+    step = BLOATER_ZONE_CHANCE_STEP.get(player.zone_name, 0.03)
+    chance = min(BLOATER_MAX_CHANCE, start_chance + player.bloater_chance_steps * step)
+
+    if random.random() < chance:
+        return True
+
+    # Failed eligible roll: increase pressure for the next eligible wave.
+    player.bloater_chance_steps += 1
+    return False
 
 def _make_bloater_enemy(player: Survivor) -> Enemy:
     zone = zone_for(player)
@@ -523,7 +546,8 @@ def spawn_enemy(player: Survivor) -> Enemy:
     if _should_spawn_bloater(player):
         bloater = _make_bloater_enemy(player)
         player.bloaters_spawned_this_run += 1
-        player.bloater_cooldown = 2  # no back-to-back bloaters
+        player.bloater_cooldown = 1  # prevent consecutive Bloater waves
+        player.bloater_chance_steps = 0  # reset chance after every Bloater
         # Solo wave: only bloater this round = reward
         player.zombies_remaining = 1
         return bloater
@@ -533,9 +557,6 @@ def spawn_enemy(player: Survivor) -> Enemy:
     base = ZOMBIES[name]
     health = int((base["health"] + (player.wave - 1) * 4) * zone["hp_mult"])
     damage = int((base["damage"] + (player.wave - 1) // 3) * zone["dmg_mult"])
-    # Decrement bloater cooldown if any
-    if player.bloater_cooldown > 0:
-        player.bloater_cooldown -= 1
     return Enemy(name=name, health=health, max_health=health, damage=damage, money_reward=int(base["money"]*zone["money_mult"]), xp_reward=int(base["xp"]*zone["xp_mult"]))
 
 def void_perk_level(player: Survivor, perk_name: str) -> int:
@@ -635,6 +656,7 @@ def start_run(player: Survivor) -> list[str]:
     player.run_zombies_killed = 0
     player.bloaters_spawned_this_run = 0
     player.bloater_cooldown = 0
+    player.bloater_chance_steps = 0
 
     # The Void Bazooka is a dedicated backup weapon: one ready shot per run.
     # Initialise this BEFORE the no-normal-ammo check so a Void player with
@@ -1618,7 +1640,23 @@ class GameStore:
     def __init__(self):
         self.players = {}
         self._save_count = 0
+        self._action_locks = {}
         self.load()
+
+    def action_lock(self, user_id: int):
+        """Return a per-player asyncio lock so rapid button clicks cannot race.
+
+        Combat messages are frequently edited while the same Survivor object is
+        being mutated. Serialising that mutation prevents overlapping Attack
+        interactions from stepping on each other or saving stale state.
+        """
+        import asyncio
+        key = str(user_id)
+        lock = self._action_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._action_locks[key] = lock
+        return lock
 
     @staticmethod
     def _player_dict(player):
@@ -1960,26 +1998,42 @@ class CombatView(PlayerView):
 
     @discord.ui.button(label="🔫 Attack", style=discord.ButtonStyle.danger, row=0)
     async def attack(self, interaction: discord.Interaction, _b):
-        # Defer immediately to avoid "This interaction failed" - we have 3s limit
+        # Acknowledge immediately, then serialize this player's combat actions.
+        # The previous implementation waited for PostgreSQL before updating the
+        # Discord message, which could make Attack feel progressively sluggish.
         await interaction.response.defer()
-        player = self.store.get(self.user_id)
-        msgs = take_action(player, "attack")
-        # Async save - doesn't block event loop, prevents DB lock timeouts
+        lock = self.store.action_lock(self.user_id)
+        async with lock:
+            player = self.store.get(self.user_id)
+            msgs = take_action(player, "attack")
+
+            if not player.run_active:
+                embed = discord.Embed(
+                    title="☠️ Run Ended",
+                    description="\n".join(msgs),
+                    color=discord.Color.red()
+                )
+                embed.add_field(name="🌊 Waves", value=f"{player.wave - 1 if player.run_zombies_killed>0 else 0} survived\nReached Wave {player.wave}", inline=True)
+                embed.add_field(name="🧟 Kills", value=f"{player.run_zombies_killed} zombies", inline=True)
+                embed.add_field(name="💰 Rewards", value=f"+${player.run_money_earned}\n+{player.run_xp_earned} XP", inline=True)
+                embed.set_footer(text=f"HP restored to {player.max_health}/{player.max_health} • Press any button to continue")
+                await interaction.edit_original_response(
+                    content=None,
+                    embed=embed,
+                    view=RunEndedView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), end_embed=embed)
+                )
+            else:
+                # CombatView has no per-attack dynamic controls, so keep the
+                # existing view instead of constructing a fresh View every shot.
+                # This reduces object churn and avoids repeatedly replacing the
+                # button callback tree during a long run.
+                embed = combat_embed(player, msgs)
+                await interaction.edit_original_response(content=None, embed=embed, view=self)
+
+        # Persist after the player has received the visible combat update. The
+        # save remains mandatory, but DB latency no longer sits in front of the
+        # Discord response that makes the Attack button feel responsive.
         await self.store.save_one_async(str(self.user_id))
-        if not player.run_active:
-            embed = discord.Embed(
-                title="☠️ Run Ended",
-                description="\n".join(msgs),
-                color=discord.Color.red()
-            )
-            embed.add_field(name="🌊 Waves", value=f"{player.wave - 1 if player.run_zombies_killed>0 else 0} survived\nReached Wave {player.wave}", inline=True)
-            embed.add_field(name="🧟 Kills", value=f"{player.run_zombies_killed} zombies", inline=True)
-            embed.add_field(name="💰 Rewards", value=f"+${player.run_money_earned}\n+{player.run_xp_earned} XP", inline=True)
-            embed.set_footer(text=f"HP restored to {player.max_health}/{player.max_health} • Press any button to continue")
-            await interaction.edit_original_response(content=None, embed=embed, view=RunEndedView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), end_embed=embed))
-        else:
-            embed = combat_embed(player, msgs)
-            await interaction.edit_original_response(content=None, embed=embed, view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
 
     @discord.ui.button(label="💥 Void Bazooka", style=discord.ButtonStyle.secondary, row=1)
     async def void_bazooka(self, interaction: discord.Interaction, _b):
@@ -3248,6 +3302,7 @@ async def setwave(interaction: discord.Interaction, wave: int, user: discord.Use
         player.enemy = None
         player.bloater_cooldown = 0
         player.bloaters_spawned_this_run = 0
+        player.bloater_chance_steps = 0
         player.void_bazooka_boss_fired = False
         player.void_infusion_cooldown = 0
         player.void_shield_cooldown = 0
