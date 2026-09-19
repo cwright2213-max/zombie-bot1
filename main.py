@@ -42,9 +42,16 @@ def combat_embed(player, last_msgs=None):
         title=f"🧟 {player.zone_name} — WAVE {player.wave} | {player.zombies_remaining} zombies left",
         color=discord.Color.from_rgb(200, 50, 50) if p_pct < 30 else discord.Color.from_rgb(50, 180, 80)
     )
+    survivor_lines = [
+        f"`{p_bar}`",
+        f"🔫 {player.weapon_name} {player.magazine}/{player.magazine_size} ({player.get_spare()} spare) [{player.ammo_name}]",
+    ]
+    if player.zone_name == "The Void":
+        survivor_lines.append(f"◈ Bazooka: {player.void_bazooka_ammo} shot(s) ready | Lvl {player.void_weapon_level}/10")
+        survivor_lines.append("◈ **Void Perks:** Use the **Void Perks** button below to view effects and activate them.")
     embed.add_field(
         name=f"❤️ You: {player.health}/{player.max_health} HP ({p_pct}%)",
-        value=f"`{p_bar}`\n🔫 {player.weapon_name} {player.magazine}/{player.magazine_size} ({player.get_spare()} spare) [{player.ammo_name}]\n◈ Void Bazooka: {player.void_bazooka_ammo} shot(s) ready | Lvl {player.void_weapon_level}/10\n◈ Perks: {_void_perk_status(player)}",
+        value="\n".join(survivor_lines),
         inline=False
     )
     embed.add_field(
@@ -2038,7 +2045,7 @@ class CombatView(PlayerView):
         if player.zone_name != "The Void":
             for item in list(self.children):
                 if getattr(item, "label", "") in {
-                    "💥 Void Bazooka", "⚡ Infusion", "🛡️ Shield", "☠️ Execution"
+                    "💥 Void Bazooka", "◈ Void Perks"
                 }:
                     self.remove_item(item)
 
@@ -2097,26 +2104,11 @@ class CombatView(PlayerView):
             embed=combat_embed(player,msgs)
             await interaction.edit_original_response(content=None, embed=embed, view=CombatView(self.user_id,self.store,display_name=getattr(self,"display_name","Survivor")))
 
-    @discord.ui.button(label="⚡ Infusion", style=discord.ButtonStyle.success, row=2)
-    async def void_infusion(self, interaction: discord.Interaction, _b):
-        await interaction.response.defer()
-        player=self.store.get(self.user_id); msgs=take_action(player, "void_infusion")
-        await self.store.save_one_async(str(self.user_id))
-        await interaction.edit_original_response(content=None, embed=combat_embed(player, msgs), view=CombatView(self.user_id,self.store,display_name=getattr(self,"display_name","Survivor")))
-
-    @discord.ui.button(label="🛡️ Shield", style=discord.ButtonStyle.success, row=2)
-    async def void_shield(self, interaction: discord.Interaction, _b):
-        await interaction.response.defer()
-        player=self.store.get(self.user_id); msgs=take_action(player, "void_shield")
-        await self.store.save_one_async(str(self.user_id))
-        await interaction.edit_original_response(content=None, embed=combat_embed(player, msgs), view=CombatView(self.user_id,self.store,display_name=getattr(self,"display_name","Survivor")))
-
-    @discord.ui.button(label="☠️ Execution", style=discord.ButtonStyle.success, row=2)
-    async def void_execution(self, interaction: discord.Interaction, _b):
-        await interaction.response.defer()
-        player=self.store.get(self.user_id); msgs=take_action(player, "void_execution")
-        await self.store.save_one_async(str(self.user_id))
-        await interaction.edit_original_response(content=None, embed=combat_embed(player, msgs), view=CombatView(self.user_id,self.store,display_name=getattr(self,"display_name","Survivor")))
+    @discord.ui.button(label="◈ Void Perks", style=discord.ButtonStyle.secondary, row=1)
+    async def void_perks(self, interaction: discord.Interaction, _b):
+        player = self.store.get(self.user_id)
+        view = VoidPerkView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"))
+        await interaction.response.edit_message(content=None, embed=view.get_embed(player), view=view)
 
     @discord.ui.button(label="🔄 Reload", style=discord.ButtonStyle.primary, row=0)
     async def reload(self, interaction: discord.Interaction, _b):
@@ -2195,6 +2187,108 @@ class CombatView(PlayerView):
         await interaction.edit_original_response(content=None, embed=embed, view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
 
 
+
+
+class VoidPerkView(PlayerView):
+    """Dedicated Void perk panel so combat stays clean and readable."""
+    PERKS = (
+        ("Void Infusion", "⚡", "Boosts your next eligible attack."),
+        ("Void Shield", "🛡️", "Reduces the next actual incoming hit."),
+        ("Void Execution", "☠️", "Arms below 50% enemy HP for a heavy finishing bonus."),
+    )
+
+    def __init__(self, user_id: int, store, display_name: str = "Survivor", timeout: float = 180):
+        super().__init__(user_id, store, display_name, timeout)
+        player = self.store.get(user_id)
+        self.clear_items()
+
+        for perk_name, icon, _desc in self.PERKS:
+            lvl = void_perk_level(player, perk_name)
+            if lvl <= 0:
+                label = f"{icon} {perk_name.split()[-1]} 🔒"
+                style = discord.ButtonStyle.secondary
+            elif getattr(player, {"Void Infusion":"void_infusion_active", "Void Shield":"void_shield_active", "Void Execution":"void_execution_active"}[perk_name], False):
+                label = f"{icon} {perk_name.split()[-1]} ARMED"
+                style = discord.ButtonStyle.success
+            else:
+                label = f"{icon} {perk_name.split()[-1]} L{lvl}"
+                style = discord.ButtonStyle.primary
+
+            btn = discord.ui.Button(label=label, style=style, row=0, disabled=(lvl <= 0))
+            async def perk_cb(interaction: discord.Interaction, pn=perk_name):
+                await interaction.response.defer()
+                p = self.store.get(self.user_id)
+                msgs = take_action(p, pn.lower().replace(" ", "_"))
+                await self.store.save_one_async(str(self.user_id))
+                if p.run_active:
+                    await interaction.edit_original_response(
+                        content=None,
+                        embed=combat_embed(p, msgs),
+                        view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")),
+                    )
+                else:
+                    await interaction.edit_original_response(
+                        content=None,
+                        embed=combat_embed(p, msgs),
+                        view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")),
+                    )
+            btn.callback = perk_cb
+            self.add_item(btn)
+
+        back = discord.ui.Button(label="⬅️ Back to Combat", style=discord.ButtonStyle.secondary, row=1)
+        async def back_cb(interaction: discord.Interaction):
+            p = self.store.get(self.user_id)
+            await interaction.response.edit_message(
+                content=None,
+                embed=combat_embed(p, ["◈ Void Perks panel closed."]),
+                view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")),
+            )
+        back.callback = back_cb
+        self.add_item(back)
+
+    def get_embed(self, player, extra_msgs=None):
+        embed = discord.Embed(
+            title="◈ THE VOID — PERKS",
+            description=(
+                f"**Essence:** ◈{player.void_essence:,}\n"
+                "Choose a perk to activate it. Unlocking and upgrading happens in the Void shop."
+            ),
+            color=discord.Color.dark_purple(),
+        )
+        for perk_name, icon, desc in self.PERKS:
+            lvl = void_perk_level(player, perk_name)
+            spec = VOID_PERKS[perk_name]
+            bonus = int(void_perk_bonus(player, perk_name) * 100)
+            cost = spec["activation_cost"]
+            cooldown_field = {"Void Infusion":"void_infusion_cooldown", "Void Shield":"void_shield_cooldown", "Void Execution":"void_execution_cooldown"}[perk_name]
+            active_field = {"Void Infusion":"void_infusion_active", "Void Shield":"void_shield_active", "Void Execution":"void_execution_active"}[perk_name]
+            cooldown = getattr(player, cooldown_field, 0)
+            active = getattr(player, active_field, False)
+
+            if lvl <= 0:
+                status = "🔒 Locked — unlock in Void shop"
+            elif active:
+                status = f"🟢 ARMED • +{bonus}% effect"
+            elif cooldown > 0:
+                status = f"⏳ {cooldown} zombie(s) cooldown"
+            else:
+                status = f"🟣 Ready • ◈{cost} activation"
+
+            effect = (
+                f"+{bonus}% next attack" if perk_name == "Void Infusion" else
+                f"-{bonus}% next incoming hit" if perk_name == "Void Shield" else
+                f"+{bonus}% damage when enemy is ≤50% HP"
+            )
+            embed.add_field(
+                name=f"{icon} {perk_name} — L{lvl}/10",
+                value=f"{desc}\n**Effect:** {effect}\n**Status:** {status}",
+                inline=False,
+            )
+
+        if extra_msgs:
+            embed.add_field(name="⚔️ Result", value="\n".join(extra_msgs)[:1024], inline=False)
+        embed.set_footer(text="Activation costs Essence • Cooldowns reset after enough kills")
+        return embed
 
 
 class HealView(PlayerView):
