@@ -373,6 +373,8 @@ class Survivor:
     highest_wave_dates: dict[str, str] = field(default_factory=dict)
     leaderboard_name: str = "Survivor"
     leaderboard_guilds: list[str] = field(default_factory=list)
+    # Daily Survivor Crate cooldown (UTC ISO timestamp of last claim).
+    daily_claimed_at: str | None = None
     # Persistent flag so admin test runs stay excluded from leaderboards even across restarts.
     admin_test_mode: bool = False
     @property
@@ -520,6 +522,7 @@ class Survivor:
         allowed.setdefault("highest_wave_dates", {})
         allowed.setdefault("leaderboard_name", data.get("leaderboard_name", "Survivor"))
         allowed.setdefault("leaderboard_guilds", [])
+        allowed.setdefault("daily_claimed_at", None)
         allowed.setdefault("admin_test_mode", False)
         if "Pistol" not in allowed["owned_weapons"]: allowed["owned_weapons"].append("Pistol")
         allowed["equipped_weapon"] = allowed.get("weapon_name", "Pistol")
@@ -1662,6 +1665,59 @@ def _grant_random_elemental_drop(player: Survivor) -> list[str]:
 
 
 
+DAILY_COOLDOWN_SECONDS = 24 * 60 * 60
+
+def daily_crate_rewards(player: Survivor) -> tuple[int, int, int]:
+    """Small level-scaled daily reward: cash, Standard ammo, XP."""
+    cash = min(100 + player.level * 5, 1100)
+    ammo = min(10 + player.level // 10, 30)
+    xp = min(50 + player.level * 2, 400)
+    return cash, ammo, xp
+
+def daily_crate_status(player: Survivor) -> tuple[bool, int]:
+    """Return (claimable, seconds_remaining) using UTC and a persistent timestamp."""
+    if not player.daily_claimed_at:
+        return True, 0
+    try:
+        last = datetime.fromisoformat(player.daily_claimed_at)
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=timezone.utc)
+        elapsed = (datetime.now(timezone.utc) - last).total_seconds()
+        remaining = max(0, int(DAILY_COOLDOWN_SECONDS - elapsed))
+        return remaining <= 0, remaining
+    except (TypeError, ValueError):
+        # Corrupt/legacy timestamp: let the survivor claim and replace it.
+        return True, 0
+
+def format_duration(seconds: int) -> str:
+    hours, rem = divmod(max(0, seconds), 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours:
+        return f"{hours}h {minutes}m"
+    if minutes:
+        return f"{minutes}m {secs}s"
+    return f"{secs}s"
+
+def claim_daily_crate(player: Survivor) -> list[str]:
+    """Claim the daily crate. Returns player-facing messages."""
+    claimable, remaining = daily_crate_status(player)
+    if not claimable:
+        return [f"⏳ **Daily crate already claimed.** Come back in **{format_duration(remaining)}**."]
+
+    cash, ammo, xp = daily_crate_rewards(player)
+    player.money += cash
+    player.spare_ammo["Standard"] = player.spare_ammo.get("Standard", 0) + ammo
+    player.xp += xp
+    player.daily_claimed_at = datetime.now(timezone.utc).isoformat()
+
+    return [
+        "🎁 **DAILY SURVIVOR CRATE OPENED!**",
+        f"💵 **+${cash} Cash**",
+        f"🔫 **+{ammo} Standard Ammo**",
+        f"✨ **+{xp} XP**",
+    ]
+
+
 def status(player: Survivor, display_name: str = "Survivor") -> str:
     """Fisher-style inventory with real player name wired in"""
     earned, needed = level_progress(player)
@@ -2073,8 +2129,24 @@ class ZombieMenuView(PlayerView):
         # Ammo and permanent upgrades are accessed through the main Shop now.
         # They are intentionally not shown as separate buttons on the main menu.
 
+        # Daily crate is always available from the main menu; claiming itself
+        # is blocked by the persistent 24-hour cooldown.
+        btn_daily = discord.ui.Button(label="🎁 Daily Crate", style=discord.ButtonStyle.success, row=2)
+        async def daily_cb(interaction: discord.Interaction):
+            p = self.store.get(self.user_id)
+            msgs = claim_daily_crate(p)
+            if msgs and msgs[0].startswith("🎁"):
+                await self.store.save_one_async(str(self.user_id))
+            await interaction.response.edit_message(
+                content="\n".join(msgs) + "\n\n" + status(p, display_name=getattr(self, "display_name", "Survivor")),
+                embed=None,
+                view=ZombieMenuView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")),
+            )
+        btn_daily.callback = daily_cb
+        self.add_item(btn_daily)
+
         # ROW 2: Refresh
-        btn_refresh = discord.ui.Button(label="🔄 Refresh", style=discord.ButtonStyle.secondary, row=1)
+        btn_refresh = discord.ui.Button(label="🔄 Refresh", style=discord.ButtonStyle.secondary, row=2)
         async def refresh_cb(interaction: discord.Interaction):
             p = self.store.get(self.user_id)
             name = getattr(self, "display_name", "Survivor")
@@ -3323,6 +3395,19 @@ async def zombie_cmd(interaction: discord.Interaction):
             await interaction.followup.send(f"❌ Bot error: {e}\n```{traceback.format_exc()[:1500]}```", ephemeral=True)
         except:
             pass
+
+@bot.tree.command(name="daily", description="Claim your free Daily Survivor Crate")
+async def daily_cmd(interaction: discord.Interaction):
+    await interaction.response.defer()
+    player = game_store.get(interaction.user.id)
+    name = getattr(interaction.user, "display_name", None) or getattr(interaction.user, "global_name", None) or interaction.user.name
+    msgs = claim_daily_crate(player)
+    if msgs and msgs[0].startswith("🎁"):
+        await game_store.save_one_async(str(interaction.user.id))
+    await interaction.followup.send(
+        content="\\n".join(msgs) + "\\n\\n" + status(player, display_name=name),
+        view=ZombieMenuView(interaction.user.id, game_store, display_name=name),
+    )
 
 @bot.tree.command(name="leaderboard", description="View Zombie Survival leaderboards")
 @app_commands.describe(scope="Global, server, or personal records", zone="Zone to view")
