@@ -1754,13 +1754,23 @@ class RunEndedView(PlayerView):
         btn_continue.callback = cont_cb
         self.add_item(btn_continue)
 
-        btn_shop = discord.ui.Button(label="🛒 Shop", style=discord.ButtonStyle.primary, row=0)
-        async def shop_cb(interaction: discord.Interaction):
-            p = self.store.get(self.user_id)
-            hub = ShopHubView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"))
-            await interaction.response.edit_message(content=hub.get_shop_text(p), embed=None, view=hub)
-        btn_shop.callback = shop_cb
-        self.add_item(btn_shop)
+        # Shopping is preparation-only. Do not even expose the Shop button while
+        # a run is active; the purchase functions also enforce this server-side.
+        if not is_active:
+            btn_shop = discord.ui.Button(label="🛒 Shop", style=discord.ButtonStyle.primary, row=0)
+            async def shop_cb(interaction: discord.Interaction):
+                p = self.store.get(self.user_id)
+                if p.run_active:
+                    await interaction.response.edit_message(
+                        content=None,
+                        embed=combat_embed(p, ["🚫 **Shopping is locked during a run.** Flee or finish the run first."]),
+                        view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")),
+                    )
+                    return
+                hub = ShopHubView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"))
+                await interaction.response.edit_message(content=hub.get_shop_text(p), embed=None, view=hub)
+            btn_shop.callback = shop_cb
+            self.add_item(btn_shop)
 
         btn_again = discord.ui.Button(label="▶️ Start Run", style=discord.ButtonStyle.primary, row=0)
         async def again_cb(interaction: discord.Interaction):
@@ -2183,31 +2193,49 @@ class ShopHubView(PlayerView):
     @discord.ui.button(label="🔫", style=discord.ButtonStyle.primary, row=0)
     async def weapons_btn(self, interaction: discord.Interaction, _b):
         p=self.store.get(self.user_id)
+        if p.run_active:
+            await interaction.response.edit_message(content=None, embed=combat_embed(p, ["🚫 **Shopping is locked during a run.** Flee or finish the run first."]), view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+            return
         await interaction.response.edit_message(content=WeaponShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")).get_shop_text(p), embed=None, view=WeaponShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
 
     @discord.ui.button(label="🧪", style=discord.ButtonStyle.primary, row=0)
     async def ammo_btn(self, interaction: discord.Interaction, _b):
         p=self.store.get(self.user_id)
+        if p.run_active:
+            await interaction.response.edit_message(content=None, embed=combat_embed(p, ["🚫 **Ammo shopping is locked during a run.** Flee or finish the run first."]), view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+            return
         await interaction.response.edit_message(content=AmmoShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")).get_shop_text(p), embed=None, view=AmmoShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
 
     @discord.ui.button(label="💊", style=discord.ButtonStyle.primary, row=0)
     async def meds_btn(self, interaction: discord.Interaction, _b):
         p=self.store.get(self.user_id)
+        if p.run_active:
+            await interaction.response.edit_message(content=None, embed=combat_embed(p, ["🚫 **Med shopping is locked during a run.** Flee or finish the run first."]), view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+            return
         await interaction.response.edit_message(content=MedsShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")).get_shop_text(p), embed=None, view=MedsShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
 
     @discord.ui.button(label="⬆️", style=discord.ButtonStyle.primary, row=0)
     async def upgrades_btn(self, interaction: discord.Interaction, _b):
         p=self.store.get(self.user_id)
+        if p.run_active:
+            await interaction.response.edit_message(content=None, embed=combat_embed(p, ["🚫 **Shopping is locked during a run.** Flee or finish the run first."]), view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+            return
         await interaction.response.edit_message(content=UpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")).get_shop_text(p), embed=None, view=UpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
 
     @discord.ui.button(label="⭐", style=discord.ButtonStyle.primary, row=1)
     async def stars_btn(self, interaction: discord.Interaction, _b):
         p=self.store.get(self.user_id)
+        if p.run_active:
+            await interaction.response.edit_message(content=None, embed=combat_embed(p, ["🚫 **Shopping is locked during a run.** Flee or finish the run first."]), view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+            return
         await interaction.response.edit_message(content=StarUpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")).get_shop_text(p), embed=None, view=StarUpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
 
     @discord.ui.button(label="◈", style=discord.ButtonStyle.primary, row=1)
     async def void_btn(self, interaction: discord.Interaction, _b):
         p=self.store.get(self.user_id)
+        if p.run_active:
+            await interaction.response.edit_message(content=None, embed=combat_embed(p, ["🚫 **Shopping is locked during a run.** Flee or finish the run first."]), view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+            return
         view = VoidUpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"))
         await interaction.response.edit_message(content=None, embed=view.get_shop_embed(p), view=view)
 
@@ -2361,6 +2389,9 @@ class AmmoShopView(PlayerView):
             btn = discord.ui.Button(label=label[:80], style=style, row=0 if i < 3 else 1)
             async def cb(interaction, an=ammo_name):
                 p=self.store.get(self.user_id)
+                if p.run_active:
+                    await interaction.response.edit_message(content=None, embed=combat_embed(p, ["🚫 **Ammo shopping is locked during a run.** Flee or finish the run first."]), view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+                    return
                 msgs = []
                 success = True
                 if an not in p.owned_ammo:
@@ -2400,6 +2431,9 @@ class AmmoShopView(PlayerView):
             btn = discord.ui.Button(label=label[:80], style=discord.ButtonStyle.primary, row=row)
             async def bulk_cb(interaction, q=qty, ammo=self.selected_ammo):
                 p=self.store.get(self.user_id)
+                if p.run_active:
+                    await interaction.response.edit_message(content=None, embed=combat_embed(p, ["🚫 **Ammo shopping is locked during a run.** Flee or finish the run first."]), view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+                    return
                 msgs = buy_ammo_boxes(p, ammo, q)
                 self.store.save()
                 content = self.get_shop_text(p, selected_override=ammo, extra_msgs=msgs)
@@ -2497,6 +2531,9 @@ class MedsShopView(PlayerView):
             btn = discord.ui.Button(label=label[:80], style=discord.ButtonStyle.primary, row=row)
             async def bulk_cb(interaction, q=qty, med=self.selected_med):
                 p = self.store.get(self.user_id)
+                if p.run_active:
+                    await interaction.response.edit_message(content=None, embed=combat_embed(p, ["🚫 **Med shopping is locked during a run.** Flee or finish the run first."]), view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+                    return
                 total_cost = (15 if med == "painkillers" else 80) * q
 
                 if p.money < total_cost:
