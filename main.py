@@ -648,6 +648,9 @@ def start_run(player: Survivor) -> list[str]:
     player.void_infusion_active = False
     player.void_shield_active = False
     player.void_execution_active = False
+    # Normal runs are eligible for leaderboard records. /setwave temporarily
+    # marks a run as an admin test and prevents those test clears from scoring.
+    player.admin_test_mode = False
 
     if player.magazine == 0:
         spare = player.get_spare()
@@ -824,8 +827,10 @@ def _finish_enemy(player: Survivor) -> list[str]:
         if player.zone_name == "The Void" and player.wave >= VOID_ESSENCE_WAVE_START:
             player.void_essence += VOID_ESSENCE_PER_VOID_WAVE
             messages.append(f"◈ **Void Essence +{VOID_ESSENCE_PER_VOID_WAVE}** for clearing Void wave {player.wave}!")
-        # Leaderboards record ONLY fully completed waves. The server list is populated whenever the player uses the bot in a guild.
-        record_completed_wave(player, player.wave)
+        # Leaderboards record ONLY fully completed waves. Admin /setwave test runs
+        # are deliberately excluded so high-wave testing cannot pollute real records.
+        if not getattr(player, "admin_test_mode", False):
+            record_completed_wave(player, player.wave)
         if getattr(player, "leaderboard_name", None) is None:
             player.leaderboard_name = "Survivor"
         player.spare_ammo[player.ammo_name] = player.spare_ammo.get(player.ammo_name, 0) + (10 if was_bloater else 5)
@@ -3101,6 +3106,53 @@ async def give_admin(interaction: discord.Interaction, user: discord.Member):
 
 # Register the /give command group with Discord.
 bot.tree.add_command(give_group)
+
+
+@bot.tree.command(name="setwave", description="[ADMIN] Set a player's current test wave")
+@app_commands.describe(wave="Wave to jump to (1-10000)", user="Player to set (leave empty for yourself)")
+async def setwave(interaction: discord.Interaction, wave: int, user: discord.User = None):
+    if not has_admin_commands(interaction):
+        await interaction.response.send_message(admin_denied_message(), ephemeral=True)
+        return
+    if wave < 1 or wave > 10000:
+        await interaction.response.send_message("❌ Wave must be between **1 and 10,000**.", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    target = user or interaction.user
+    player = game_store.get(target.id)
+
+    # If the player is not currently running, initialise a normal run first.
+    # Then jump directly to the requested wave and create a fresh encounter.
+    if not player.run_active:
+        start_run(player)
+
+    player.run_active = True
+    player.wave = int(wave)
+    player.zombies_remaining = 3
+    player.enemy = None
+    player.bloater_cooldown = 0
+    player.bloaters_spawned_this_run = 0
+    player.void_bazooka_boss_fired = False
+    player.void_infusion_cooldown = 0
+    player.void_shield_cooldown = 0
+    player.void_execution_cooldown = 0
+    player.void_infusion_active = False
+    player.void_shield_active = False
+    player.void_execution_active = False
+    player.admin_test_mode = True
+    player.enemy = spawn_enemy(player)
+
+    game_store.save_one(str(target.id))
+    embed = combat_embed(
+        player,
+        [
+            f"🧪 **ADMIN TEST MODE** — jumped {target.mention} to **Wave {player.wave}**.",
+            f"🧟 **{player.enemy.name}** appears with **{player.enemy.health} HP**.",
+            "🏆 Waves completed in this test run **will NOT affect leaderboards**."
+        ],
+    )
+    await interaction.followup.send(embed=embed, view=CombatView(target.id, game_store), ephemeral=True)
 
 
 @bot.tree.command(name="addmoney", description="[ADMIN] Add money to a player")
