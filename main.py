@@ -92,7 +92,7 @@ AMMO: dict[str, dict[str, Any]] = {
     "Incendiary": {"unlock_level": 35, "price": 600, "desc": "30% burn 20 dmg x3", "effect": "burn", "cost_per_attack": 3, "box_price": 100, "box_amount": 24},
     "Frostbite": {"unlock_level": 70, "price": 1200, "desc": "25% freeze halves dmg x4 + 10 dmg x2", "effect": "freeze", "cost_per_attack": 4, "box_price": 100, "box_amount": 24},
     "Toxic": {"unlock_level": 110, "price": 2500, "desc": "40% poison 18 dmg x5", "effect": "poison", "cost_per_attack": 5, "box_price": 150, "box_amount": 24},
-    "Shock": {"unlock_level": 160, "price": 5000, "desc": "20% stun 1 turn + 30 dmg", "effect": "shock", "cost_per_attack": 6, "box_price": 185, "box_amount": 24},
+    "Shock": {"unlock_level": 160, "price": 5000, "desc": "20% stun 1 turn + 20 dmg", "effect": "shock", "cost_per_attack": 6, "box_price": 185, "box_amount": 24},
 }
 WEAPONS: dict[str, dict[str, Any]] = {
     "Pistol": {"damage": 20, "mag": 12, "price": 0, "unlock_level": 1, "shots": 1},
@@ -623,17 +623,8 @@ def _void_perk_status(player: Survivor) -> str:
 def start_run(player: Survivor) -> list[str]:
     if player.run_active:
         return ["⚠️ Already in a run!"]
+
     player.health = player.max_health
-    # Allow start with no ammo - player will get overwhelmed message
-    if player.get_spare() <= 0 and player.magazine <= 0:
-        player.wave = 1; player.zombies_remaining = 3; player.run_active = True; player.enemy = spawn_enemy(player)
-        return [f"⚠️ You started with NO {player.ammo_name} ammo! The hoard smells blood...", f"Wave {player.wave}: **{player.enemy.name}** ({player.enemy.health} HP) - you\'re about to get overwhelmed!"]
-    if player.magazine == 0:
-        spare = player.get_spare()
-        if spare > 0:
-            load_amt = min(player.magazine_size, spare)
-            player.magazine = load_amt
-            player.spare_ammo[player.ammo_name] = spare - load_amt
     player.painkillers_used_this_run = 0
     player.full_restores_used_this_run = 0
     player.run_money_earned = 0
@@ -641,17 +632,50 @@ def start_run(player: Survivor) -> list[str]:
     player.run_zombies_killed = 0
     player.bloaters_spawned_this_run = 0
     player.bloater_cooldown = 0
+
     # The Void Bazooka is a dedicated backup weapon: one ready shot per run.
-    player.void_bazooka_ammo = (VOID_BAZOOKA_FREE_AMMO_PER_RUN if "Void Bazooka" in player.void_weapons_owned and player.zone_name == "The Void" else 0)
+    # Initialise this BEFORE the no-normal-ammo check so a Void player with
+    # zero primary ammo can still start and use the free Bazooka shot.
+    player.void_bazooka_ammo = (
+        VOID_BAZOOKA_FREE_AMMO_PER_RUN
+        if "Void Bazooka" in player.void_weapons_owned and player.zone_name == "The Void"
+        else 0
+    )
     player.void_bazooka_boss_fired = False
-    player.void_infusion_cooldown = 0; player.void_shield_cooldown = 0; player.void_execution_cooldown = 0
-    player.void_infusion_active = False; player.void_shield_active = False; player.void_execution_active = False
+    player.void_infusion_cooldown = 0
+    player.void_shield_cooldown = 0
+    player.void_execution_cooldown = 0
+    player.void_infusion_active = False
+    player.void_shield_active = False
+    player.void_execution_active = False
+
+    if player.magazine == 0:
+        spare = player.get_spare()
+        if spare > 0:
+            load_amt = min(player.magazine_size, spare)
+            player.magazine = load_amt
+            player.spare_ammo[player.ammo_name] = spare - load_amt
+
     player.wave = 1
     player.zombies_remaining = 3
     player.run_active = True
     player.enemy = spawn_enemy(player)
+
+    # A free Void Bazooka shot is a valid way to start a run even when the
+    # player has no normal ammo. Only show the overwhelmed state when there is
+    # genuinely no way to attack.
+    if player.get_spare() <= 0 and player.magazine <= 0 and player.void_bazooka_ammo <= 0:
+        return [
+            f"⚠️ You started with NO {player.ammo_name} ammo! The hoard smells blood...",
+            f"Wave {player.wave}: **{player.enemy.name}** ({player.enemy.health} HP) - you're about to get overwhelmed!",
+        ]
+
     cost = AMMO[player.ammo_name]["cost_per_attack"]
-    return [f"🧟 **Run started in {player.zone_name}** | Using **{player.ammo_name}** ({cost}/shot)", f"Wave {player.wave}: **{player.enemy.name}** ({player.enemy.health} HP)"]
+    bazooka_note = " • 💥 Free Bazooka shot ready" if player.void_bazooka_ammo > 0 else ""
+    return [
+        f"🧟 **Run started in {player.zone_name}** | Using **{player.ammo_name}** ({cost}/shot){bazooka_note}",
+        f"Wave {player.wave}: **{player.enemy.name}** ({player.enemy.health} HP)",
+    ]
 
 def action_help(player: Survivor) -> str:
     if player.enemy is None:
@@ -1876,6 +1900,18 @@ class ZombieMenuView(PlayerView):
 
 
 class CombatView(PlayerView):
+    def __init__(self, user_id: int, store, display_name: str = "Survivor", timeout: float = 180):
+        super().__init__(user_id, store, display_name, timeout)
+        # Void-only controls stay out of ordinary-zone combat instead of
+        # cluttering the UI with buttons that cannot be used there.
+        player = self.store.get(user_id)
+        if player.zone_name != "The Void":
+            for item in list(self.children):
+                if getattr(item, "label", "") in {
+                    "💥 Void Bazooka", "⚡ Infusion", "🛡️ Shield", "☠️ Execution"
+                }:
+                    self.remove_item(item)
+
     @discord.ui.button(label="🔫 Attack", style=discord.ButtonStyle.danger, row=0)
     async def attack(self, interaction: discord.Interaction, _b):
         # Defer immediately to avoid "This interaction failed" - we have 3s limit
@@ -2134,7 +2170,7 @@ class WeaponShopView(PlayerView):
         self.selected_weapon = selected_weapon or player.weapon_name
         self.clear_items()
 
-        for i, wname in enumerate(["Pistol", "Shotgun", "Rifle", "SMG", "Sawed-Off"]):
+        for i, wname in enumerate(["Pistol", "Shotgun", "Rifle", "SMG", "Sawed-Off", "Tactical Sniper"]):
             if wname not in WEAPONS:
                 continue
             owned = wname in player.owned_weapons
@@ -2209,7 +2245,7 @@ class WeaponShopView(PlayerView):
         lines.append(f"Your balance: **${player.money:,}**")
         lines.append(f"Selected: 🔫 **{sel}**")
         lines.append("---")
-        for wname in ["Pistol", "Shotgun", "Rifle", "SMG", "Sawed-Off"]:
+        for wname in ["Pistol", "Shotgun", "Rifle", "SMG", "Sawed-Off", "Tactical Sniper"]:
             if wname not in WEAPONS:
                 continue
             w = WEAPONS[wname]
@@ -2218,7 +2254,7 @@ class WeaponShopView(PlayerView):
             marker = " ← SELECTED" if is_sel else ""
             status_str = "Owned" if owned else f"LOCKED Level {w['unlock_level']} - ${w['price']}"
             if owned:
-                status_str = f"Owned - Dmg {w.get('damage', '?')} | Mag {w.get('mag_size', '?')}"
+                status_str = f"Owned - Dmg {w.get('damage', '?')} | Mag {w.get('mag_size', w.get('mag', '?'))}"
             lines.append(f"🔫 **{wname}**{marker}")
             lines.append(f"{status_str}")
             lines.append(f"{w.get('desc','')}")
