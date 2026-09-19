@@ -1754,23 +1754,23 @@ class RunEndedView(PlayerView):
         btn_continue.callback = cont_cb
         self.add_item(btn_continue)
 
-        # Shopping is preparation-only. Do not even expose the Shop button while
-        # a run is active; the purchase functions also enforce this server-side.
-        if not is_active:
-            btn_shop = discord.ui.Button(label="🛒 Shop", style=discord.ButtonStyle.primary, row=0)
-            async def shop_cb(interaction: discord.Interaction):
-                p = self.store.get(self.user_id)
-                if p.run_active:
-                    await interaction.response.edit_message(
-                        content=None,
-                        embed=combat_embed(p, ["🚫 **Shopping is locked during a run.** Flee or finish the run first."]),
-                        view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")),
-                    )
-                    return
-                hub = ShopHubView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"))
-                await interaction.response.edit_message(content=hub.get_shop_text(p), embed=None, view=hub)
-            btn_shop.callback = shop_cb
-            self.add_item(btn_shop)
+        # A RunEndedView is only shown after the run has ended, so shopping is
+        # available again here. The purchase functions still enforce the
+        # no-shopping-during-run rule as a second layer of protection.
+        btn_shop = discord.ui.Button(label="🛒 Shop", style=discord.ButtonStyle.primary, row=0)
+        async def shop_cb(interaction: discord.Interaction):
+            p = self.store.get(self.user_id)
+            if p.run_active:
+                await interaction.response.edit_message(
+                    content=None,
+                    embed=combat_embed(p, ["🚫 **Shopping is locked during a run.** Flee or finish the run first."]),
+                    view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")),
+                )
+                return
+            hub = ShopHubView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"))
+            await interaction.response.edit_message(content=hub.get_shop_text(p), embed=None, view=hub)
+        btn_shop.callback = shop_cb
+        self.add_item(btn_shop)
 
         btn_again = discord.ui.Button(label="▶️ Start Run", style=discord.ButtonStyle.primary, row=0)
         async def again_cb(interaction: discord.Interaction):
