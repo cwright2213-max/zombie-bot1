@@ -44,7 +44,7 @@ def combat_embed(player, last_msgs=None):
     )
     embed.add_field(
         name=f"❤️ You: {player.health}/{player.max_health} HP ({p_pct}%)",
-        value=f"`{p_bar}`\n🔫 {player.weapon_name} {player.magazine}/{player.magazine_size} ({player.get_spare()} spare) [{player.ammo_name}]\n◈ Void Bazooka: {player.void_bazooka_ammo} shot(s) ready | Lvl {player.void_weapon_level}/10",
+        value=f"`{p_bar}`\n🔫 {player.weapon_name} {player.magazine}/{player.magazine_size} ({player.get_spare()} spare) [{player.ammo_name}]\n◈ Void Bazooka: {player.void_bazooka_ammo} shot(s) ready | Lvl {player.void_weapon_level}/10\n◈ Perks: {_void_perk_status(player)}",
         inline=False
     )
     embed.add_field(
@@ -119,6 +119,21 @@ VOID_UPGRADE_MAX = 10
 VOID_BAZOOKA_DAMAGE_PER_LEVEL = 20
 VOID_BAZOOKA_FREE_AMMO_PER_RUN = 1
 VOID_BAZOOKA_AMMO_COST = 10
+
+# --- VOID PERKS ---
+# Three temporary, Essence-powered combat perks. Level 1 unlocks the perk;
+# later levels improve its effect. Perks are intentionally separate from the
+# normal upgrade tree and can also modify Void Bazooka attacks.
+VOID_PERKS: dict[str, dict[str, Any]] = {
+    "Void Infusion": {"unlock_cost": 40, "activation_cost": 3, "cooldown": 3, "base_bonus": 0.15, "bonus_per_level": 0.03, "max_bonus": 0.42},
+    "Void Shield": {"unlock_cost": 50, "activation_cost": 4, "cooldown": 4, "base_bonus": 0.20, "bonus_per_level": 0.03, "max_bonus": 0.47},
+    "Void Execution": {"unlock_cost": 65, "activation_cost": 5, "cooldown": 5, "base_bonus": 0.25, "bonus_per_level": 0.04, "max_bonus": 0.61},
+}
+VOID_PERK_UPGRADE_COSTS: dict[str, list[int]] = {
+    "Void Infusion": [40, 25, 35, 45, 60, 75, 90, 110, 135, 165],
+    "Void Shield": [50, 30, 45, 60, 80, 100, 125, 150, 180, 215],
+    "Void Execution": [65, 40, 55, 75, 95, 120, 145, 175, 210, 250],
+}
 # Void Essence is endgame material, so it is intentionally scarce.
 # Normal Void kills give a small amount; Bloaters and wave clears remain
 # meaningful sources without making Essence accumulate too quickly.
@@ -276,6 +291,10 @@ class Survivor:
     void_essence: int = 0; void_weapon_level: int = 0
     void_weapons_owned: list[str] = field(default_factory=list)
     void_bazooka_ammo: int = 0; void_bazooka_boss_fired: bool = False
+    # --- VOID PERKS ---
+    void_infusion_level: int = 0; void_shield_level: int = 0; void_execution_level: int = 0
+    void_infusion_cooldown: int = 0; void_shield_cooldown: int = 0; void_execution_cooldown: int = 0
+    void_infusion_active: bool = False; void_shield_active: bool = False; void_execution_active: bool = False
     @property
     def level(self) -> int: return level_for_xp(self.xp)
     def get_spare(self, ammo_type: str | None = None) -> int: return self.spare_ammo.get(ammo_type or self.ammo_name, 0)
@@ -390,6 +409,9 @@ class Survivor:
         allowed.setdefault("void_weapons_owned", [])
         allowed.setdefault("void_bazooka_ammo", 0)
         allowed.setdefault("void_bazooka_boss_fired", False)
+        allowed.setdefault("void_infusion_level", 0); allowed.setdefault("void_shield_level", 0); allowed.setdefault("void_execution_level", 0)
+        allowed.setdefault("void_infusion_cooldown", 0); allowed.setdefault("void_shield_cooldown", 0); allowed.setdefault("void_execution_cooldown", 0)
+        allowed.setdefault("void_infusion_active", False); allowed.setdefault("void_shield_active", False); allowed.setdefault("void_execution_active", False)
         if "Pistol" not in allowed["owned_weapons"]: allowed["owned_weapons"].append("Pistol")
         if "stars" not in data: allowed["stars"] = max(0, level_for_xp(int(data.get("xp", 0))) - 1)
         return cls(**allowed)
@@ -503,6 +525,91 @@ def spawn_enemy(player: Survivor) -> Enemy:
         player.bloater_cooldown -= 1
     return Enemy(name=name, health=health, max_health=health, damage=damage, money_reward=int(base["money"]*zone["money_mult"]), xp_reward=int(base["xp"]*zone["xp_mult"]))
 
+def void_perk_level(player: Survivor, perk_name: str) -> int:
+    field = {
+        "Void Infusion": "void_infusion_level",
+        "Void Shield": "void_shield_level",
+        "Void Execution": "void_execution_level",
+    }[perk_name]
+    return max(0, min(10, int(getattr(player, field, 0))))
+
+def void_perk_bonus(player: Survivor, perk_name: str) -> float:
+    perk = VOID_PERKS[perk_name]
+    lvl = void_perk_level(player, perk_name)
+    if lvl <= 0:
+        return 0.0
+    return min(perk["max_bonus"], perk["base_bonus"] + (lvl - 1) * perk["bonus_per_level"])
+
+def get_void_perk_cost(player: Survivor, perk_name: str) -> int:
+    lvl = void_perk_level(player, perk_name)
+    costs = VOID_PERK_UPGRADE_COSTS[perk_name]
+    return costs[lvl] if lvl < len(costs) else 999999999
+
+def upgrade_void_perk(player: Survivor, perk_name: str) -> list[str]:
+    if player.run_active:
+        return ["⚠️ Can't upgrade Void perks during a run! Flee first."]
+    if player.level < VOID_WEAPONS["Void Bazooka"]["unlock_level"]:
+        return [f"🔒 Void perks unlock at level {VOID_WEAPONS['Void Bazooka']['unlock_level']}."]
+    lvl = void_perk_level(player, perk_name)
+    if lvl >= 10:
+        return [f"🔥 **{perk_name} is MAXED at Level 10!**"]
+    cost = get_void_perk_cost(player, perk_name)
+    if player.void_essence < cost:
+        return [f"❌ Need ◈{cost} Void Essence; you have ◈{player.void_essence}."]
+    player.void_essence -= cost
+    field = {"Void Infusion":"void_infusion_level", "Void Shield":"void_shield_level", "Void Execution":"void_execution_level"}[perk_name]
+    setattr(player, field, lvl + 1)
+    bonus = int(void_perk_bonus(player, perk_name) * 100)
+    return [f"◈ **{perk_name} upgraded to Level {lvl + 1}!** Effect → **+{bonus}%** | ◈{player.void_essence} Essence left."]
+
+def activate_void_perk(player: Survivor, perk_name: str) -> list[str]:
+    if not player.run_active or player.enemy is None:
+        return ["⚠️ Void perks can only be activated during a Void run."]
+    if player.zone_name != "The Void":
+        return ["❌ Void perks only work inside **The Void**."]
+    lvl = void_perk_level(player, perk_name)
+    if lvl <= 0:
+        return [f"🔒 **{perk_name}** is locked. Unlock it in the Void shop."]
+    cooldown_field = {"Void Infusion":"void_infusion_cooldown", "Void Shield":"void_shield_cooldown", "Void Execution":"void_execution_cooldown"}[perk_name]
+    active_field = {"Void Infusion":"void_infusion_active", "Void Shield":"void_shield_active", "Void Execution":"void_execution_active"}[perk_name]
+    if getattr(player, cooldown_field) > 0:
+        return [f"⏳ **{perk_name}** cooldown: {getattr(player, cooldown_field)} zombie(s) remaining."]
+    if getattr(player, active_field):
+        return [f"⚠️ **{perk_name}** is already armed."]
+    if perk_name == "Void Execution" and player.enemy.health > player.enemy.max_health * 0.50:
+        return ["⚠️ **Void Execution** only arms when the enemy is at **50% HP or lower**."]
+    cost = VOID_PERKS[perk_name]["activation_cost"]
+    if player.void_essence < cost:
+        return [f"❌ Need ◈{cost} Void Essence to activate **{perk_name}**; you have ◈{player.void_essence}."]
+    player.void_essence -= cost
+    setattr(player, active_field, True)
+    bonus = int(void_perk_bonus(player, perk_name) * 100)
+    return [f"◈ **{perk_name} ARMED!** Next eligible effect: **+{bonus}%**. Cost ◈{cost}. Cooldown after use: {VOID_PERKS[perk_name]['cooldown']} kills."]
+
+def _consume_void_offense_bonus(player: Survivor, enemy: Enemy) -> tuple[float, str]:
+    multiplier = 1.0
+    labels = []
+    if player.void_infusion_active:
+        bonus = void_perk_bonus(player, "Void Infusion")
+        multiplier += bonus
+        labels.append(f"Infusion +{int(bonus*100)}%")
+        player.void_infusion_active = False
+        player.void_infusion_cooldown = VOID_PERKS["Void Infusion"]["cooldown"]
+    if player.void_execution_active:
+        bonus = void_perk_bonus(player, "Void Execution")
+        multiplier += bonus
+        labels.append(f"Execution +{int(bonus*100)}%")
+        player.void_execution_active = False
+        player.void_execution_cooldown = VOID_PERKS["Void Execution"]["cooldown"]
+    return multiplier, " | ".join(labels)
+
+def _void_perk_status(player: Survivor) -> str:
+    parts = []
+    for name, field in [("Infusion", "void_infusion_level"), ("Shield", "void_shield_level"), ("Execution", "void_execution_level")]:
+        lvl = getattr(player, field, 0)
+        parts.append(f"{name} L{lvl}" if lvl else f"{name} 🔒")
+    return " • ".join(parts)
+
 def start_run(player: Survivor) -> list[str]:
     if player.run_active:
         return ["⚠️ Already in a run!"]
@@ -527,6 +634,8 @@ def start_run(player: Survivor) -> list[str]:
     # The Void Bazooka is a dedicated backup weapon: one ready shot per run.
     player.void_bazooka_ammo = (VOID_BAZOOKA_FREE_AMMO_PER_RUN if "Void Bazooka" in player.void_weapons_owned and player.zone_name == "The Void" else 0)
     player.void_bazooka_boss_fired = False
+    player.void_infusion_cooldown = 0; player.void_shield_cooldown = 0; player.void_execution_cooldown = 0
+    player.void_infusion_active = False; player.void_shield_active = False; player.void_execution_active = False
     player.wave = 1
     player.zombies_remaining = 3
     player.run_active = True
@@ -553,14 +662,21 @@ def _enemy_damage(player: Survivor) -> list[str]:
         return [f"💨 **DODGED!** You evaded {enemy.name}'s attack! ({player.dodge_chance*100:.1f}% chance)"]
     base_dmg = enemy.damage // 2 if enemy.effects.get("freeze", 0) else enemy.damage
     damage = max(1, base_dmg - player.armor_reduction)
+    shield_used = False
+    if player.void_shield_active:
+        shield_bonus = void_perk_bonus(player, "Void Shield")
+        damage = max(1, int(damage * (1.0 - shield_bonus)))
+        player.void_shield_active = False
+        player.void_shield_cooldown = VOID_PERKS["Void Shield"]["cooldown"]
+        shield_used = True
     player.health = max(0, player.health - damage)
     if enemy.effects.get("freeze", 0):
         enemy.effects["freeze"] -= 1
         if enemy.effects["freeze"] <= 0:
             del enemy.effects["freeze"]
-        result = [f"🧊 Frozen! {enemy.name} hits for {damage} dmg."]
+        result = [f"🧊 Frozen! {enemy.name} hits for {damage} dmg." + (f" 🛡️ Void Shield absorbed {int(shield_bonus*100)}%." if shield_used else "")]
     else:
-        result = [f"💥 {enemy.name} hits for {damage} dmg."]
+        result = [f"💥 {enemy.name} hits for {damage} dmg." + (f" 🛡️ Void Shield absorbed {int(shield_bonus*100)}%." if shield_used else "")]
     if player.health == 0:
         player.health = player.max_health
         # CLEAN: only summary, no "Walker hits for X" clutter
@@ -623,6 +739,10 @@ def _finish_enemy(player: Survivor) -> list[str]:
     player.run_money_earned += money_gain
     player.run_xp_earned += xp_gain
     player.run_zombies_killed += 1
+    # Void perk cooldowns are measured in zombies defeated.
+    player.void_infusion_cooldown = max(0, player.void_infusion_cooldown - 1)
+    player.void_shield_cooldown = max(0, player.void_shield_cooldown - 1)
+    player.void_execution_cooldown = max(0, player.void_execution_cooldown - 1)
 
     # Void Essence is earned only in The Void. Normal kills have a 25% chance
     # to drop 1 Essence; Bloaters always give +4 Essence.
@@ -728,6 +848,9 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
         messages.extend(_finish_enemy(player))
         return messages
     enemy = player.enemy
+    if action in {"void_infusion", "void_shield", "void_execution"}:
+        perk_name = {"void_infusion":"Void Infusion", "void_shield":"Void Shield", "void_execution":"Void Execution"}[action]
+        return activate_void_perk(player, perk_name)
     if action == "void_bazooka":
         # Dedicated single-target backup attack. It does not consume normal ammo,
         # does not use standard weapon damage, and does not receive standard damage upgrades.
@@ -757,11 +880,13 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
         raw_damage = int(bazooka["damage"] + void_level * VOID_BAZOOKA_DAMAGE_PER_LEVEL)
         boss_mult = bazooka["level_10_boss_mult"] if void_level >= VOID_UPGRADE_MAX else bazooka["boss_mult"]
         multiplier = boss_mult if is_boss_target else 1.0
-        bazooka_damage = int(raw_damage * multiplier)
+        perk_multiplier, perk_text = _consume_void_offense_bonus(player, enemy)
+        bazooka_damage = int(raw_damage * multiplier * perk_multiplier)
         enemy.health = max(0, enemy.health - bazooka_damage)
         boss_text = f" ×{multiplier:.1f} BOSS DAMAGE" if is_boss_target else ""
         ammo_text = "FREE RUN AMMO" if ammo_cost == 0 else f"-◈{ammo_cost} Essence"
-        messages.append(f"💥 **VOID BAZOOKA!** Hit **{enemy.name} for {bazooka_damage} dmg**! (Base {raw_damage}{boss_text}) ◈ Void Lvl {void_level}/{VOID_UPGRADE_MAX} • {ammo_text}")
+        perk_suffix = f" • ⚡ {perk_text}" if perk_text else ""
+        messages.append(f"💥 **VOID BAZOOKA!** Hit **{enemy.name} for {bazooka_damage} dmg**! (Base {raw_damage}{boss_text}) ◈ Void Lvl {void_level}/{VOID_UPGRADE_MAX} • {ammo_text}{perk_suffix}")
         # No standard crit, pet, ammo effect, or standard weapon upgrade applies.
     elif action == "attack":
         ammo_data = AMMO[player.ammo_name]
@@ -801,11 +926,12 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
             player.magazine -= cost
         
         mod = ammo_modifier(player, player.ammo_name)
+        perk_multiplier, perk_text = _consume_void_offense_bonus(player, enemy)
         total_dmg = 0
         total_crits = 0
         hit_details = []
         for shot_i in range(shots):
-            dmg = int(player.weapon_damage * mod)
+            dmg = int(player.weapon_damage * mod * perk_multiplier)
             is_crit = random.random() < player.crit_chance
             if is_crit:
                 dmg = int(dmg * 2)
@@ -818,10 +944,11 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
         mod_txt = f" (Zone {int(mod*100)}%)" if mod != 1.0 else ""
         crit_txt = f" **{total_crits}x CRIT!**" if total_crits > 0 else ""
         magical_txt = " ✨ **MAGICAL! Free shot!**" if is_magical else ""
+        perk_txt = f" ⚡ **{perk_text}**" if perk_text else ""
         if shots > 1:
-            messages.append(f"🔫 **{shots}x** {player.weapon_name} Hit **{enemy.name} for {total_dmg}** ({'+'.join(map(str, hit_details))}){crit_txt}{magical_txt} using {player.ammo_name} ({base_cost}x{shots}={cost} ammo){mod_txt}")
+            messages.append(f"🔫 **{shots}x** {player.weapon_name} Hit **{enemy.name} for {total_dmg}** ({'+'.join(map(str, hit_details))}){crit_txt}{magical_txt}{perk_txt} using {player.ammo_name} ({base_cost}x{shots}={cost} ammo){mod_txt}")
         else:
-            messages.append(f"🔫 Hit **{enemy.name} for {total_dmg}**{crit_txt}{magical_txt} using {player.ammo_name} ({cost}/shot){mod_txt}")
+            messages.append(f"🔫 Hit **{enemy.name} for {total_dmg}**{crit_txt}{magical_txt}{perk_txt} using {player.ammo_name} ({cost}/shot){mod_txt}")
         
         # PET ATTACK CHECK
         if player.pet_chance > 0 and random.random() < player.pet_chance:
@@ -1623,6 +1750,27 @@ class CombatView(PlayerView):
         else:
             embed=combat_embed(player,msgs)
             await interaction.edit_original_response(content=None, embed=embed, view=CombatView(self.user_id,self.store,display_name=getattr(self,"display_name","Survivor")))
+
+    @discord.ui.button(label="⚡ Infusion", style=discord.ButtonStyle.success, row=2)
+    async def void_infusion(self, interaction: discord.Interaction, _b):
+        await interaction.response.defer()
+        player=self.store.get(self.user_id); msgs=take_action(player, "void_infusion")
+        await self.store.save_one_async(str(self.user_id))
+        await interaction.edit_original_response(content=None, embed=combat_embed(player, msgs), view=CombatView(self.user_id,self.store,display_name=getattr(self,"display_name","Survivor")))
+
+    @discord.ui.button(label="🛡️ Shield", style=discord.ButtonStyle.success, row=2)
+    async def void_shield(self, interaction: discord.Interaction, _b):
+        await interaction.response.defer()
+        player=self.store.get(self.user_id); msgs=take_action(player, "void_shield")
+        await self.store.save_one_async(str(self.user_id))
+        await interaction.edit_original_response(content=None, embed=combat_embed(player, msgs), view=CombatView(self.user_id,self.store,display_name=getattr(self,"display_name","Survivor")))
+
+    @discord.ui.button(label="☠️ Execution", style=discord.ButtonStyle.success, row=2)
+    async def void_execution(self, interaction: discord.Interaction, _b):
+        await interaction.response.defer()
+        player=self.store.get(self.user_id); msgs=take_action(player, "void_execution")
+        await self.store.save_one_async(str(self.user_id))
+        await interaction.edit_original_response(content=None, embed=combat_embed(player, msgs), view=CombatView(self.user_id,self.store,display_name=getattr(self,"display_name","Survivor")))
 
     @discord.ui.button(label="🔄 Reload", style=discord.ButtonStyle.primary, row=0)
     async def reload(self, interaction: discord.Interaction, _b):
@@ -2438,7 +2586,33 @@ class VoidUpgradeView(PlayerView):
         btn_up.callback = upgrade_cb
         self.add_item(btn_up)
 
-        back_btn = discord.ui.Button(label="Back", style=discord.ButtonStyle.secondary, row=2)
+        # Void perk upgrade buttons
+        perk_specs = [("Void Infusion", "⚡", 0), ("Void Shield", "🛡️", 1), ("Void Execution", "☠️", 2)]
+        for perk_name, icon, col in perk_specs:
+            lvl = void_perk_level(player, perk_name)
+            if lvl >= 10:
+                label = f"{icon} {perk_name.split()[-1]} MAX"
+            else:
+                label = f"{icon} {perk_name.split()[-1]} L{lvl} ◈{get_void_perk_cost(player, perk_name)}"
+            btn_perk = discord.ui.Button(label=label[:80], style=discord.ButtonStyle.success if lvl else discord.ButtonStyle.primary, row=2)
+            async def perk_cb(interaction, pn=perk_name):
+                if self.user_id in _purchase_locks:
+                    try: await interaction.response.defer()
+                    except: pass
+                    return
+                _purchase_locks.add(self.user_id)
+                try:
+                    p=self.store.get(self.user_id)
+                    msgs=upgrade_void_perk(p, pn)
+                    self.store.save()
+                    view=VoidUpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"))
+                    await interaction.response.edit_message(content=view.get_shop_text(p, extra_msgs=msgs), view=view)
+                finally:
+                    _purchase_locks.discard(self.user_id)
+            btn_perk.callback=perk_cb
+            self.add_item(btn_perk)
+
+        back_btn = discord.ui.Button(label="Back", style=discord.ButtonStyle.secondary, row=3)
         async def back_cb(interaction):
             p=self.store.get(self.user_id)
             hub=ShopHubView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"))
@@ -2446,7 +2620,7 @@ class VoidUpgradeView(PlayerView):
         back_btn.callback=back_cb
         self.add_item(back_btn)
 
-        main_btn = discord.ui.Button(label="🏠 Main menu", style=discord.ButtonStyle.secondary, row=2)
+        main_btn = discord.ui.Button(label="🏠 Main menu", style=discord.ButtonStyle.secondary, row=3)
         async def main_cb(interaction):
             name=getattr(self, "display_name", "Survivor")
             try: name=getattr(interaction.user, "display_name", None) or getattr(interaction.user, "global_name", None) or interaction.user.name
@@ -2485,6 +2659,20 @@ class VoidUpgradeView(PlayerView):
                 lines.append(f"Next: +{VOID_BAZOOKA_DAMAGE_PER_LEVEL} damage → Level {lvl+1} for **◈{next_cost:,}**")
             else:
                 lines.append(f"🔥 **LEVEL 10 BONUS ACTIVE: ×{bazooka["level_10_boss_mult"]:.1f} damage against Bloaters/Void bosses!**")
+        lines.append("")
+        lines.append("**⚡ VOID PERKS**")
+        perk_lines = []
+        for pn in ("Void Infusion", "Void Shield", "Void Execution"):
+            lvl = void_perk_level(player, pn)
+            perk = VOID_PERKS[pn]
+            if lvl >= 10:
+                cost_text = "MAX"
+            else:
+                cost_text = f"◈{get_void_perk_cost(player, pn)}"
+            bonus = int(void_perk_bonus(player, pn) * 100)
+            perk_lines.append(f"{pn}: **L{lvl}/10** | Effect **+{bonus}%** | Activate ◈{perk['activation_cost']} | Cooldown {perk['cooldown']} kills | Next {cost_text}")
+        lines.extend(perk_lines)
+        lines.append("Infusion = next attack • Shield = next incoming hit • Execution = next attack at ≤50% enemy HP. Perks can modify the Void Bazooka.")
         lines.append("")
         lines.append("**Void Essence is earned by killing enemies and clearing waves in The Void.**")
         return "\n".join(lines)
