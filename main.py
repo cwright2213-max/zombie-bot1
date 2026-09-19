@@ -22,6 +22,21 @@ def make_bar(current: int, max_val: int, length: int = 12) -> str:
     filled = int(pct * length)
     return "█" * filled + "░" * (length - filled)
 
+def _display_enemy_name_for_zone(player, enemy):
+    """Normalize legacy enemy names for active runs after zone-name updates."""
+    if enemy is None:
+        return "No enemy"
+    if getattr(enemy, "is_bloater", False):
+        return enemy.name
+
+    current_map = ZONE_ENEMY_NAMES.get(player.zone_name, {})
+    for zone_map in ZONE_ENEMY_NAMES.values():
+        for archetype, display_name in zone_map.items():
+            if enemy.name == archetype or enemy.name == display_name:
+                return current_map.get(archetype, enemy.name)
+    return enemy.name
+
+
 def combat_embed(player, last_msgs=None):
     import discord
     p_bar = make_bar(player.health, player.max_health, 12)
@@ -29,7 +44,8 @@ def combat_embed(player, last_msgs=None):
     if player.enemy:
         e_bar = make_bar(player.enemy.health, player.enemy.max_health, 12)
         e_pct = int(player.enemy.health / player.enemy.max_health * 100) if player.enemy.max_health else 0
-        e_name = player.enemy.name
+        e_name = _display_enemy_name_for_zone(player, player.enemy)
+        player.enemy.name = e_name
         e_hp = f"{player.enemy.health}/{player.enemy.max_health}"
         e_dmg = player.enemy.damage
     else:
@@ -281,6 +297,41 @@ ZOMBIES: dict[str, dict[str, int]] = {
     "Runner": {"health": 35, "damage": 18, "money": 32, "xp": 18},
     "Brute": {"health": 100, "damage": 15, "money": 65, "xp": 30},
     "Mutant": {"health": 150, "damage": 25, "money": 140, "xp": 70},
+}
+
+# Zone-specific enemy names. The four entries still use the exact same
+# underlying Walker/Runner/Brute/Mutant stats and spawn weights.
+ZONE_ENEMY_NAMES: dict[str, dict[str, str]] = {
+    "Graveyard": {
+        "Walker": "Infected",
+        "Runner": "Crawler",
+        "Brute": "Crypt Guard",
+        "Mutant": "Wraith",
+    },
+    "Mega Death City": {
+        "Walker": "Walker",
+        "Runner": "Runner",
+        "Brute": "Brute",
+        "Mutant": "Mutant",
+    },
+    "Frostbitten Outskirts": {
+        "Walker": "Frost Walker",
+        "Runner": "Snow Crawler",
+        "Brute": "Frost Brute",
+        "Mutant": "Glacier Beast",
+    },
+    "Toxic Wasteland": {
+        "Walker": "Toxic Walker",
+        "Runner": "Blightborn",
+        "Brute": "Toxic Brute",
+        "Mutant": "Bio-Titan",
+    },
+    "The Void": {
+        "Walker": "Void Walker",
+        "Runner": "Shadowborn",
+        "Brute": "Null Brute",
+        "Mutant": "Tormented Soul",
+    },
 }
 @dataclass
 class Enemy:
@@ -587,11 +638,12 @@ def spawn_enemy(player: Survivor) -> Enemy:
         return bloater
 
     zone = zone_for(player)
-    name = random.choices(list(ZOMBIES), weights=zone["weights"])[0]
-    base = ZOMBIES[name]
+    archetype = random.choices(list(ZOMBIES), weights=zone["weights"])[0]
+    base = ZOMBIES[archetype]
+    display_name = ZONE_ENEMY_NAMES.get(player.zone_name, {}).get(archetype, archetype)
     health = int((base["health"] + (player.wave - 1) * 4) * zone["hp_mult"])
     damage = int((base["damage"] + (player.wave - 1) // 3) * zone["dmg_mult"])
-    return Enemy(name=name, health=health, max_health=health, damage=damage, money_reward=int(base["money"]*zone["money_mult"]), xp_reward=int(base["xp"]*zone["xp_mult"]))
+    return Enemy(name=display_name, health=health, max_health=health, damage=damage, money_reward=int(base["money"]*zone["money_mult"]), xp_reward=int(base["xp"]*zone["xp_mult"]))
 
 def void_perk_level(player: Survivor, perk_name: str) -> int:
     field = {
