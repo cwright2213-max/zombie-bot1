@@ -131,13 +131,38 @@ AMMO: dict[str, dict[str, Any]] = {
     "Shock": {"unlock_level": 160, "price": 5000, "desc": "20% stun 1 turn + 30 dmg", "effect": "shock", "cost_per_attack": 6, "box_price": 185, "box_amount": 24},
 }
 WEAPONS: dict[str, dict[str, Any]] = {
-    "Pistol": {"damage": 20, "mag": 12, "price": 0, "unlock_level": 1, "shots": 1},
-    "Shotgun": {"damage": 45, "mag": 6, "price": 250, "unlock_level": 15, "shots": 1},
-    "Rifle": {"damage": 25, "mag": 30, "price": 2500, "unlock_level": 30, "shots": 2},
-    "SMG": {"damage": 15, "mag": 42, "price": 4000, "unlock_level": 60, "shots": 3},
-    "Sawed-Off": {"damage": 70, "mag": 2, "price": 6000, "unlock_level": 90, "shots": 1},
-    "Tactical Sniper": {"damage": 180, "mag": 1, "price": 15000, "unlock_level": 125, "shots": 1, "desc": "Heavy late-game single-shot sniper. Massive damage, but starts with a 1-round magazine and relies on Magazine upgrades for special ammo."},
+    "Pistol": {
+        "damage": 20, "mag": 12, "price": 0, "unlock_level": 1, "shots": 1,
+        "desc": "Reliable sidearm with balanced damage, a 12-round magazine, and steady performance."
+    },
+    "Shotgun": {
+        "damage": 45, "mag": 6, "price": 250, "unlock_level": 15, "shots": 1,
+        "desc": "Heavy close-range weapon with powerful single shots and a small magazine."
+    },
+    "Rifle": {
+        "damage": 25, "mag": 30, "price": 2500, "unlock_level": 30, "shots": 2,
+        "desc": "Versatile automatic rifle that fires 2 rounds per attack and carries a large magazine."
+    },
+    "SMG": {
+        "damage": 15, "mag": 42, "price": 4000, "unlock_level": 60, "shots": 3,
+        "desc": "Fast-firing weapon that unleashes 3 rounds per attack, trading per-shot damage for volume."
+    },
+    "Sawed-Off": {
+        "damage": 70, "mag": 2, "price": 6000, "unlock_level": 90, "shots": 1,
+        "desc": "Brutal short-range shotgun delivering massive single-shot damage from a 2-round magazine."
+    },
+    "Tactical Sniper": {
+        "damage": 180, "mag": 1, "price": 15000, "unlock_level": 125, "shots": 1,
+        "desc": "Heavy late-game single-shot sniper. Massive damage, but starts with a 1-round magazine and relies on Magazine upgrades for special ammo."
+    },
 }
+
+WEAPON_UPGRADE_BASE_COSTS: dict[str, int] = {"damage": 250, "mag": 350, "crit": 400}
+WEAPON_UPGRADE_RARITY_MULT: dict[str, float] = {
+    "Pistol": 1.00, "Shotgun": 1.12, "Rifle": 1.25, "SMG": 1.38, "Sawed-Off": 1.52, "Tactical Sniper": 1.70,
+}
+WEAPON_UPGRADE_EARLY_MULT: dict[str, float] = {"damage": 1.50, "mag": 1.50, "crit": 1.60}
+WEAPON_UPGRADE_LATE_MULT: dict[str, float] = {"damage": 1.28, "mag": 1.28, "crit": 1.28}
 
 # --- VOID WEAPON SYSTEM ---
 # Void weapons are deliberately separate from the normal WEAPONS system.
@@ -358,9 +383,10 @@ class Survivor:
     bloaters_spawned_this_run: int = 0
     bloater_cooldown: int = 0
     bloater_chance_steps: int = 0  # failed eligible rolls since the last Bloater
-    # --- NEW: permanent upgrade counters ---
-    damage_upgrades: int = 0; health_upgrades: int = 0; mag_upgrades: int = 0
-    crit_upgrades: int = 0; armor_upgrades: int = 0; scavenger_upgrades: int = 0
+    # --- UNIVERSAL MONEY UPGRADES ---
+    health_upgrades: int = 0; armor_upgrades: int = 0; scavenger_upgrades: int = 0
+    # --- INDIVIDUAL WEAPON UPGRADES (cash, per weapon) ---
+    weapon_upgrades: dict[str, dict[str, int]] = field(default_factory=dict)
     # --- STAR UPGRADES (prestige) - CUSTOM 4 ---
     star_dodge_upgrades: int = 0; star_magical_upgrades: int = 0
     star_medic_upgrades: int = 0; star_pet_upgrades: int = 0; star_xp_upgrades: int = 0
@@ -384,22 +410,41 @@ class Survivor:
     @property
     def level(self) -> int: return level_for_xp(self.xp)
     def get_spare(self, ammo_type: str | None = None) -> int: return self.spare_ammo.get(ammo_type or self.ammo_name, 0)
+    def _ensure_weapon_upgrades(self):
+        if not isinstance(self.weapon_upgrades, dict):
+            self.weapon_upgrades = {}
+        for weapon_name in WEAPONS:
+            current = self.weapon_upgrades.get(weapon_name)
+            if not isinstance(current, dict):
+                current = {}
+            self.weapon_upgrades[weapon_name] = {
+                "damage": max(0, int(current.get("damage", 0) or 0)),
+                "mag": max(0, int(current.get("mag", 0) or 0)),
+                "crit": max(0, int(current.get("crit", 0) or 0)),
+            }
+
+    def weapon_upgrade_level(self, stat: str, weapon_name: str | None = None) -> int:
+        self._ensure_weapon_upgrades()
+        return int(self.weapon_upgrades.get(weapon_name or self.weapon_name, {}).get(stat, 0))
+
     def recalc_stats(self):
-        """Recalculate weapon damage / max_health / mag size based on permanent upgrades"""
+        """Recalculate equipped weapon stats from that weapon's own upgrades."""
         if self.weapon_name not in WEAPONS:
             self.weapon_name = self.equipped_weapon if self.equipped_weapon in WEAPONS else "Pistol"
         self.equipped_weapon = self.weapon_name
+        self._ensure_weapon_upgrades()
         base = WEAPONS.get(self.weapon_name, WEAPONS["Pistol"])
-        self.weapon_damage = base["damage"] + self.damage_upgrades * 3
-        self.magazine_size = base["mag"] + self.mag_upgrades * 1
+        self.weapon_damage = base["damage"] + self.weapon_upgrade_level("damage") * 3
+        shots = int(base.get("shots", 1))
+        self.magazine_size = base["mag"] + self.weapon_upgrade_level("mag") * shots
         self.max_health = 100 + self.health_upgrades * 20
+
     @property
     def crit_chance(self) -> float:
-        if self.crit_upgrades <= 0:
+        level = self.weapon_upgrade_level("crit")
+        if level <= 0:
             return 0.0
-        # First upgrade = 2%, each extra = +0.5%, cap 40%
-        chance = 0.02 + (self.crit_upgrades - 1) * 0.005
-        return min(chance, 0.40)
+        return min(0.02 + (level - 1) * 0.005, 0.40)
     @property
     def armor_reduction(self) -> int:
         return min(self.armor_upgrades * 2, 35)
@@ -469,15 +514,12 @@ class Survivor:
             saved_weapon = next((w for w in owned_saved if w in WEAPONS), "Pistol")
         data["weapon_name"] = saved_weapon
         data["equipped_weapon"] = saved_weapon
-        # Migration: ensure upgrade counters exist
-        if "damage_upgrades" not in data:
-            # Estimate from old saves: if weapon_damage higher than base, convert to upgrades
-            base_dmg = WEAPONS.get(data.get("weapon_name","Pistol"), WEAPONS["Pistol"])["damage"]
-            old_bonus = max(0, data.get("weapon_damage", base_dmg) - base_dmg)
-            # Old system was +5 per upgrade, new is +3 - approximate
-            data["damage_upgrades"] = old_bonus // 5
+        # Test-mode migration: the old global weapon upgrades are intentionally
+        # not converted. New weapon-specific levels start at zero.
         if "health_upgrades" not in data:
             data["health_upgrades"] = max(0, (data.get("max_health",100)-100)//20)
+        if not isinstance(data.get("weapon_upgrades"), dict):
+            data["weapon_upgrades"] = {}
         if "star_dodge_upgrades" not in data:
             data["star_dodge_upgrades"] = data.get("star_crit_dmg_upgrades", 0)  # migrate old if exists
         if "star_magical_upgrades" not in data:
@@ -494,12 +536,6 @@ class Survivor:
             if f not in data:
                 data[f] = 0
 
-        if "mag_upgrades" not in data:
-            base_mag = WEAPONS.get(data.get("weapon_name","Pistol"), WEAPONS["Pistol"])["mag"]
-            old_mag_bonus = max(0, data.get("magazine_size", base_mag) - base_mag)
-            data["mag_upgrades"] = old_mag_bonus // 4
-        if "crit_upgrades" not in data:
-            data["crit_upgrades"] = 0
         if "armor_upgrades" not in data:
             data["armor_upgrades"] = 0
         if "scavenger_upgrades" not in data:
@@ -514,6 +550,7 @@ class Survivor:
         allowed.setdefault("run_money_earned", 0); allowed.setdefault("run_xp_earned", 0)
         allowed.setdefault("bloaters_spawned_this_run", 0); allowed.setdefault("bloater_cooldown", 0); allowed.setdefault("bloater_chance_steps", 0)
         allowed.setdefault("owned_ammo", ["Standard"]); allowed.setdefault("owned_weapons", ["Pistol"])
+        allowed.setdefault("weapon_upgrades", {})
         allowed.setdefault("void_essence", 0)
         allowed.setdefault("void_weapon_level", 0)
         allowed.setdefault("void_weapons_owned", [])
@@ -1379,7 +1416,7 @@ def buy_item(player: Survivor, item: str) -> list[str]:
         player.recalc_stats()
         player.spare_ammo[player.ammo_name] = player.spare_ammo.get(player.ammo_name, 0) + player.magazine
         player.magazine = 0
-        return [f"🔫 Re-equipped **{item}** for free (+{player.damage_upgrades*3} dmg from upgrades)."]
+        return [f"🔫 Re-equipped **{item}** for free."]
     if player.money < weapon["price"]:
         return [f"Need ${weapon['price']} for {item}, you have ${player.money}"]
     player.money -= weapon["price"]
@@ -1390,7 +1427,7 @@ def buy_item(player: Survivor, item: str) -> list[str]:
         player.owned_weapons.append(item)
     player.spare_ammo[player.ammo_name] = player.spare_ammo.get(player.ammo_name, 0) + player.magazine
     player.magazine = 0
-    return [f"🔫 Equipped **{item}** (+{player.damage_upgrades*3} dmg from upgrades). ${player.money} left."]
+    return [f"🔫 Equipped **{item}**. ${player.money} left."]
 
 def equip_ammo(player: Survivor, ammo_name: str) -> list[str]:
     if player.run_active:
@@ -1431,15 +1468,57 @@ def change_zone(player: Survivor, zone_name: str) -> list[str]:
     player.zone_name = zone_name
     return [f"🗺️ Travelled to **{zone_name}**.", ammo_effectiveness_text(player)]
 
+def weapon_upgrade_summary(player: Survivor, weapon_name: str | None = None) -> str:
+    wn = weapon_name or player.weapon_name
+    player._ensure_weapon_upgrades()
+    lv = player.weapon_upgrades.get(wn, {"damage": 0, "mag": 0, "crit": 0})
+    return f"⚔️ Dmg Lv {lv['damage']} • 📦 Mag Lv {lv['mag']} • 🎯 Crit Lv {lv['crit']}"
+
+def get_weapon_upgrade_cost(player: Survivor, weapon_name: str, stat: str) -> int:
+    stat = stat.lower().strip()
+    if weapon_name not in WEAPONS or stat not in WEAPON_UPGRADE_BASE_COSTS:
+        return 999999999
+    level = player.weapon_upgrade_level(stat, weapon_name)
+    rarity = WEAPON_UPGRADE_RARITY_MULT.get(weapon_name, 1.0)
+    return int(WEAPON_UPGRADE_BASE_COSTS[stat] * rarity * (WEAPON_UPGRADE_EARLY_MULT[stat] ** min(level, 10)) * (WEAPON_UPGRADE_LATE_MULT[stat] ** max(level - 10, 0)))
+
+def upgrade_weapon(player: Survivor, weapon_name: str, stat: str) -> list[str]:
+    if player.run_active:
+        return ["⚠️ Can't upgrade weapons during a run! Flee first."]
+    if weapon_name not in WEAPONS:
+        return ["❌ That weapon doesn't exist."]
+    if weapon_name not in player.owned_weapons:
+        return [f"🔒 You don't own **{weapon_name}** yet."]
+    stat = stat.lower().strip()
+    if stat not in WEAPON_UPGRADE_BASE_COSTS:
+        return ["❌ Invalid weapon upgrade."]
+    cost = get_weapon_upgrade_cost(player, weapon_name, stat)
+    if player.money < cost:
+        return [f"❌ Need ${cost:,} for {weapon_name} {stat} upgrade, you have ${player.money:,}."]
+    player._ensure_weapon_upgrades()
+    old = player.weapon_upgrade_level(stat, weapon_name)
+    player.money -= cost
+    player.weapon_upgrades[weapon_name][stat] = old + 1
+    player.recalc_stats()
+    if stat == "damage":
+        value = WEAPONS[weapon_name]["damage"] + (old + 1) * 3
+        detail = f"+3 damage → **{value}**"
+    elif stat == "mag":
+        shots = int(WEAPONS[weapon_name].get("shots", 1))
+        value = WEAPONS[weapon_name]["mag"] + (old + 1) * shots
+        detail = f"+{shots} magazine → **{value}**"
+    else:
+        value = min(0.02 + old * 0.005, 0.40)
+        detail = f"Crit → **{value*100:.1f}%**"
+    return [f"🔧 **{weapon_name} {stat.capitalize()} upgraded!** {detail} | Lv {old + 1} | Paid **${cost:,}** | 💰 ${player.money:,} left."]
+
+
 def get_upgrade_cost(player: Survivor, stat: str) -> int:
     """Balanced exponential scaling costs"""
     stat = stat.lower()
     # Base costs
     bases = {
-        "damage": 250,
         "health": 200,
-        "mag": 400,
-        "crit": 500,
         "armor": 450,
         "scavenger": 700,
     }
@@ -1448,28 +1527,19 @@ def get_upgrade_cost(player: Survivor, stat: str) -> int:
     # onward, each stat uses a gentler multiplier so late-game upgrades stay
     # expensive without becoming effectively unreachable.
     early_mults = {
-        "damage": 1.50,
         "health": 1.40,
-        "mag": 1.50,
-        "crit": 1.60,
         "armor": 1.50,
         "scavenger": 1.65,
     }
     late_mults = {
-        "damage": 1.28,
         "health": 1.25,
-        "mag": 1.28,
-        "crit": 1.28,
         "armor": 1.28,
         "scavenger": 1.25,
     }
     if stat not in bases:
         return 999999
     count = 0
-    if stat == "damage": count = player.damage_upgrades
-    elif stat == "health": count = player.health_upgrades
-    elif stat == "mag": count = player.mag_upgrades
-    elif stat == "crit": count = player.crit_upgrades
+    if stat == "health": count = player.health_upgrades
     elif stat == "armor": count = player.armor_upgrades
     elif stat == "scavenger": count = player.scavenger_upgrades
 
@@ -1485,51 +1555,26 @@ def get_upgrade_cost(player: Survivor, stat: str) -> int:
 
 
 def upgrade(player: Survivor, stat: str) -> list[str]:
-    """Money upgrades: health, damage, mag, crit, armor, scavenger"""
+    """Universal cash upgrades only. Weapon damage/mag/crit are per-weapon."""
     if player.run_active:
         return ["⚠️ Can't upgrade during a run! Flee first."]
-    stat = stat.lower().strip()
-    # Map aliases
-    alias = {
-        "health": "health", "hp": "health", "max_health": "health",
-        "damage": "damage", "dmg": "damage", "weapon": "damage",
-        "mag": "mag", "magazine": "mag", "ammo": "mag",
-        "crit": "crit", "critical": "crit", "crit_chance": "crit",
-        "armor": "armor", "armour": "armor", "defense": "armor",
-        "scavenger": "scavenger", "loot": "scavenger", "money": "scavenger"
-    }
-    canonical = alias.get(stat, stat)
+    alias = {"health":"health", "hp":"health", "max_health":"health", "armor":"armor", "armour":"armor", "defense":"armor", "scavenger":"scavenger", "loot":"scavenger", "money":"scavenger"}
+    canonical = alias.get(stat.lower().strip(), stat.lower().strip())
     cost = get_upgrade_cost(player, canonical)
     if player.money < cost:
         return [f"❌ Need ${cost} for {canonical}, you have ${player.money}"]
     player.money -= cost
     if canonical == "health":
-        player.max_health += 20
-        player.health_upgrades += 1
-        player.health = player.max_health
+        player.max_health += 20; player.health_upgrades += 1; player.health = player.max_health
         return [f"❤️ Max HP → **{player.max_health}** (+20). ${player.money} left. Lvl {player.health_upgrades}"]
-    elif canonical == "damage":
-        player.weapon_damage += 3
-        player.damage_upgrades += 1
-        return [f"💥 Damage → **{player.weapon_damage}** (+3). ${player.money} left. Lvl {player.damage_upgrades}"]
-    elif canonical == "mag":
-        player.magazine_size += 1
-        player.mag_upgrades += 1
-        return [f"📦 Mag size → **{player.magazine_size}** (+1). ${player.money} left. Lvl {player.mag_upgrades}"]
-    elif canonical == "crit":
-        player.crit_upgrades += 1
-        return [f"🎯 Crit chance → **{int(player.crit_chance*100)}%** (+2% first, +0.5% after). ${player.money} left. Lvl {player.crit_upgrades}"]
-    elif canonical == "armor":
+    if canonical == "armor":
         player.armor_upgrades += 1
         return [f"🛡️ Armor → **-{player.armor_reduction} dmg** (cap -35). ${player.money} left. Lvl {player.armor_upgrades}"]
-    elif canonical == "scavenger":
+    if canonical == "scavenger":
         player.scavenger_upgrades += 1
         return [f"💰 Loot bonus → **+{int((player.scavenger_bonus-1)*100)}%** (+10% per lvl). ${player.money} left. Lvl {player.scavenger_upgrades}"]
-    else:
-        # Refund if unknown
-        player.money += cost
-        return [f"❓ Unknown upgrade '{stat}'. Try: health, damage, mag, crit, armor, scavenger"]
-
+    player.money += cost
+    return [f"❓ Unknown universal upgrade '{stat}'. Try: health, armor, scavenger"]
 
 
 def get_star_upgrade_cost(player: Survivor, stat: str) -> int:
@@ -1816,7 +1861,7 @@ def status_detailed(player: Survivor, display_name: str = "Survivor") -> str:
     lines = [
         f"**📊 {display_name} — Lvl {player.level}**",
         f"❤️ HP: {player.health}/{player.max_health} (+{player.health_upgrades*20})",
-        f"💥 Dmg: {player.weapon_damage} (+{player.damage_upgrades*3}) | 📦 Mag: {player.magazine_size} (+{player.mag_upgrades})",
+        f"💥 Dmg: {player.weapon_damage} | 📦 Mag: {player.magazine_size} | 🎯 Crit: {player.crit_chance*100:.1f}% | {weapon_upgrade_summary(player)}",
         f"🎯 Crit: {int(player.crit_chance*100)}% | 🛡️ Armor: -{player.armor_reduction} | 💰 Loot: +{int((player.scavenger_bonus-1)*100)}%",
         f"💰 ${player.money} | ⭐ {player.stars} | ✨ {player.xp} XP ({earned}/{needed})",
         f"🔫 {player.weapon_name} [{player.ammo_name}] | 📦 Spare: {player.get_spare()}",
@@ -2783,6 +2828,15 @@ class WeaponShopView(PlayerView):
         btn_buy.callback = buy_cb
         self.add_item(btn_buy)
 
+        upgrade_btn = discord.ui.Button(label=f"🔧 Upgrade {self.selected_weapon}", style=discord.ButtonStyle.success, row=2, disabled=self.selected_weapon not in player.owned_weapons)
+        async def weapon_upgrade_cb(interaction):
+            p=self.store.get(self.user_id)
+            if p.run_active:
+                await interaction.response.edit_message(content=None,embed=combat_embed(p,["🚫 **Shopping is locked during a run.** Flee or finish the run first."]),view=CombatView(self.user_id,self.store,display_name=getattr(self,"display_name","Survivor"))); return
+            view=WeaponUpgradeView(self.user_id,self.store,display_name=getattr(self,"display_name","Survivor"),weapon_name=self.selected_weapon)
+            await interaction.response.edit_message(content=view.get_shop_text(p),embed=None,view=view)
+        upgrade_btn.callback=weapon_upgrade_cb; self.add_item(upgrade_btn)
+
         hub_btn = discord.ui.Button(label="Back", style=discord.ButtonStyle.secondary, row=3)
         async def hub_cb(interaction):
             p=self.store.get(self.user_id)
@@ -2815,6 +2869,9 @@ class WeaponShopView(PlayerView):
         lines.append("")
         lines.append(f"Your balance: **${player.money:,}**")
         lines.append(f"Selected: 🔫 **{sel}**")
+        if sel in player.owned_weapons:
+            lv=player.weapon_upgrades.get(sel,{"damage":0,"mag":0,"crit":0})
+            lines.append(f"🔧 Upgrades: ⚔️ Lv {lv['damage']} • 📦 Lv {lv['mag']} • 🎯 Lv {lv['crit']}")
         lines.append("---")
         for wname in ["Pistol", "Shotgun", "Rifle", "SMG", "Sawed-Off", "Tactical Sniper"]:
             if wname not in WEAPONS:
@@ -2825,7 +2882,10 @@ class WeaponShopView(PlayerView):
             marker = " ← SELECTED" if is_sel else ""
             status_str = "Owned" if owned else f"LOCKED Level {w['unlock_level']} - ${w['price']}"
             if owned:
-                status_str = f"Owned - Dmg {w.get('damage', '?')} | Mag {w.get('mag_size', w.get('mag', '?'))}"
+                lv=player.weapon_upgrades.get(wname,{"damage":0,"mag":0,"crit":0}); shots=int(w.get("shots",1))
+                dmg=w.get("damage",0)+lv.get("damage",0)*3; mag=w.get("mag",0)+lv.get("mag",0)*shots
+                crit=0 if lv.get("crit",0)<=0 else min(0.02+(lv.get("crit",0)-1)*0.005,0.40)
+                status_str = f"Owned - Dmg {dmg} | Mag {mag} | Crit {crit*100:.1f}%"
             lines.append(f"🔫 **{wname}**{marker}")
             lines.append(f"{status_str}")
             lines.append(f"{w.get('desc','')}")
@@ -2837,6 +2897,50 @@ class WeaponShopView(PlayerView):
             lines.append(f"UNLOCKED AT LEVEL {WEAPONS[nxt]['unlock_level']}!")
             lines.append("")
         lines.append(f"Selected: **{sel}** - ${WEAPONS.get(sel, {'price':0})['price']}")
+        return "\n".join(lines)
+
+
+class WeaponUpgradeView(PlayerView):
+    """Individual weapon upgrades inside the Weapons shop."""
+    def __init__(self, user_id: int, store, display_name: str = "Survivor", weapon_name: str | None = None, timeout: float = 180):
+        super().__init__(user_id, store, display_name, timeout)
+        player = self.store.get(user_id)
+        self.weapon_name = weapon_name if weapon_name in WEAPONS else player.weapon_name
+        self.clear_items()
+        for row, (stat, label, icon) in enumerate([("damage","Damage","⚔️"),("mag","Magazine","📦"),("crit","Crit","🎯")]):
+            lvl = player.weapon_upgrade_level(stat, self.weapon_name); cost = get_weapon_upgrade_cost(player, self.weapon_name, stat)
+            btn = discord.ui.Button(label=f"{icon} {label} L{lvl} • ${cost:,}", style=discord.ButtonStyle.success, row=row)
+            async def cb(interaction, st=stat):
+                await interaction.response.defer()
+                if self.user_id in _purchase_locks:
+                    await interaction.edit_original_response(content="⏳ Purchase already processing. Try again in a moment.", view=self); return
+                _purchase_locks.add(self.user_id)
+                try:
+                    p=self.store.get(self.user_id); msgs=upgrade_weapon(p,self.weapon_name,st); await self.store.save_one_async(str(self.user_id))
+                    view=WeaponUpgradeView(self.user_id,self.store,display_name=getattr(self,"display_name","Survivor"),weapon_name=self.weapon_name)
+                    await interaction.edit_original_response(content=view.get_shop_text(p,msgs),view=view)
+                finally: _purchase_locks.discard(self.user_id)
+            btn.callback=cb; self.add_item(btn)
+        back=discord.ui.Button(label="⬅️ Back to Weapons",style=discord.ButtonStyle.secondary,row=3)
+        async def back_cb(interaction):
+            p=self.store.get(self.user_id); view=WeaponShopView(self.user_id,self.store,display_name=getattr(self,"display_name","Survivor"),selected_weapon=self.weapon_name)
+            await interaction.response.edit_message(content=view.get_shop_text(p),embed=None,view=view)
+        back.callback=back_cb; self.add_item(back)
+        main_btn=discord.ui.Button(label="🏠 Main menu",style=discord.ButtonStyle.secondary,row=3)
+        async def main_cb(interaction):
+            p=self.store.get(self.user_id); name=getattr(self,"display_name","Survivor")
+            await interaction.response.edit_message(content=status(p,display_name=name),embed=None,view=ZombieMenuView(self.user_id,self.store,display_name=name))
+        main_btn.callback=main_cb; self.add_item(main_btn)
+    def get_shop_text(self, player, messages=None):
+        w=WEAPONS[self.weapon_name]; lv=player.weapon_upgrades.get(self.weapon_name,{"damage":0,"mag":0,"crit":0}); shots=int(w.get("shots",1))
+        crit=0 if lv["crit"]<=0 else min(0.02+(lv["crit"]-1)*0.005,0.40)
+        lines=[]
+        if messages: lines.extend(messages); lines.append("")
+        lines += [f"🔧 **{self.weapon_name} Upgrades**","",f"💰 Cash: **${player.money:,}**",f"⚔️ Damage: **{w['damage']+lv['damage']*3}**",f"📦 Magazine: **{w['mag']+lv['mag']*shots}** ({shots} shot(s) per attack)",f"🎯 Crit: **{crit*100:.1f}%**","","Each upgrade uses cash and affects **only this weapon**.","Magazine upgrades follow the weapon's shot pattern.",""]
+        for stat,label,icon in [("damage","Damage","⚔️"),("mag","Magazine","📦"),("crit","Crit","🎯")]:
+            cost=get_weapon_upgrade_cost(player,self.weapon_name,stat)
+            detail="+3 damage" if stat=="damage" else (f"+{shots} capacity" if stat=="mag" else "+2% first, +0.5% after")
+            lines.append(f"{icon} **{label}** — Lv {lv[stat]} → {lv[stat]+1} | {detail} | **${cost:,}**")
         return "\n".join(lines)
 
 
@@ -3097,9 +3201,6 @@ class UpgradeView(PlayerView):
 
         upgrades = [
             ("health", "❤️ Health", "+20 HP"),
-            ("damage", "💥 Damage", "+3 Dmg"),
-            ("mag", "📦 Mag", "+1 Mag"),
-            ("crit", "🎯 Crit", "+2%"),
             ("armor", "🛡️ Armor", "-2 Dmg"),
             ("scavenger", "💰 Loot", "+10%"),
         ]
@@ -3171,21 +3272,24 @@ class UpgradeView(PlayerView):
             lines.append("")
         lines.append("**Money Upgrades Shop**")
         lines.append("")
-        lines.append("Upgrades are permanent and make you stronger.")
+        lines.append("Universal survivor upgrades only. Weapon Damage, Magazine and Crit are now upgraded inside each individual weapon.")
         lines.append("")
         lines.append(f"Your balance: **${player.money:,}** | Stars: **{player.stars}**")
-        # Selected
-        emoji_map = {"health": "❤️", "damage": "💥", "mag": "📦", "crit": "🎯", "armor": "🛡️", "scavenger": "💰"}
-        lines.append(f"Selected: {emoji_map.get(sel,'⬆️')} **{sel.capitalize()}**")
+        lines.append(f"Selected: **{sel.capitalize()}**")
         lines.append("---")
-        for uid, uname, plus in [("health","❤️ Health","+20 HP"),("damage","💥 Damage","+3 Dmg"),("mag","📦 Mag","+1 Mag"),("crit","🎯 Crit","+2% Crit"),("armor","🛡️ Armor","-2 Dmg taken"),("scavenger","💰 Loot","+10% Money")]:
+        for uid, uname, plus in [
+            ("health", "❤️ Health", "+20 HP"),
+            ("armor", "🛡️ Armor", "-2 Dmg taken"),
+            ("scavenger", "💰 Loot", "+10% Money"),
+        ]:
             cost = get_upgrade_cost(player, uid)
             lvl = getattr(player, f"{uid}_upgrades", 0) if uid != "scavenger" else player.scavenger_upgrades
             sel_mark = " ← SELECTED" if uid == sel else ""
             lines.append(f"{uname} ({lvl}){sel_mark}")
-            lines.append(f"{plus} per level - Cost ${cost} - Lvl {lvl}")
+            lines.append(f"{plus} per level - Cost ${cost:,} - Lvl {lvl}")
             lines.append("")
-        lines.append(f"Next: {sel} Lvl {getattr(player, f'{sel}_upgrades', 0)+1 if sel != 'scavenger' else player.scavenger_upgrades+1} for ${get_upgrade_cost(player, sel)}")
+        next_lvl = (getattr(player, f"{sel}_upgrades", 0) + 1) if sel != "scavenger" else player.scavenger_upgrades + 1
+        lines.append(f"Next: {sel} Lvl {next_lvl} for ${get_upgrade_cost(player, sel):,}")
         return "\n".join(lines)
 
 
