@@ -158,6 +158,14 @@ WEAPONS: dict[str, dict[str, Any]] = {
 }
 
 WEAPON_UPGRADE_BASE_COSTS: dict[str, int] = {"damage": 250, "mag": 350, "crit": 400}
+WEAPON_DAMAGE_PER_UPGRADE: dict[str, int] = {
+    "Pistol": 3,
+    "Shotgun": 3,
+    "Rifle": 4,
+    "SMG": 4,
+    "Sawed-Off": 6,
+    "Tactical Sniper": 7,
+}
 WEAPON_UPGRADE_RARITY_MULT: dict[str, float] = {
     "Pistol": 1.00, "Shotgun": 1.12, "Rifle": 1.25, "SMG": 1.38, "Sawed-Off": 1.52, "Tactical Sniper": 1.70,
 }
@@ -434,7 +442,8 @@ class Survivor:
         self.equipped_weapon = self.weapon_name
         self._ensure_weapon_upgrades()
         base = WEAPONS.get(self.weapon_name, WEAPONS["Pistol"])
-        self.weapon_damage = base["damage"] + self.weapon_upgrade_level("damage") * 3
+        damage_per_upgrade = WEAPON_DAMAGE_PER_UPGRADE.get(self.weapon_name, 3)
+        self.weapon_damage = base["damage"] + self.weapon_upgrade_level("damage") * damage_per_upgrade
         shots = int(base.get("shots", 1))
         self.magazine_size = base["mag"] + self.weapon_upgrade_level("mag") * shots
         self.max_health = 100 + self.health_upgrades * 20
@@ -1501,8 +1510,9 @@ def upgrade_weapon(player: Survivor, weapon_name: str, stat: str) -> list[str]:
     player.weapon_upgrades[weapon_name][stat] = old + 1
     player.recalc_stats()
     if stat == "damage":
-        value = WEAPONS[weapon_name]["damage"] + (old + 1) * 3
-        detail = f"+3 damage → **{value}**"
+        damage_per_upgrade = WEAPON_DAMAGE_PER_UPGRADE.get(weapon_name, 3)
+        value = WEAPONS[weapon_name]["damage"] + (old + 1) * damage_per_upgrade
+        detail = f"+{damage_per_upgrade} damage → **{value}**"
     elif stat == "mag":
         shots = int(WEAPONS[weapon_name].get("shots", 1))
         value = WEAPONS[weapon_name]["mag"] + (old + 1) * shots
@@ -2936,10 +2946,10 @@ class WeaponUpgradeView(PlayerView):
         crit=0 if lv["crit"]<=0 else min(0.02+(lv["crit"]-1)*0.005,0.40)
         lines=[]
         if messages: lines.extend(messages); lines.append("")
-        lines += [f"🔧 **{self.weapon_name} Upgrades**","",f"💰 Cash: **${player.money:,}**",f"⚔️ Damage: **{w['damage']+lv['damage']*3}**",f"📦 Magazine: **{w['mag']+lv['mag']*shots}** ({shots} shot(s) per attack)",f"🎯 Crit: **{crit*100:.1f}%**","","Each upgrade uses cash and affects **only this weapon**.","Magazine upgrades follow the weapon's shot pattern.",""]
+        lines += [f"🔧 **{self.weapon_name} Upgrades**","",f"💰 Cash: **${player.money:,}**",f"⚔️ Damage: **{w['damage']+lv['damage']*WEAPON_DAMAGE_PER_UPGRADE.get(self.weapon_name,3)}**",f"📦 Magazine: **{w['mag']+lv['mag']*shots}** ({shots} shot(s) per attack)",f"🎯 Crit: **{crit*100:.1f}%**","","Each upgrade uses cash and affects **only this weapon**.","Magazine upgrades follow the weapon's shot pattern.",""]
         for stat,label,icon in [("damage","Damage","⚔️"),("mag","Magazine","📦"),("crit","Crit","🎯")]:
             cost=get_weapon_upgrade_cost(player,self.weapon_name,stat)
-            detail="+3 damage" if stat=="damage" else (f"+{shots} capacity" if stat=="mag" else "+2% first, +0.5% after")
+            detail=f"+{WEAPON_DAMAGE_PER_UPGRADE.get(self.weapon_name, 3)} damage" if stat=="damage" else (f"+{shots} capacity" if stat=="mag" else "+2% first, +0.5% after")
             lines.append(f"{icon} **{label}** — Lv {lv[stat]} → {lv[stat]+1} | {detail} | **${cost:,}**")
         return "\n".join(lines)
 
