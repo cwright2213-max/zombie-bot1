@@ -1800,21 +1800,27 @@ class GameStore:
         self.players = {}
         self._save_count = 0
         self._action_locks = {}
+        self._save_locks = {}
         self.load()
 
     def action_lock(self, user_id: int):
-        """Return a per-player asyncio lock so rapid button clicks cannot race.
-
-        Combat messages are frequently edited while the same Survivor object is
-        being mutated. Serialising that mutation prevents overlapping Attack
-        interactions from stepping on each other or saving stale state.
-        """
+        """Return a per-player lock for serialising combat state mutations."""
         import asyncio
         key = str(user_id)
         lock = self._action_locks.get(key)
         if lock is None:
             lock = asyncio.Lock()
             self._action_locks[key] = lock
+        return lock
+
+    def save_lock(self, user_id: int):
+        """Return a per-player lock so database snapshots are written in order."""
+        import asyncio
+        key = str(user_id)
+        lock = self._save_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._save_locks[key] = lock
         return lock
 
     @staticmethod
@@ -1849,10 +1855,15 @@ class GameStore:
         p = self.players.get(key)
         if p is None:
             return
-        ok = await asyncio.to_thread(save_player, key, self._player_dict(p))
-        if not ok:
-            raise RuntimeError(f"Could not save player {key}")
-        self._save_count += 1
+        # Serialise writes for this survivor. The game state can change again
+        # while PostgreSQL is busy, so take the latest snapshot immediately
+        # before each write. This prevents an older action overwriting a newer one.
+        async with self.save_lock(int(key)):
+            snapshot = self._player_dict(p)
+            ok = await asyncio.to_thread(save_player, key, snapshot)
+            if not ok:
+                raise RuntimeError(f"Could not save player {key}")
+            self._save_count += 1
 
     def save(self):
         if not self.players:
@@ -2053,6 +2064,82 @@ class LeaderboardView(PlayerView):
         return leaderboard_text(self.store, self.zone_name, self.guild_id)
 
 
+class DailyCrateView(PlayerView):
+    """Dedicated Daily Survivor Crate interface with no shop/upgrade controls."""
+    def __init__(self, user_id: int, store, display_name: str = "Survivor", timeout: float = 180):
+        super().__init__(user_id, store, display_name, timeout)
+        self.refresh_view()
+
+    def build_embed(self, player: Survivor) -> discord.Embed:
+        claimable, remaining = daily_crate_status(player)
+        cash, ammo, xp = daily_crate_rewards(player)
+        embed = discord.Embed(
+            title="🎁 DAILY SURVIVOR CRATE",
+            description="A free supply drop for survivors who keep coming back.\n\nYour reward scales gently with your level.",
+            color=discord.Color.green() if claimable else discord.Color.blurple(),
+        )
+        if claimable:
+            embed.add_field(
+                name="📦 Today's Crate",
+                value=f"💵 **+${cash:,} Cash**\n🔫 **+{ammo} Standard Ammo**\n✨ **+{xp} XP**",
+                inline=False,
+            )
+            embed.add_field(name="🎁 Ready to claim", value="Press **Open Daily Crate** below.", inline=False)
+        else:
+            embed.add_field(name="⏳ Crate already claimed", value=f"Come back in **{format_duration(remaining)}**.", inline=False)
+            embed.add_field(
+                name="📦 Next crate",
+                value=f"💵 **+${cash:,} Cash**\n🔫 **+{ammo} Standard Ammo**\n✨ **+{xp} XP**",
+                inline=False,
+            )
+        embed.add_field(
+            name="👤 Survivor",
+            value=f"Level **{player.level}** • 💰 ${player.money:,} • 🌍 {player.zone_name}",
+            inline=False,
+        )
+        embed.set_footer(text="No Essence • No shop • No upgrades from this screen")
+        return embed
+
+    def refresh_view(self):
+        self.clear_items()
+        player = self.store.get(self.user_id)
+        claimable, _ = daily_crate_status(player)
+
+        claim_btn = discord.ui.Button(
+            label="🎁 Open Daily Crate",
+            style=discord.ButtonStyle.success,
+            row=0,
+            disabled=not claimable,
+        )
+
+        async def claim_cb(interaction: discord.Interaction):
+            p = self.store.get(self.user_id)
+            msgs = claim_daily_crate(p)
+            if msgs and msgs[0].startswith("🎁"):
+                await self.store.save_one_async(str(self.user_id))
+            self.refresh_view()
+            await interaction.response.edit_message(content=None, embed=self.build_embed(p), view=self)
+
+        claim_btn.callback = claim_cb
+        self.add_item(claim_btn)
+
+        back_btn = discord.ui.Button(label="⬅️ Main Menu", style=discord.ButtonStyle.secondary, row=1)
+        async def back_cb(interaction: discord.Interaction):
+            p = self.store.get(self.user_id)
+            name = getattr(self, "display_name", "Survivor")
+            try:
+                name = getattr(interaction.user, "display_name", None) or getattr(interaction.user, "global_name", None) or interaction.user.name
+            except Exception:
+                pass
+            await interaction.response.edit_message(
+                content=status(p, display_name=name),
+                embed=None,
+                view=ZombieMenuView(self.user_id, self.store, display_name=name),
+            )
+        back_btn.callback = back_cb
+        self.add_item(back_btn)
+
+
 class ZombieMenuView(PlayerView):
     def __init__(self, user_id: int, store, display_name: str = "Survivor"):
         super().__init__(user_id, store, display_name)
@@ -2086,6 +2173,9 @@ class ZombieMenuView(PlayerView):
         btn_shop = discord.ui.Button(label="🛒 Shop", style=discord.ButtonStyle.primary, row=0)
         async def shop_cb(interaction: discord.Interaction):
             p = self.store.get(self.user_id)
+            if p.run_active:
+                await interaction.response.edit_message(content=None, embed=combat_embed(p, ["🚫 **Shopping is locked during a run.** Flee or finish the run first."]), view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+                return
             hub = ShopHubView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"))
             await interaction.response.edit_message(content=hub.get_shop_text(p), embed=None, view=hub)
         btn_shop.callback = shop_cb
@@ -2129,19 +2219,12 @@ class ZombieMenuView(PlayerView):
         # Ammo and permanent upgrades are accessed through the main Shop now.
         # They are intentionally not shown as separate buttons on the main menu.
 
-        # Daily crate is always available from the main menu; claiming itself
-        # is blocked by the persistent 24-hour cooldown.
+        # Daily crate gets its own isolated interface. It exposes no shop or upgrade controls.
         btn_daily = discord.ui.Button(label="🎁 Daily Crate", style=discord.ButtonStyle.success, row=2)
         async def daily_cb(interaction: discord.Interaction):
             p = self.store.get(self.user_id)
-            msgs = claim_daily_crate(p)
-            if msgs and msgs[0].startswith("🎁"):
-                await self.store.save_one_async(str(self.user_id))
-            await interaction.response.edit_message(
-                content="\n".join(msgs) + "\n\n" + status(p, display_name=getattr(self, "display_name", "Survivor")),
-                embed=None,
-                view=ZombieMenuView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")),
-            )
+            view = DailyCrateView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"))
+            await interaction.response.edit_message(content=None, embed=view.build_embed(p), view=view)
         btn_daily.callback = daily_cb
         self.add_item(btn_daily)
 
@@ -2161,7 +2244,9 @@ class ZombieMenuView(PlayerView):
 
 
 class CombatView(PlayerView):
-    def __init__(self, user_id: int, store, display_name: str = "Survivor", timeout: float = 180):
+    def __init__(self, user_id: int, store, display_name: str = "Survivor", timeout: float | None = None):
+        # Combat must not expire after 180 seconds. Deep runs can last much longer,
+        # and the old View timeout made the Attack/Reload/Flee controls appear dead.
         super().__init__(user_id, store, display_name, timeout)
         # Void-only controls stay out of ordinary-zone combat instead of
         # cluttering the UI with buttons that cannot be used there.
@@ -2175,40 +2260,27 @@ class CombatView(PlayerView):
 
     @discord.ui.button(label="🔫 Attack", style=discord.ButtonStyle.danger, row=0)
     async def attack(self, interaction: discord.Interaction, _b):
-        # ACK IMMEDIATELY. Never wait for the per-player lock before acknowledging
-        # the Discord interaction; rapid clicks can otherwise hit Discord's
-        # interaction timeout while another attack is being processed.
+        # ACK immediately. Then serialise the state mutation AND the Discord
+        # message update so rapid interactions cannot overwrite the UI out of order.
+        # PostgreSQL I/O stays outside the combat lock.
         await interaction.response.defer()
-
         lock = self.store.action_lock(self.user_id)
         async with lock:
             player = self.store.get(self.user_id)
             msgs = take_action(player, "attack")
-
             if not player.run_active:
-                embed = discord.Embed(
-                    title="☠️ Run Ended",
-                    description="\n".join(msgs),
-                    color=discord.Color.red()
-                )
+                embed = discord.Embed(title="☠️ Run Ended", description="\n".join(msgs), color=discord.Color.red())
                 embed.add_field(name="🌊 Waves", value=f"{player.wave - 1 if player.run_zombies_killed>0 else 0} survived\nReached Wave {player.wave}", inline=True)
                 embed.add_field(name="🧟 Kills", value=f"{player.run_zombies_killed} zombies", inline=True)
                 embed.add_field(name="💰 Rewards", value=f"+${player.run_money_earned}\n+{player.run_xp_earned} XP", inline=True)
                 embed.set_footer(text=f"HP restored to {player.max_health}/{player.max_health} • Press any button to continue")
-                await interaction.edit_original_response(
-                    content=None,
-                    embed=embed,
-                    view=RunEndedView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), end_embed=embed)
-                )
+                next_view = RunEndedView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), end_embed=embed)
             else:
-                # CombatView has no per-attack dynamic controls, so keep the
-                # existing View instead of constructing a fresh one every shot.
                 embed = combat_embed(player, msgs)
-                await interaction.edit_original_response(content=None, embed=embed, view=self)
-
-        # Save only after the interaction has been acknowledged/updated and the
-        # combat lock has been released. PostgreSQL latency must never block the
-        # next attack interaction.
+                # Keep this View alive for the entire run instead of letting its
+                # 180-second timeout kill the controls.
+                next_view = self
+            await interaction.edit_original_response(content=None, embed=embed, view=next_view)
         await self.store.save_one_async(str(self.user_id))
 
     @discord.ui.button(label="💥 Void Bazooka", style=discord.ButtonStyle.secondary, row=1)
@@ -2237,23 +2309,25 @@ class CombatView(PlayerView):
     @discord.ui.button(label="🔄 Reload", style=discord.ButtonStyle.primary, row=0)
     async def reload(self, interaction: discord.Interaction, _b):
         await interaction.response.defer()
-        player = self.store.get(self.user_id)
-        msgs = take_action(player, "reload")
+        lock = self.store.action_lock(self.user_id)
+        async with lock:
+            player = self.store.get(self.user_id)
+            msgs = take_action(player, "reload")
+            if not player.run_active:
+                embed = discord.Embed(title="☠️ Run Ended", description="\n".join(msgs), color=discord.Color.red())
+                embed.add_field(name="🌊 Waves", value=f"{player.wave - 1 if player.run_zombies_killed>0 else 0} survived\nReached Wave {player.wave}", inline=True)
+                embed.add_field(name="🧟 Kills", value=f"{player.run_zombies_killed} zombies", inline=True)
+                embed.add_field(name="💰 Rewards", value=f"+${player.run_money_earned}\n+{player.run_xp_earned} XP", inline=True)
+                embed.set_footer(text=f"HP restored to {player.max_health}/{player.max_health} • Press any button to continue")
+                next_view = RunEndedView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), end_embed=embed)
+            else:
+                embed = combat_embed(player, msgs)
+                next_view = CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"))
+            # Keep the Discord message update inside the same per-player lock as the
+            # state mutation. Otherwise rapid clicks can finish out of order and an
+            # older interaction can overwrite the message with stale combat state.
+            await interaction.edit_original_response(content=None, embed=embed, view=next_view)
         await self.store.save_one_async(str(self.user_id))
-        if not player.run_active:
-            embed = discord.Embed(
-                title="☠️ Run Ended",
-                description="\n".join(msgs),
-                color=discord.Color.red()
-            )
-            embed.add_field(name="🌊 Waves", value=f"{player.wave - 1 if player.run_zombies_killed>0 else 0} survived\nReached Wave {player.wave}", inline=True)
-            embed.add_field(name="🧟 Kills", value=f"{player.run_zombies_killed} zombies", inline=True)
-            embed.add_field(name="💰 Rewards", value=f"+${player.run_money_earned}\n+{player.run_xp_earned} XP", inline=True)
-            embed.set_footer(text=f"HP restored to {player.max_health}/{player.max_health} • Press any button to continue")
-            await interaction.edit_original_response(content=None, embed=embed, view=RunEndedView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), end_embed=embed))
-        else:
-            embed = combat_embed(player, msgs)
-            await interaction.edit_original_response(content=None, embed=embed, view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
 
     @discord.ui.button(label="💊 Heal", style=discord.ButtonStyle.success, row=0)
     async def heal(self, interaction: discord.Interaction, _b):
@@ -2264,23 +2338,24 @@ class CombatView(PlayerView):
     @discord.ui.button(label="🏃 Flee", style=discord.ButtonStyle.secondary, row=0)
     async def flee(self, interaction: discord.Interaction, _b):
         await interaction.response.defer()
-        player = self.store.get(self.user_id)
-        msgs = take_action(player, "flee")
+        lock = self.store.action_lock(self.user_id)
+        async with lock:
+            player = self.store.get(self.user_id)
+            msgs = take_action(player, "flee")
+            if not player.run_active:
+                embed = discord.Embed(title="🏃 Escaped!", description="\n".join(msgs), color=discord.Color.blue())
+                embed.add_field(name="🌊 Waves", value=f"{player.wave - 1 if player.run_zombies_killed>0 else 0} survived\nReached Wave {player.wave}", inline=True)
+                embed.add_field(name="🧟 Kills", value=f"{player.run_zombies_killed} zombies", inline=True)
+                embed.add_field(name="💰 Rewards", value=f"+${player.run_money_earned}\n+{player.run_xp_earned} XP", inline=True)
+                embed.set_footer(text=f"HP restored to {player.max_health}/{player.max_health} • Press any button to continue")
+                next_view = RunEndedView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), end_embed=embed)
+            else:
+                embed = combat_embed(player, msgs)
+                next_view = CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"))
+            # Keep the Discord message update inside the same per-player lock so
+            # a rapid second click cannot overwrite the message with stale state.
+            await interaction.edit_original_response(content=None, embed=embed, view=next_view)
         await self.store.save_one_async(str(self.user_id))
-        if not player.run_active:
-            embed = discord.Embed(
-                title="🏃 Escaped!",
-                description="\n".join(msgs),
-                color=discord.Color.blue()
-            )
-            embed.add_field(name="🌊 Waves", value=f"{player.wave - 1 if player.run_zombies_killed>0 else 0} survived\nReached Wave {player.wave}", inline=True)
-            embed.add_field(name="🧟 Kills", value=f"{player.run_zombies_killed} zombies", inline=True)
-            embed.add_field(name="💰 Rewards", value=f"+${player.run_money_earned}\n+{player.run_xp_earned} XP", inline=True)
-            embed.set_footer(text=f"HP restored to {player.max_health}/{player.max_health} • Press any button to continue")
-            await interaction.edit_original_response(content=None, embed=embed, view=RunEndedView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), end_embed=embed))
-        else:
-            embed = combat_embed(player, msgs)
-            await interaction.edit_original_response(content=None, embed=embed, view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
 
     @discord.ui.button(label="🏠 Main Menu", style=discord.ButtonStyle.secondary, row=3)
     async def main_menu(self, interaction: discord.Interaction, _b):
@@ -2599,6 +2674,9 @@ class WeaponShopView(PlayerView):
             btn = discord.ui.Button(label=label[:80], style=style, row=0 if i < 3 else 1)
             async def cb(interaction, wn=wname):
                 p=self.store.get(self.user_id)
+                if p.run_active:
+                    await interaction.response.edit_message(content=None, embed=combat_embed(p, ["🚫 **Shopping is locked during a run.** Flee or finish the run first."]), view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+                    return
                 if wn not in p.owned_weapons:
                     msgs = buy_item(p, wn)
                     self.store.save()
@@ -2615,6 +2693,9 @@ class WeaponShopView(PlayerView):
         btn_buy = discord.ui.Button(label=buy_label[:80], style=discord.ButtonStyle.primary, row=2)
         async def buy_cb(interaction):
             p=self.store.get(self.user_id)
+            if p.run_active:
+                await interaction.response.edit_message(content=None, embed=combat_embed(p, ["🚫 **Shopping is locked during a run.** Flee or finish the run first."]), view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+                return
             msgs = buy_item(p, self.selected_weapon)
             self.store.save()
             content = self.get_shop_text(p, selected_override=self.selected_weapon, extra_msgs=msgs)
@@ -2832,8 +2913,11 @@ class MedsShopView(PlayerView):
             style = discord.ButtonStyle.success if is_sel else discord.ButtonStyle.primary
             btn = discord.ui.Button(label=label[:80], style=style, row=0)
             async def cb(interaction, m=mid):
-                self.selected_med = m
                 p=self.store.get(self.user_id)
+                if p.run_active:
+                    await interaction.response.edit_message(content=None, embed=combat_embed(p, ["🚫 **Med shopping is locked during a run.** Flee or finish the run first."]), view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+                    return
+                self.selected_med = m
                 content = self.get_shop_text(p, selected_override=m)
                 await interaction.response.edit_message(content=content, view=MedsShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_med=m))
             btn.callback = cb
@@ -3396,18 +3480,13 @@ async def zombie_cmd(interaction: discord.Interaction):
         except:
             pass
 
-@bot.tree.command(name="daily", description="Claim your free Daily Survivor Crate")
+@bot.tree.command(name="daily", description="Open your free Daily Survivor Crate")
 async def daily_cmd(interaction: discord.Interaction):
     await interaction.response.defer()
     player = game_store.get(interaction.user.id)
     name = getattr(interaction.user, "display_name", None) or getattr(interaction.user, "global_name", None) or interaction.user.name
-    msgs = claim_daily_crate(player)
-    if msgs and msgs[0].startswith("🎁"):
-        await game_store.save_one_async(str(interaction.user.id))
-    await interaction.followup.send(
-        content="\\n".join(msgs) + "\\n\\n" + status(player, display_name=name),
-        view=ZombieMenuView(interaction.user.id, game_store, display_name=name),
-    )
+    view = DailyCrateView(interaction.user.id, game_store, display_name=name)
+    await interaction.followup.send(content=None, embed=view.build_embed(player), view=view)
 
 @bot.tree.command(name="leaderboard", description="View Zombie Survival leaderboards")
 @app_commands.describe(scope="Global, server, or personal records", zone="Zone to view")
