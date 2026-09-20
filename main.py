@@ -120,6 +120,7 @@ BLOATER_ZONE_CHANCE_STEP = {
 BLOATER_MAX_CHANCE = 0.35
 BLOATER_FUSE = 5  # attacks before explosion
 BLOATER_EXPLODE_PCT = 0.65  # 65% max HP
+BLOATER_BOSS_HP_MULT = 1.5  # Bloaters are mini-bosses in every zone
 AMMO: dict[str, dict[str, Any]] = {
     "Standard": {"unlock_level": 1, "price": 0, "desc": "Reliable regular lead.", "effect": None, "cost_per_attack": 1, "box_price": 15, "box_amount": 24},
     "Bleed": {"unlock_level": 10, "price": 200, "desc": "25% bleed 15 dmg x3", "effect": "bleed", "cost_per_attack": 2, "box_price": 50, "box_amount": 24},
