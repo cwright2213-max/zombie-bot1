@@ -1,5 +1,5 @@
 """Ultimate clean bot V6 FULL RESTORED - POSTGRES CONSTANT SAVE - every action saves instantly - zero loss"""
-import os, sys, json, random, logging, time
+import os, sys, json, random, logging, time, uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict
@@ -97,6 +97,7 @@ ZONES: dict[str, dict[str, Any]] = {
     "The Void": {"min_level": 200, "hp_mult": 6.5, "dmg_mult": 2.6, "money_mult": 10.0, "xp_mult": 4.5, "desc": "Endgame. Everything wants you dead. 3-4 shots? Not here.", "weights": [10, 10, 30, 50], "ammo_mods": {"Standard": 0.90, "Bleed": 1.10, "Incendiary": 1.15, "Frostbite": 1.10, "Toxic": 1.25, "Shock": 1.50}},
 }
 ZONE_ORDER = ["Graveyard", "Mega Death City", "Frostbitten Outskirts", "Toxic Wasteland", "The Void"]
+WAVE_STAR_CHANCE = {"Graveyard": 0.05, "Mega Death City": 0.07, "Frostbitten Outskirts": 0.10, "Toxic Wasteland": 0.13, "The Void": 0.16}
 # Bloater config - run ender
 BLOATER_BASE = {"health": 280, "damage": 4, "money": 350, "xp": 120}
 BLOATER_MIN_WAVE = 5
@@ -349,6 +350,8 @@ class Survivor:
     run_money_earned: int = 0; run_xp_earned: int = 0; run_zombies_killed: int = 0; zone_name: str = "Graveyard"; ammo_name: str = "Standard"
     owned_ammo: list[str] = field(default_factory=lambda: ["Standard"]); owned_weapons: list[str] = field(default_factory=lambda: ["Pistol"])
     run_active: bool = False; wave: int = 0; zombies_remaining: int = 0; enemy: Enemy | None = None
+    # Unique run session ID prevents stale, never-expiring combat messages from acting on a newer run.
+    run_id: str = ""
     # --- Bloater tracking ---
     # Kept for save compatibility/history; Bloater spawning is now chance-based
     # with only a one-wave anti-consecutive safeguard.
@@ -516,6 +519,7 @@ class Survivor:
         allowed.setdefault("void_weapons_owned", [])
         allowed.setdefault("void_bazooka_ammo", 0)
         allowed.setdefault("void_bazooka_boss_fired", False)
+        allowed.setdefault("run_id", "")
         allowed.setdefault("void_infusion_level", 0); allowed.setdefault("void_shield_level", 0); allowed.setdefault("void_execution_level", 0)
         allowed.setdefault("void_infusion_cooldown", 0); allowed.setdefault("void_shield_cooldown", 0); allowed.setdefault("void_execution_cooldown", 0)
         allowed.setdefault("void_infusion_active", False); allowed.setdefault("void_shield_active", False); allowed.setdefault("void_execution_active", False)
@@ -529,6 +533,8 @@ class Survivor:
         allowed["equipped_weapon"] = allowed.get("weapon_name", "Pistol")
         if "stars" not in data: allowed["stars"] = max(0, level_for_xp(int(data.get("xp", 0))) - 1)
         player = cls(**allowed)
+        if player.run_active and not player.run_id:
+            player.run_id = uuid.uuid4().hex
         player.recalc_stats()
         return player
 
@@ -739,6 +745,7 @@ def start_run(player: Survivor) -> list[str]:
         return ["⚠️ Already in a run!"]
 
     player.health = player.max_health
+    player.run_id = uuid.uuid4().hex
     player.painkillers_used_this_run = 0
     player.full_restores_used_this_run = 0
     player.run_money_earned = 0
@@ -806,6 +813,8 @@ def recover_stuck_run(player: Survivor) -> list[str]:
         return []
     if player.enemy is not None:
         return []
+    if not player.run_id:
+        player.run_id = uuid.uuid4().hex
     if player.wave < 1:
         player.wave = 1
     if player.zombies_remaining <= 0:
@@ -920,7 +929,12 @@ def _finish_enemy(player: Survivor) -> list[str]:
     
     money_gain = int(enemy.money_reward * player.scavenger_bonus)
     player.money += money_gain
+    old_level = player.level
     player.xp += xp_gain
+    new_level = player.level
+    level_ups = max(0, new_level - old_level)
+    if level_ups:
+        player.stars += level_ups
     player.run_money_earned += money_gain
     player.run_xp_earned += xp_gain
     player.run_zombies_killed += 1
@@ -947,11 +961,8 @@ def _finish_enemy(player: Survivor) -> list[str]:
         messages_essence = ""
     player.zombies_remaining -= 1
     messages = [f"✅ **{enemy.name} defeated!** +${money_gain} (Base ${enemy.money_reward} + {int((player.scavenger_bonus-1)*100)}% Loot) • +{xp_gain} XP (x{wave_mult:.1f} wave x{xp_bonus_mult:.1f} bonus){messages_essence}"] if player.scavenger_bonus > 1.0 else [f"✅ **{enemy.name} defeated!** +${money_gain} • +{xp_gain} XP (Base {enemy.xp_reward} x{wave_mult:.1f} wave x{xp_bonus_mult:.1f} bonus){messages_essence}"]
-    if player.level > level_for_xp(player.xp - enemy.xp_reward):
-        ups = player.level - level_for_xp(player.xp - enemy.xp_reward)
-        if ups > 0:
-            player.stars += ups
-            messages.append(f"🎉 **LEVEL UP!** Level {player.level}! +{ups} ⭐")
+    if level_ups:
+        messages.append(f"🎉 **LEVEL UP!** Level {player.level}! +{level_ups} ⭐")
     if player.zombies_remaining <= 0:
         # MEDIC DROP CHECK - per wave now, not per kill (less OP)
         if player.medic_chance > 0 and random.random() < player.medic_chance:
@@ -975,6 +986,14 @@ def _finish_enemy(player: Survivor) -> list[str]:
         if player.zone_name == "The Void" and player.wave >= VOID_ESSENCE_WAVE_START:
             player.void_essence += VOID_ESSENCE_PER_VOID_WAVE
             messages.append(f"◈ **Void Essence +{VOID_ESSENCE_PER_VOID_WAVE}** for clearing Void wave {player.wave}!")
+        # Low-probability bonus Star on wave clear. This is separate from
+        # guaranteed +1 Star per level gained and scales by zone.
+        wave_star_chance = WAVE_STAR_CHANCE.get(player.zone_name, 0.05)
+        if random.random() < wave_star_chance:
+            player.stars += 1
+            messages.append(
+                f"⭐ **LUCKY WAVE CLEAR!** +1 Star! ({wave_star_chance * 100:.0f}% chance)"
+            )
         # Leaderboards record ONLY fully completed waves. Admin /setwave test runs
         # are deliberately excluded so high-wave testing cannot pollute real records.
         if not getattr(player, "admin_test_mode", False):
@@ -1066,6 +1085,15 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
     if not player.run_active or player.enemy is None:
         return ["Not in a run. Use Start run."]
 
+    messages: list[str] = []
+    # Flee exits before the next enemy turn, so it does not take a pending DoT tick.
+    # Every other action begins with pending DoT damage, including healing.
+    if action != "flee":
+        messages.extend(_apply_damage_over_time(player))
+        if player.enemy is None or player.enemy.health <= 0:
+            messages.extend(_finish_enemy(player))
+            return messages
+
     if action == "heal":
         if heal_item == "full_restore":
             if player.full_restores_used_this_run >= MAX_FULL_RESTORES_PER_RUN:
@@ -1077,12 +1105,16 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
             # MEDIC STAR CHECK - chance to not consume
             if player.medic_chance > 0 and random.random() < player.medic_chance:
                 player.health = player.max_health
-                return [f"💊 **MEDIC SAVE!** Full heal kept! ({player.medic_chance*100:.1f}%) {player.max_health} HP", f"{player.full_restores} owned • ✨ Saved!"]
-            player.health = player.max_health
-            player.full_restores -= 1
-            player.full_restores_used_this_run += 1
-            left = MAX_FULL_RESTORES_PER_RUN - player.full_restores_used_this_run
-            return [f"✨ **Full heal!** {player.max_health} HP", f"{player.full_restores} owned • {left} left"]
+                player.full_restores_used_this_run += 1
+                left = MAX_FULL_RESTORES_PER_RUN - player.full_restores_used_this_run
+                messages.extend([f"💊 **MEDIC SAVE!** Full heal kept! ({player.medic_chance*100:.1f}%) {player.max_health} HP", f"{player.full_restores} owned • {left} left • ✨ Saved!"])
+            else:
+                player.health = player.max_health
+                player.full_restores -= 1
+                player.full_restores_used_this_run += 1
+                left = MAX_FULL_RESTORES_PER_RUN - player.full_restores_used_this_run
+                messages.extend([f"✨ **Full heal!** {player.max_health} HP", f"{player.full_restores} owned • {left} left"])
+            heal_item = None
         if heal_item == "painkillers":
             if player.painkillers_used_this_run >= MAX_PAINKILLERS_PER_RUN:
                 return [f"⚠️ Limit: {MAX_PAINKILLERS_PER_RUN}/run."]
@@ -1094,17 +1126,19 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
             # MEDIC STAR CHECK - chance to not consume
             if player.medic_chance > 0 and random.random() < player.medic_chance:
                 player.health = min(player.max_health, player.health + amount)
-                return [f"💊 **MEDIC SAVE!** +{amount} HP without using item! ({player.medic_chance*100:.1f}%) Now {player.health}/{player.max_health}", f"{player.painkillers} owned • ✨ Saved!"]
-            player.health = min(player.max_health, player.health + amount)
-            player.painkillers -= 1
-            player.painkillers_used_this_run += 1
-            left = MAX_PAINKILLERS_PER_RUN - player.painkillers_used_this_run
-            return [f"💊 **+{amount} HP!** Now {player.health}/{player.max_health}", f"{player.painkillers} owned • {left} left"]
-        return ["Choose heal item."]
-    messages = _apply_damage_over_time(player)
-    if player.enemy is None or player.enemy.health <= 0:
-        messages.extend(_finish_enemy(player))
-        return messages
+                player.painkillers_used_this_run += 1
+                left = MAX_PAINKILLERS_PER_RUN - player.painkillers_used_this_run
+                messages.extend([f"💊 **MEDIC SAVE!** +{amount} HP without using item! ({player.medic_chance*100:.1f}%) Now {player.health}/{player.max_health}", f"{player.painkillers} owned • {left} left • ✨ Saved!"])
+            else:
+                player.health = min(player.max_health, player.health + amount)
+                player.painkillers -= 1
+                player.painkillers_used_this_run += 1
+                left = MAX_PAINKILLERS_PER_RUN - player.painkillers_used_this_run
+                messages.extend([f"💊 **+{amount} HP!** Now {player.health}/{player.max_health}", f"{player.painkillers} owned • {left} left"])
+            heal_item = None
+        if heal_item is not None:
+            return ["Choose heal item."]
+        action = "heal_done"
     enemy = player.enemy
     if action in {"void_infusion", "void_shield", "void_execution"}:
         perk_name = {"void_infusion":"Void Infusion", "void_shield":"Void Shield", "void_execution":"Void Execution"}[action]
@@ -1146,6 +1180,8 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
         perk_suffix = f" • ⚡ {perk_text}" if perk_text else ""
         messages.append(f"💥 **VOID BAZOOKA!** Hit **{enemy.name} for {bazooka_damage} dmg**! (Base {raw_damage}{boss_text}) ◈ Void Lvl {void_level}/{VOID_UPGRADE_MAX} • {ammo_text}{perk_suffix}")
         # No standard crit, pet, ammo effect, or standard weapon upgrade applies.
+    elif action == "heal_done":
+        pass
     elif action == "attack":
         ammo_data = AMMO[player.ammo_name]
         base_cost = int(ammo_data["cost_per_attack"])
@@ -1357,6 +1393,8 @@ def buy_item(player: Survivor, item: str) -> list[str]:
     return [f"🔫 Equipped **{item}** (+{player.damage_upgrades*3} dmg from upgrades). ${player.money} left."]
 
 def equip_ammo(player: Survivor, ammo_name: str) -> list[str]:
+    if player.run_active:
+        return ["⚠️ Can't change ammo during a run! Flee first."]
     if ammo_name not in AMMO:
         return ["That ammo doesn't exist."]
     if ammo_name not in player.owned_ammo:
@@ -1706,17 +1744,24 @@ def claim_daily_crate(player: Survivor) -> list[str]:
         return [f"⏳ **Daily crate already claimed.** Come back in **{format_duration(remaining)}**."]
 
     cash, ammo, xp = daily_crate_rewards(player)
+    old_level = player.level
     player.money += cash
     player.spare_ammo["Standard"] = player.spare_ammo.get("Standard", 0) + ammo
     player.xp += xp
+    level_ups = max(0, player.level - old_level)
+    if level_ups:
+        player.stars += level_ups
     player.daily_claimed_at = datetime.now(timezone.utc).isoformat()
 
-    return [
+    rewards = [
         "🎁 **DAILY SURVIVOR CRATE OPENED!**",
         f"💵 **+${cash} Cash**",
         f"🔫 **+{ammo} Standard Ammo**",
         f"✨ **+{xp} XP**",
     ]
+    if level_ups:
+        rewards.append(f"🎉 **LEVEL UP!** Level {player.level}! +{level_ups} ⭐")
+    return rewards
 
 
 def status(player: Survivor, display_name: str = "Survivor") -> str:
@@ -1834,11 +1879,11 @@ class GameStore:
     def get(self, user_id: int):
         key = str(user_id)
         if key not in self.players:
-            player = Survivor()
-            if not save_player(key, self._player_dict(player)):
-                raise RuntimeError(f"Could not persist new player {key}")
-            self.players[key] = player
-            self._save_count += 1
+            # Do not perform blocking PostgreSQL I/O from an async callback just
+            # because this is the first time we have seen a user. The caller
+            # persists state through save_one_async(), and background autosave
+            # covers idle/newly-created survivors as well.
+            self.players[key] = Survivor()
         return self.players[key]
 
     def save_one(self, key: str):
@@ -1856,15 +1901,41 @@ class GameStore:
         p = self.players.get(key)
         if p is None:
             return
-        # Serialise writes for this survivor. The game state can change again
-        # while PostgreSQL is busy, so take the latest snapshot immediately
-        # before each write. This prevents an older action overwriting a newer one.
-        async with self.save_lock(int(key)):
+        # Snapshot while the per-player action lock is held. This prevents an
+        # autosave or another callback from taking a stale snapshot halfway
+        # through a state mutation. Database I/O itself happens off the event
+        # loop and is serialized separately per player.
+        async with self.action_lock(int(key)):
             snapshot = self._player_dict(p)
+        async with self.save_lock(int(key)):
             ok = await asyncio.to_thread(save_player, key, snapshot)
             if not ok:
                 raise RuntimeError(f"Could not save player {key}")
             self._save_count += 1
+
+    async def save_async(self):
+        """Persist every player without blocking Discord's event loop.
+
+        Each player's snapshot is taken under that player's action lock and
+        written under that player's save lock. This prevents an older
+        autosave snapshot from being written after a newer action snapshot.
+        """
+        import asyncio
+        if not self.players:
+            print("[AUTOSAVE] REFUSING ASYNC SAVE: no players are loaded")
+            return
+        keys = list(self.players.keys())
+        results = await asyncio.gather(
+            *(self.save_one_async(k) for k in keys),
+            return_exceptions=True,
+        )
+        failed = []
+        for k, result in zip(keys, results):
+            if isinstance(result, Exception):
+                failed.append(f"{k}: {result}")
+        if failed:
+            raise RuntimeError("Failed to save players: " + "; ".join(failed[:10]))
+        print(f"[AUTOSAVE] Saved {len(keys)} players to Postgres - all safe")
 
     def save(self):
         if not self.players:
@@ -1878,24 +1949,6 @@ class GameStore:
             raise RuntimeError(f"Failed to save players: {', '.join(failed[:10])}")
         self._save_count += len(self.players)
         print(f"[AUTOSAVE] Saved {len(self.players)} players to Postgres - all safe")
-
-    async def save_async(self):
-        import asyncio
-        if not self.players:
-            print("[AUTOSAVE] REFUSING ASYNC SAVE: no players are loaded")
-            return
-        items = list(self.players.items())
-        results = await asyncio.gather(
-            *(asyncio.to_thread(save_player, k, self._player_dict(p)) for k, p in items),
-            return_exceptions=True,
-        )
-        failed = []
-        for (k, _), result in zip(items, results):
-            if result is not True:
-                failed.append(k)
-        if failed:
-            raise RuntimeError(f"Failed to save players: {', '.join(failed[:10])}")
-        self._save_count += len(items)
 
     def load(self):
         # Critical: never convert a database failure into {}.
@@ -1985,11 +2038,12 @@ class RunEndedView(PlayerView):
 
         btn_again = discord.ui.Button(label="▶️ Start Run", style=discord.ButtonStyle.primary, row=0)
         async def again_cb(interaction: discord.Interaction):
+            await interaction.response.defer()
             p = self.store.get(self.user_id)
             msgs = start_run(p)
-            self.store.save()
+            await self.store.save_async()
             embed = combat_embed(p, msgs)
-            await interaction.response.edit_message(content=None, embed=embed, view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+            await interaction.edit_original_response(content=None, embed=embed, view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
         btn_again.callback = again_cb
         self.add_item(btn_again)
 
@@ -2114,12 +2168,15 @@ class DailyCrateView(PlayerView):
         )
 
         async def claim_cb(interaction: discord.Interaction):
-            p = self.store.get(self.user_id)
-            msgs = claim_daily_crate(p)
+            await interaction.response.defer()
+            lock = self.store.action_lock(self.user_id)
+            async with lock:
+                p = self.store.get(self.user_id)
+                msgs = claim_daily_crate(p)
             if msgs and msgs[0].startswith("🎁"):
                 await self.store.save_one_async(str(self.user_id))
             self.refresh_view()
-            await interaction.response.edit_message(content=None, embed=self.build_embed(p), view=self)
+            await interaction.edit_original_response(content=None, embed=self.build_embed(p), view=self)
 
         claim_btn.callback = claim_cb
         self.add_item(claim_btn)
@@ -2153,21 +2210,22 @@ class ZombieMenuView(PlayerView):
         # ROW 0: Start + Shop (primary actions)
         btn_start = discord.ui.Button(label=label, style=discord.ButtonStyle.success, row=0)
         async def start_cb(interaction: discord.Interaction):
+            await interaction.response.defer()
             p = self.store.get(self.user_id)
             if p.run_active:
                 if p.enemy is None:
                     msgs = recover_stuck_run(p)
-                    self.store.save_one(str(self.user_id))
+                    await self.store.save_one_async(str(self.user_id))
                     embed = combat_embed(p, msgs)
-                    await interaction.response.edit_message(content=None, embed=embed, view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+                    await interaction.edit_original_response(content=None, embed=embed, view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
                     return
                 embed = combat_embed(p, [f"🔄 Resumed your run! Wave {p.wave} | {p.zombies_remaining} zombies left"])
-                await interaction.response.edit_message(content=None, embed=embed, view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+                await interaction.edit_original_response(content=None, embed=embed, view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
                 return
             msgs = start_run(p)
-            self.store.save()
+            await self.store.save_async()
             embed = combat_embed(p, msgs)
-            await interaction.response.edit_message(content=None, embed=embed, view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+            await interaction.edit_original_response(content=None, embed=embed, view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
         btn_start.callback = start_cb
         self.add_item(btn_start)
 
@@ -2211,7 +2269,7 @@ class ZombieMenuView(PlayerView):
             gid=interaction.guild.id if interaction.guild else None
             if gid is not None and str(gid) not in p.leaderboard_guilds:
                 p.leaderboard_guilds.append(str(gid))
-            self.store.save_one(str(self.user_id))
+            await self.store.save_one_async(str(self.user_id))
             await interaction.response.edit_message(content=leaderboard_text(self.store, p.zone_name, None), embed=None, view=LeaderboardView(self.user_id,self.store,display_name=name,guild_id=gid,zone_name=p.zone_name))
         lb_cb.__name__ = "leaderboards_cb"
         self.add_item(btn_lb)
@@ -2245,10 +2303,12 @@ class ZombieMenuView(PlayerView):
 
 
 class CombatView(PlayerView):
-    def __init__(self, user_id: int, store, display_name: str = "Survivor", timeout: float | None = None):
+    def __init__(self, user_id: int, store, display_name: str = "Survivor", timeout: float | None = None, run_id: str | None = None):
         # Combat must not expire after 180 seconds. Deep runs can last much longer,
         # and the old View timeout made the Attack/Reload/Flee controls appear dead.
         super().__init__(user_id, store, display_name, timeout)
+        current_player = self.store.get(user_id)
+        self.run_id = run_id if run_id is not None else current_player.run_id
         # Void-only controls stay out of ordinary-zone combat instead of
         # cluttering the UI with buttons that cannot be used there.
         player = self.store.get(user_id)
@@ -2258,6 +2318,24 @@ class CombatView(PlayerView):
                     "💥 Void Bazooka", "◈ Void Perks"
                 }:
                     self.remove_item(item)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if not await super().interaction_check(interaction):
+            return False
+        player = self.store.get(self.user_id)
+        if player.run_id != self.run_id:
+            await interaction.response.send_message(
+                "⚠️ This combat panel is from an older run. Open **Continue Run** from the main menu to use the current run.",
+                ephemeral=True,
+            )
+            return False
+        if not player.run_active:
+            await interaction.response.send_message(
+                "ℹ️ This run has ended. Return to the main menu to start another run.",
+                ephemeral=True,
+            )
+            return False
+        return True
 
     @discord.ui.button(label="🔫 Attack", style=discord.ButtonStyle.danger, row=0)
     async def attack(self, interaction: discord.Interaction, _b):
@@ -2287,19 +2365,22 @@ class CombatView(PlayerView):
     @discord.ui.button(label="💥 Void Bazooka", style=discord.ButtonStyle.secondary, row=1)
     async def void_bazooka(self, interaction: discord.Interaction, _b):
         await interaction.response.defer()
-        player=self.store.get(self.user_id)
-        msgs=take_action(player, "void_bazooka")
+        lock = self.store.action_lock(self.user_id)
+        async with lock:
+            player=self.store.get(self.user_id)
+            msgs=take_action(player, "void_bazooka")
+            if not player.run_active:
+                embed=discord.Embed(title="☠️ Run Ended", description="\n".join(msgs), color=discord.Color.red())
+                embed.add_field(name="🌊 Waves", value=f"{player.wave - 1 if player.run_zombies_killed>0 else 0} survived\nReached Wave {player.wave}", inline=True)
+                embed.add_field(name="🧟 Kills", value=f"{player.run_zombies_killed} zombies", inline=True)
+                embed.add_field(name="💰 Rewards", value=f"+${player.run_money_earned}\n+{player.run_xp_earned} XP", inline=True)
+                embed.set_footer(text=f"HP restored to {player.max_health}/{player.max_health} • Press any button to continue")
+                next_view = RunEndedView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), end_embed=embed)
+            else:
+                embed=combat_embed(player,msgs)
+                next_view = CombatView(self.user_id,self.store,display_name=getattr(self,"display_name","Survivor"))
+            await interaction.edit_original_response(content=None, embed=embed, view=next_view)
         await self.store.save_one_async(str(self.user_id))
-        if not player.run_active:
-            embed=discord.Embed(title="☠️ Run Ended", description="\n".join(msgs), color=discord.Color.red())
-            embed.add_field(name="🌊 Waves", value=f"{player.wave - 1 if player.run_zombies_killed>0 else 0} survived\nReached Wave {player.wave}", inline=True)
-            embed.add_field(name="🧟 Kills", value=f"{player.run_zombies_killed} zombies", inline=True)
-            embed.add_field(name="💰 Rewards", value=f"+${player.run_money_earned}\n+{player.run_xp_earned} XP", inline=True)
-            embed.set_footer(text=f"HP restored to {player.max_health}/{player.max_health} • Press any button to continue")
-            await interaction.edit_original_response(content=None, embed=embed, view=RunEndedView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), end_embed=embed))
-        else:
-            embed=combat_embed(player,msgs)
-            await interaction.edit_original_response(content=None, embed=embed, view=CombatView(self.user_id,self.store,display_name=getattr(self,"display_name","Survivor")))
 
     @discord.ui.button(label="◈ Void Perks", style=discord.ButtonStyle.secondary, row=1)
     async def void_perks(self, interaction: discord.Interaction, _b):
@@ -2366,7 +2447,7 @@ class CombatView(PlayerView):
         player = self.store.get(self.user_id)
         if player.run_active and player.enemy is None:
             msgs = recover_stuck_run(player)
-            self.store.save_one(str(self.user_id))
+            await self.store.save_one_async(str(self.user_id))
         else:
             msgs = []
         name = getattr(self, "display_name", "Survivor")
@@ -2417,21 +2498,17 @@ class VoidPerkView(PlayerView):
             btn = discord.ui.Button(label=label, style=style, row=0, disabled=(lvl <= 0))
             async def perk_cb(interaction: discord.Interaction, pn=perk_name):
                 await interaction.response.defer()
-                p = self.store.get(self.user_id)
-                msgs = take_action(p, pn.lower().replace(" ", "_"))
+                lock = self.store.action_lock(self.user_id)
+                async with lock:
+                    p = self.store.get(self.user_id)
+                    msgs = take_action(p, pn.lower().replace(" ", "_"))
+                    embed = combat_embed(p, msgs)
+                    await interaction.edit_original_response(
+                        content=None,
+                        embed=embed,
+                        view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")),
+                    )
                 await self.store.save_one_async(str(self.user_id))
-                if p.run_active:
-                    await interaction.edit_original_response(
-                        content=None,
-                        embed=combat_embed(p, msgs),
-                        view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")),
-                    )
-                else:
-                    await interaction.edit_original_response(
-                        content=None,
-                        embed=combat_embed(p, msgs),
-                        view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")),
-                    )
             btn.callback = perk_cb
             self.add_item(btn)
 
@@ -2504,17 +2581,17 @@ class HealView(PlayerView):
                 await interaction.response.defer()
             except:
                 pass
-            p=self.store.get(self.user_id)
-            msgs=take_action(p,"heal","painkillers")
+            lock = self.store.action_lock(self.user_id)
+            async with lock:
+                p=self.store.get(self.user_id)
+                msgs=take_action(p,"heal","painkillers")
+                embed = combat_embed(p, msgs)
+                await interaction.edit_original_response(content=None, embed=embed, view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
             try:
                 await self.store.save_one_async(str(self.user_id))
-            except:
-                self.store.save_one(str(self.user_id))
-            embed = combat_embed(p, msgs)
-            try:
-                await interaction.edit_original_response(content=None, embed=embed, view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
             except Exception as e:
-                print(f"Heal CB error: {e}")
+                print(f"Heal save error: {e}")
+            return
         pk_btn.callback = pk_cb
         self.add_item(pk_btn)
 
@@ -2526,17 +2603,17 @@ class HealView(PlayerView):
                 await interaction.response.defer()
             except:
                 pass
-            p=self.store.get(self.user_id)
-            msgs=take_action(p,"heal","full_restore")
+            lock = self.store.action_lock(self.user_id)
+            async with lock:
+                p=self.store.get(self.user_id)
+                msgs=take_action(p,"heal","full_restore")
+                embed = combat_embed(p, msgs)
+                await interaction.edit_original_response(content=None, embed=embed, view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
             try:
                 await self.store.save_one_async(str(self.user_id))
-            except:
-                self.store.save_one(str(self.user_id))
-            embed = combat_embed(p, msgs)
-            try:
-                await interaction.edit_original_response(content=None, embed=embed, view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
             except Exception as e:
-                print(f"Heal CB error: {e}")
+                print(f"Heal save error: {e}")
+            return
         fr_btn.callback = fr_cb
         self.add_item(fr_btn)
 
@@ -2674,15 +2751,16 @@ class WeaponShopView(PlayerView):
                 style = discord.ButtonStyle.secondary
             btn = discord.ui.Button(label=label[:80], style=style, row=0 if i < 3 else 1)
             async def cb(interaction, wn=wname):
+                await interaction.response.defer()
                 p=self.store.get(self.user_id)
                 if p.run_active:
-                    await interaction.response.edit_message(content=None, embed=combat_embed(p, ["🚫 **Shopping is locked during a run.** Flee or finish the run first."]), view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+                    await interaction.edit_original_response(content=None, embed=combat_embed(p, ["🚫 **Shopping is locked during a run.** Flee or finish the run first."]), view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
                     return
                 if wn not in p.owned_weapons:
                     msgs = buy_item(p, wn)
-                    self.store.save()
+                    await self.store.save_async()
                 content = self.get_shop_text(p, selected_override=wn, extra_msgs=None)
-                await interaction.response.edit_message(content=content, view=WeaponShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_weapon=wn))
+                await interaction.edit_original_response(content=content, view=WeaponShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_weapon=wn))
             btn.callback = cb
             self.add_item(btn)
 
@@ -2693,14 +2771,15 @@ class WeaponShopView(PlayerView):
             buy_label = f"Equip {self.selected_weapon}"
         btn_buy = discord.ui.Button(label=buy_label[:80], style=discord.ButtonStyle.primary, row=2)
         async def buy_cb(interaction):
+            await interaction.response.defer()
             p=self.store.get(self.user_id)
             if p.run_active:
-                await interaction.response.edit_message(content=None, embed=combat_embed(p, ["🚫 **Shopping is locked during a run.** Flee or finish the run first."]), view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+                await interaction.edit_original_response(content=None, embed=combat_embed(p, ["🚫 **Shopping is locked during a run.** Flee or finish the run first."]), view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
                 return
             msgs = buy_item(p, self.selected_weapon)
-            self.store.save()
+            await self.store.save_async()
             content = self.get_shop_text(p, selected_override=self.selected_weapon, extra_msgs=msgs)
-            await interaction.response.edit_message(content=content, view=WeaponShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_weapon=self.selected_weapon))
+            await interaction.edit_original_response(content=content, view=WeaponShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_weapon=self.selected_weapon))
         btn_buy.callback = buy_cb
         self.add_item(btn_buy)
 
@@ -2787,9 +2866,10 @@ class AmmoShopView(PlayerView):
                 style = discord.ButtonStyle.secondary
             btn = discord.ui.Button(label=label[:80], style=style, row=0 if i < 3 else 1)
             async def cb(interaction, an=ammo_name):
+                await interaction.response.defer()
                 p=self.store.get(self.user_id)
                 if p.run_active:
-                    await interaction.response.edit_message(content=None, embed=combat_embed(p, ["🚫 **Ammo shopping is locked during a run.** Flee or finish the run first."]), view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+                    await interaction.edit_original_response(content=None, embed=combat_embed(p, ["🚫 **Ammo shopping is locked during a run.** Flee or finish the run first."]), view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
                     return
                 msgs = []
                 success = True
@@ -2798,7 +2878,7 @@ class AmmoShopView(PlayerView):
                     # Check if equip failed (message starts with ❌ or Need or unlocks)
                     if msgs and any(x.startswith('❌') or 'Need $' in x or 'unlocks at level' in x.lower() for x in msgs):
                         success = False
-                    self.store.save()
+                    await self.store.save_async()
                 else:
                     # Already owned, try to equip
                     msgs = equip_ammo(p, an)
@@ -2810,16 +2890,16 @@ class AmmoShopView(PlayerView):
                             # Check if error
                             if any(m.startswith('❌') for m in msgs):
                                 success = False
-                    self.store.save()
+                    await self.store.save_async()
                 
                 if success:
                     self.selected_ammo = an
                     content = self.get_shop_text(p, extra_msgs=msgs)
-                    await interaction.response.edit_message(content=content, view=AmmoShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_ammo=an))
+                    await interaction.edit_original_response(content=content, view=AmmoShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_ammo=an))
                 else:
                     # Equip failed, keep old selection but show error
                     content = self.get_shop_text(p, extra_msgs=msgs)
-                    await interaction.response.edit_message(content=content, view=AmmoShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_ammo=self.selected_ammo))
+                    await interaction.edit_original_response(content=content, view=AmmoShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_ammo=self.selected_ammo))
             btn.callback = cb
             self.add_item(btn)
         
@@ -2829,14 +2909,15 @@ class AmmoShopView(PlayerView):
             label = f"+{qty} (${total:,})"
             btn = discord.ui.Button(label=label[:80], style=discord.ButtonStyle.primary, row=row)
             async def bulk_cb(interaction, q=qty, ammo=self.selected_ammo):
+                await interaction.response.defer()
                 p=self.store.get(self.user_id)
                 if p.run_active:
-                    await interaction.response.edit_message(content=None, embed=combat_embed(p, ["🚫 **Ammo shopping is locked during a run.** Flee or finish the run first."]), view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+                    await interaction.edit_original_response(content=None, embed=combat_embed(p, ["🚫 **Ammo shopping is locked during a run.** Flee or finish the run first."]), view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
                     return
                 msgs = buy_ammo_boxes(p, ammo, q)
-                self.store.save()
+                await self.store.save_async()
                 content = self.get_shop_text(p, selected_override=ammo, extra_msgs=msgs)
-                await interaction.response.edit_message(content=content, view=AmmoShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_ammo=ammo))
+                await interaction.edit_original_response(content=content, view=AmmoShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_ammo=ammo))
             btn.callback = bulk_cb
             self.add_item(btn)
         
@@ -2932,9 +3013,10 @@ class MedsShopView(PlayerView):
             label = f"+{qty} (${total:,})"
             btn = discord.ui.Button(label=label[:80], style=discord.ButtonStyle.primary, row=row)
             async def bulk_cb(interaction, q=qty, med=self.selected_med):
+                await interaction.response.defer()
                 p = self.store.get(self.user_id)
                 if p.run_active:
-                    await interaction.response.edit_message(content=None, embed=combat_embed(p, ["🚫 **Med shopping is locked during a run.** Flee or finish the run first."]), view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+                    await interaction.edit_original_response(content=None, embed=combat_embed(p, ["🚫 **Med shopping is locked during a run.** Flee or finish the run first."]), view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
                     return
                 total_cost = (15 if med == "painkillers" else 80) * q
 
@@ -2953,9 +3035,9 @@ class MedsShopView(PlayerView):
                         p.full_restores += q
                         bought = q
                         msgs = [f"✨ Bought {q}x Full Restore +{bought} | Now {p.full_restores}x | ${p.money} left"]
-                    self.store.save_one(str(self.user_id))
+                    await self.store.save_one_async(str(self.user_id))
                 content = self.get_shop_text(p, selected_override=med, extra_msgs=msgs)
-                await interaction.response.edit_message(content=content, view=MedsShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_med=med))
+                await interaction.edit_original_response(content=content, view=MedsShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_med=med))
             btn.callback = bulk_cb
             self.add_item(btn)
 
@@ -3032,7 +3114,7 @@ class UpgradeView(PlayerView):
                 self.selected_up = u
                 p=self.store.get(self.user_id)
                 content = self.get_shop_text(p, selected_override=u)
-                await interaction.response.edit_message(content=content, view=UpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_up=u))
+                await interaction.edit_original_response(content=content, view=UpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_up=u))
             btn.callback = cb
             self.add_item(btn)
 
@@ -3048,13 +3130,14 @@ class UpgradeView(PlayerView):
                 except:
                     pass
                 return
+            await interaction.response.defer()
             _purchase_locks.add(self.user_id)
             try:
                 p=self.store.get(self.user_id)
                 msgs = upgrade(p, self.selected_up)
-                self.store.save()
+                await self.store.save_async()
                 content = self.get_shop_text(p, selected_override=self.selected_up, extra_msgs=msgs)
-                await interaction.response.edit_message(content=content, view=UpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_up=self.selected_up))
+                await interaction.edit_original_response(content=content, view=UpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_up=self.selected_up))
             finally:
                 _purchase_locks.discard(self.user_id)
         btn_buy.callback = buy_cb
@@ -3142,7 +3225,7 @@ class StarUpgradeView(PlayerView):
                 self.selected_star = s
                 p=self.store.get(self.user_id)
                 content = self.get_shop_text(p, selected_override=s)
-                await interaction.response.edit_message(content=content, view=StarUpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_star=s))
+                await interaction.edit_original_response(content=content, view=StarUpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_star=s))
             btn.callback = cb
             self.add_item(btn)
 
@@ -3158,13 +3241,14 @@ class StarUpgradeView(PlayerView):
                 except:
                     pass
                 return
+            await interaction.response.defer()
             _purchase_locks.add(self.user_id)
             try:
                 p=self.store.get(self.user_id)
                 msgs = upgrade_star(p, self.selected_star)
-                self.store.save()
+                await self.store.save_async()
                 content = self.get_shop_text(p, selected_override=self.selected_star, extra_msgs=msgs)
-                await interaction.response.edit_message(content=content, view=StarUpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_star=self.selected_star))
+                await interaction.edit_original_response(content=content, view=StarUpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_star=self.selected_star))
             finally:
                 _purchase_locks.discard(self.user_id)
         btn_buy.callback = buy_cb
@@ -3254,6 +3338,7 @@ class VoidUpgradeView(PlayerView):
             baz_label = "💥 Void Bazooka" + (" ✅" if owned else " 🔒")
         btn = discord.ui.Button(label=baz_label, style=discord.ButtonStyle.success if owned else discord.ButtonStyle.primary, row=0)
         async def bazooka_select(interaction):
+            await interaction.response.defer()
             p=self.store.get(self.user_id); msgs=[]
             if "Void Bazooka" not in p.void_weapons_owned:
                 if p.level < VOID_WEAPONS["Void Bazooka"]["unlock_level"]:
@@ -3266,9 +3351,9 @@ class VoidUpgradeView(PlayerView):
                     p.money -= VOID_WEAPONS["Void Bazooka"]["price"]
                     p.void_weapons_owned.append("Void Bazooka")
                     msgs=["💥 **Void Bazooka acquired!**"]
-                    self.store.save()
+                    await self.store.save_async()
             view=VoidUpgradeView(self.user_id,self.store,display_name=getattr(self,"display_name","Survivor"))
-            await interaction.response.edit_message(content=None, embed=view.get_shop_embed(p,msgs), view=view)
+            await interaction.edit_original_response(content=None, embed=view.get_shop_embed(p,msgs), view=view)
         btn.callback=bazooka_select; self.add_item(btn)
 
         cost=get_void_upgrade_cost(player)
@@ -3277,11 +3362,12 @@ class VoidUpgradeView(PlayerView):
         async def upgrade_cb(interaction):
             if self.user_id in _purchase_locks:
                 await interaction.response.defer(); return
+            await interaction.response.defer()
             _purchase_locks.add(self.user_id)
             try:
-                p=self.store.get(self.user_id); msgs=upgrade_void_weapon(p); self.store.save()
+                p=self.store.get(self.user_id); msgs=upgrade_void_weapon(p); await self.store.save_async()
                 view=VoidUpgradeView(self.user_id,self.store,display_name=getattr(self,"display_name","Survivor"))
-                await interaction.response.edit_message(content=None, embed=view.get_shop_embed(p,msgs), view=view)
+                await interaction.edit_original_response(content=None, embed=view.get_shop_embed(p,msgs), view=view)
             finally:
                 _purchase_locks.discard(self.user_id)
         btn_up.callback=upgrade_cb; self.add_item(btn_up)
@@ -3297,11 +3383,12 @@ class VoidUpgradeView(PlayerView):
             async def perk_cb(interaction,pn=perk_name):
                 if self.user_id in _purchase_locks:
                     await interaction.response.defer(); return
+                await interaction.response.defer()
                 _purchase_locks.add(self.user_id)
                 try:
-                    p=self.store.get(self.user_id); msgs=upgrade_void_perk(p,pn); self.store.save()
+                    p=self.store.get(self.user_id); msgs=upgrade_void_perk(p,pn); await self.store.save_async()
                     view=VoidUpgradeView(self.user_id,self.store,display_name=getattr(self,"display_name","Survivor"))
-                    await interaction.response.edit_message(content=None, embed=view.get_shop_embed(p,msgs), view=view)
+                    await interaction.edit_original_response(content=None, embed=view.get_shop_embed(p,msgs), view=view)
                 finally:
                     _purchase_locks.discard(self.user_id)
             b.callback=perk_cb; self.add_item(b)
@@ -3386,8 +3473,9 @@ class ZoneView(PlayerView):
         for i, zone_name in enumerate(ZONES):
             btn = discord.ui.Button(label=zone_name, style=discord.ButtonStyle.primary, row=i//2)
             async def cb(interaction, zn=zone_name):
-                p=self.store.get(self.user_id); msgs=change_zone(p,zn); self.store.save()
-                await interaction.response.edit_message(content="\n".join(msgs)+"\n\n"+status(p, display_name=getattr(self, "display_name", "Survivor")), view=ZoneView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+                await interaction.response.defer()
+                p=self.store.get(self.user_id); msgs=change_zone(p,zn); await self.store.save_async()
+                await interaction.edit_original_response(content="\n".join(msgs)+"\n\n"+status(p, display_name=getattr(self, "display_name", "Survivor")), view=ZoneView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
             btn.callback = cb
             self.add_item(btn)
     @discord.ui.button(label="🏠 Main menu", style=discord.ButtonStyle.secondary, row=2)
@@ -3464,7 +3552,7 @@ async def zombie_cmd(interaction: discord.Interaction):
         if player.run_active and player.enemy is None:
             recovery_msgs = recover_stuck_run(player)
             print(f"[RECOVERY] /zombie repaired player {interaction.user.id}: {recovery_msgs}")
-        game_store.save_one(str(interaction.user.id))
+        await game_store.save_one_async(str(interaction.user.id))
         print(f"[CMD] /zombie by {interaction.user.id} name={name} level={player.level}")
         content = status(player, display_name=name)
         if recovery_msgs:
@@ -3502,7 +3590,7 @@ async def leaderboard_cmd(interaction: discord.Interaction, scope: str = "global
         p.leaderboard_guilds.append(str(gid))
     if zone not in ZONES:
         zone=p.zone_name
-    game_store.save_one(str(interaction.user.id))
+    await game_store.save_one_async(str(interaction.user.id))
     if scope == "personal":
         content=personal_records_text(p)
     elif scope == "server":
@@ -3518,7 +3606,7 @@ async def zombie_start_cmd(interaction: discord.Interaction):
     player.leaderboard_name = (getattr(interaction.user, "display_name", None) or getattr(interaction.user, "global_name", None) or interaction.user.name)[:32]
     if interaction.guild and str(interaction.guild.id) not in player.leaderboard_guilds:
         player.leaderboard_guilds.append(str(interaction.guild.id))
-    game_store.save_one(str(interaction.user.id))
+    await game_store.save_one_async(str(interaction.user.id))
     if player.run_active:
         recovery_msgs = recover_stuck_run(player) if player.enemy is None else []
         if recovery_msgs:
@@ -3529,7 +3617,7 @@ async def zombie_start_cmd(interaction: discord.Interaction):
         await interaction.followup.send(embed=embed, view=CombatView(interaction.user.id, game_store))
         return
     msgs = start_run(player)
-    game_store.save()
+    await game_store.save_async()
     embed = combat_embed(player, msgs)
     await interaction.followup.send(embed=embed, view=CombatView(interaction.user.id, game_store))
 
@@ -3588,8 +3676,9 @@ async def give_admin(interaction: discord.Interaction, user: discord.Member):
         await interaction.response.send_message("❌ This command can only be used inside a server.", ephemeral=True)
         return
 
+    import asyncio
     try:
-        already_admin = bool(is_bot_admin(user.id))
+        already_admin = bool(await asyncio.to_thread(is_bot_admin, user.id))
     except Exception as e:
         print(f"[ADMIN] Failed delegated-admin lookup for {user.id}: {e}")
         already_admin = False
@@ -3602,7 +3691,7 @@ async def give_admin(interaction: discord.Interaction, user: discord.Member):
         return
 
     try:
-        result = add_bot_admin(user.id)
+        result = await asyncio.to_thread(add_bot_admin, user.id)
         # Support storage implementations that return a success flag, while
         # also treating a None return as success (common for simple setters).
         if result is False:
@@ -3653,6 +3742,7 @@ async def setwave(interaction: discord.Interaction, wave: int, user: discord.Use
             start_run(player)
 
         player.run_active = True
+        player.run_id = uuid.uuid4().hex
         player.wave = int(wave)
         player.zombies_remaining = 3
         player.enemy = None
@@ -3672,7 +3762,7 @@ async def setwave(interaction: discord.Interaction, wave: int, user: discord.Use
 
         # Keep the save synchronous for consistency with the rest of the bot,
         # but it now happens after the interaction has already been deferred.
-        game_store.save_one(str(target.id))
+        await game_store.save_one_async(str(target.id))
 
         embed = combat_embed(
             player,
@@ -3684,8 +3774,8 @@ async def setwave(interaction: discord.Interaction, wave: int, user: discord.Use
         )
         await interaction.followup.send(
             embed=embed,
-            view=CombatView(target.id, game_store),
-            ephemeral=True,
+            view=CombatView(target.id, game_store, run_id=player.run_id),
+            ephemeral=(target.id == interaction.user.id),
         )
     except Exception as e:
         print(f"[ADMIN] /setwave failed: {type(e).__name__}: {e}")
@@ -3702,52 +3792,57 @@ async def setwave(interaction: discord.Interaction, wave: int, user: discord.Use
 @bot.tree.command(name="addmoney", description="[ADMIN] Add money to a player")
 @app_commands.describe(user="Player to give money to (leave empty for yourself)", amount="Amount to add (e.g. 5000)")
 async def addmoney(interaction: discord.Interaction, amount: int, user: discord.User = None):
-    if not has_admin_commands(interaction):
-        await interaction.response.send_message(admin_denied_message(), ephemeral=True)
-        return
     await interaction.response.defer(ephemeral=True)
+    if not has_admin_commands(interaction):
+        await interaction.followup.send(admin_denied_message(), ephemeral=True)
+        return
     target = user or interaction.user
     player = game_store.get(target.id)
     player.money += amount
-    game_store.save()
+    await game_store.save_one_async(str(target.id))
     await interaction.followup.send(f"💰 **+${amount}** added to {target.mention} → Now has **${player.money}**", ephemeral=True)
 
 
 @bot.tree.command(name="addstars", description="[ADMIN] Add stars to a player")
 @app_commands.describe(user="Player to give stars to", amount="Amount to add")
 async def addstars(interaction: discord.Interaction, amount: int, user: discord.User = None):
-    if not has_admin_commands(interaction):
-        await interaction.response.send_message(admin_denied_message(), ephemeral=True)
-        return
     await interaction.response.defer(ephemeral=True)
+    if not has_admin_commands(interaction):
+        await interaction.followup.send(admin_denied_message(), ephemeral=True)
+        return
     target = user or interaction.user
     player = game_store.get(target.id)
     player.stars += amount
-    game_store.save()
+    await game_store.save_one_async(str(target.id))
     await interaction.followup.send(f"⭐ **+{amount} stars** to {target.mention} → Now has **{player.stars}** ⭐", ephemeral=True)
 
 
 @bot.tree.command(name="addxp", description="[ADMIN] Add XP to a player")
 @app_commands.describe(user="Player to give XP to", amount="Amount to add")
 async def addxp(interaction: discord.Interaction, amount: int, user: discord.User = None):
-    if not has_admin_commands(interaction):
-        await interaction.response.send_message(admin_denied_message(), ephemeral=True)
-        return
     await interaction.response.defer(ephemeral=True)
+    if not has_admin_commands(interaction):
+        await interaction.followup.send(admin_denied_message(), ephemeral=True)
+        return
     target = user or interaction.user
     player = game_store.get(target.id)
+    old_level = player.level
     player.xp += amount
-    game_store.save()
-    await interaction.followup.send(f"✨ **+{amount} XP** to {target.mention} → Level {player.level} | XP: {player.xp}", ephemeral=True)
+    level_ups = max(0, player.level - old_level)
+    if level_ups:
+        player.stars += level_ups
+    await game_store.save_one_async(str(target.id))
+    await interaction.followup.send(f"✨ **+{amount} XP** to {target.mention} → Level {player.level} | XP: {player.xp}" + (f" | +{level_ups} ⭐" if level_ups else ""), ephemeral=True)
 
 
 @bot.tree.command(name="resetplayer", description="[ADMIN] Reset a player's progress")
 @app_commands.describe(user="Player to reset")
 async def resetplayer(interaction: discord.Interaction, user: discord.User):
-    if not has_admin_commands(interaction):
-        await interaction.response.send_message(admin_denied_message(), ephemeral=True)
-        return
     await interaction.response.defer(ephemeral=True)
+    if not has_admin_commands(interaction):
+        await interaction.followup.send(admin_denied_message(), ephemeral=True)
+        return
+    
     # Create fresh survivor
     from dataclasses import replace
     fresh = game_store.get(user.id)
@@ -3755,35 +3850,41 @@ async def resetplayer(interaction: discord.Interaction, user: discord.User):
     new_player = fresh.__class__()  # fresh Survivor
     # Preserve user id via store logic
     game_store.players[str(user.id)] = new_player
-    game_store.save()
+    await game_store.save_one_async(str(user.id))
     await interaction.followup.send(f"🔄 {user.mention} has been reset to level 1!", ephemeral=True)
 
 
 @bot.tree.command(name="zombie_give", description="[ADMIN] Give money/stars/xp to restore a player")
 @app_commands.describe(user="Player to restore", money="Money to give", stars="Stars to give", xp="XP to give")
 async def zombie_give(interaction: discord.Interaction, user: discord.User, money: int = 0, stars: int = 0, xp: int = 0):
-    if not has_admin_commands(interaction):
-        await interaction.response.send_message(admin_denied_message(), ephemeral=True)
-        return
     await interaction.response.defer(ephemeral=True)
+    if not has_admin_commands(interaction):
+        await interaction.followup.send(admin_denied_message(), ephemeral=True)
+        return
+    
     player = game_store.get(user.id)
+    old_level = player.level
     player.money += money
     player.stars += stars
     player.xp += xp
-    game_store.save()
-    await interaction.followup.send(f"✅ Restored {user.mention}: +${money}, +{stars}⭐, +{xp} XP\nNow: ${player.money} | {player.stars}⭐ | Lvl {player.level} ({player.xp} XP)", ephemeral=True)
+    level_ups = max(0, player.level - old_level)
+    if level_ups:
+        player.stars += level_ups
+    await game_store.save_one_async(str(user.id))
+    await interaction.followup.send(f"✅ Restored {user.mention}: +${money}, +{stars}⭐, +{xp} XP" + (f" +{level_ups}⭐ level-up bonus" if level_ups else "") + f"\nNow: ${player.money} | {player.stars}⭐ | Lvl {player.level} ({player.xp} XP)", ephemeral=True)
 
 @bot.tree.command(name="addvoidessence", description="[ADMIN] Add Void Essence to a player")
 @app_commands.describe(user="Player to give Void Essence to", amount="Amount of Void Essence to add")
 async def addvoidessence(interaction: discord.Interaction, amount: int, user: discord.User = None):
-    if not has_admin_commands(interaction):
-        await interaction.response.send_message(admin_denied_message(), ephemeral=True)
-        return
     await interaction.response.defer(ephemeral=True)
+    if not has_admin_commands(interaction):
+        await interaction.followup.send(admin_denied_message(), ephemeral=True)
+        return
+    
     target=user or interaction.user
     player=game_store.get(target.id)
     player.void_essence=max(0, player.void_essence + amount)
-    game_store.save()
+    await game_store.save_one_async(str(target.id))
     await interaction.followup.send(f"◈ **+{amount} Void Essence** added to {target.mention} → Now has **◈{player.void_essence}**", ephemeral=True)
 
 
