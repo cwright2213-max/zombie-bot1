@@ -1,8 +1,8 @@
 """Persistent PostgreSQL storage for the zombie game.
 
-PostgreSQL is the single source of truth.  A database failure is never
-reported as an empty save set, because that can make a deployment appear to
-have wiped every player.
+PostgreSQL is the single source of truth. Database failures are raised instead
+of being converted into an empty save set, and each operation uses its own
+connection so background saves cannot safely share a psycopg2 transaction.
 """
 import json
 import os
@@ -15,23 +15,15 @@ print("[STORAGE] Loading PostgreSQL persistent storage")
 DATABASE_URL = os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL") or ""
 USE_POSTGRES = DATABASE_URL.startswith(("postgres://", "postgresql://"))
 
-# Kept for compatibility with the existing main.py imports.
+# Kept for compatibility with existing main.py imports.
 DB_PATH = DATABASE_URL
 SAVE_FILE = ""
 
-_pg_conn = None
-_pg_lock = threading.Lock()
-
-
-def _close_pg_conn():
-    global _pg_conn
-    with _pg_lock:
-        if _pg_conn is not None:
-            try:
-                _pg_conn.close()
-            except Exception as e:
-                print(f"[STORAGE] Connection close warning: {e}")
-            _pg_conn = None
+_schema_lock = threading.Lock()
+_schema_ready = False
+# Bound concurrent write connections so a burst of player actions cannot
+# exhaust the PostgreSQL connection limit.
+_save_slots = threading.BoundedSemaphore(8)
 
 
 def _connect_pg():
@@ -48,57 +40,45 @@ def _connect_pg():
         else "require" if "railway" in DATABASE_URL
         else "prefer"
     )
-    conn = psycopg2.connect(DATABASE_URL, sslmode=sslmode, connect_timeout=10)
-    conn.autocommit = False
+    return psycopg2.connect(DATABASE_URL, sslmode=sslmode, connect_timeout=10)
 
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS players (
-                user_id TEXT PRIMARY KEY,
-                data TEXT NOT NULL,
-                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+
+def _ensure_schema(conn):
+    global _schema_ready
+    if _schema_ready:
+        return
+    with _schema_lock:
+        if _schema_ready:
+            return
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS players (
+                    user_id TEXT PRIMARY KEY,
+                    data TEXT NOT NULL,
+                    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
             )
-            """
-        )
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS bot_admins (
-                user_id TEXT PRIMARY KEY,
-                added_by TEXT,
-                added_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bot_admins (
+                    user_id TEXT PRIMARY KEY,
+                    added_by TEXT,
+                    added_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
             )
-            """
-        )
-    conn.commit()
-    return conn
-
-
-def _get_pg_conn():
-    global _pg_conn
-    with _pg_lock:
-        if _pg_conn is not None:
-            try:
-                with _pg_conn.cursor() as cur:
-                    cur.execute("SELECT 1")
-                return _pg_conn
-            except Exception as e:
-                print(f"[STORAGE] Existing PostgreSQL connection unusable: {e}")
-                try:
-                    _pg_conn.close()
-                except Exception:
-                    pass
-                _pg_conn = None
-
-        _pg_conn = _connect_pg()
-        print("[STORAGE] PostgreSQL connected; schema verified")
-        return _pg_conn
+        conn.commit()
+        _schema_ready = True
+        print("[STORAGE] PostgreSQL schema verified")
 
 
 def verify_storage():
-    """Fail-fast startup check. Never replace a DB failure with empty saves."""
-    conn = _get_pg_conn()
+    """Fail-fast startup check. Never replace a DB failure with {}."""
+    conn = _connect_pg()
     try:
+        _ensure_schema(conn)
         with conn.cursor() as cur:
             cur.execute("SELECT COUNT(*) FROM players")
             count = cur.fetchone()[0]
@@ -110,14 +90,19 @@ def verify_storage():
             conn.rollback()
         except Exception:
             pass
-        _close_pg_conn()
         raise
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def load_all_players() -> Dict[str, Dict[str, Any]]:
     """Load every player. Database errors are raised, never converted to {}."""
-    conn = _get_pg_conn()
+    conn = _connect_pg()
     try:
+        _ensure_schema(conn)
         with conn.cursor() as cur:
             cur.execute("SELECT user_id, data FROM players ORDER BY user_id")
             rows = cur.fetchall()
@@ -140,8 +125,12 @@ def load_all_players() -> Dict[str, Dict[str, Any]]:
             conn.rollback()
         except Exception:
             pass
-        _close_pg_conn()
         raise
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def save_player(user_id, player_dict) -> bool:
@@ -149,8 +138,11 @@ def save_player(user_id, player_dict) -> bool:
     payload = json.dumps(player_dict, separators=(",", ":"), ensure_ascii=False)
 
     for attempt in range(5):
+        conn = None
+        _save_slots.acquire()
         try:
-            conn = _get_pg_conn()
+            conn = _connect_pg()
+            _ensure_schema(conn)
             with conn.cursor() as cur:
                 cur.execute(
                     """
@@ -165,22 +157,29 @@ def save_player(user_id, player_dict) -> bool:
             conn.commit()
             return True
         except Exception as e:
-            try:
-                if _pg_conn is not None:
-                    _pg_conn.rollback()
-            except Exception:
-                pass
-            _close_pg_conn()
+            if conn is not None:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
             if attempt == 4:
                 print(f"[STORAGE] Save FAILED {user_id}: {e}")
                 return False
             time.sleep(0.1 * (attempt + 1))
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            _save_slots.release()
     return False
 
 
 def get_bot_admins():
-    conn = _get_pg_conn()
+    conn = _connect_pg()
     try:
+        _ensure_schema(conn)
         with conn.cursor() as cur:
             cur.execute("SELECT user_id FROM bot_admins ORDER BY user_id")
             rows = cur.fetchall()
@@ -191,8 +190,12 @@ def get_bot_admins():
             conn.rollback()
         except Exception:
             pass
-        _close_pg_conn()
         raise
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def is_bot_admin(user_id) -> bool:
@@ -200,8 +203,9 @@ def is_bot_admin(user_id) -> bool:
 
 
 def add_bot_admin(user_id, added_by=None) -> bool:
-    conn = _get_pg_conn()
+    conn = _connect_pg()
     try:
+        _ensure_schema(conn)
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -218,13 +222,18 @@ def add_bot_admin(user_id, added_by=None) -> bool:
             conn.rollback()
         except Exception:
             pass
-        _close_pg_conn()
         raise
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def remove_bot_admin(user_id) -> bool:
-    conn = _get_pg_conn()
+    conn = _connect_pg()
     try:
+        _ensure_schema(conn)
         with conn.cursor() as cur:
             cur.execute("DELETE FROM bot_admins WHERE user_id = %s", (str(user_id),))
             changed = cur.rowcount > 0
@@ -235,5 +244,9 @@ def remove_bot_admin(user_id) -> bool:
             conn.rollback()
         except Exception:
             pass
-        _close_pg_conn()
         raise
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
