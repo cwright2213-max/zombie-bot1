@@ -3385,7 +3385,18 @@ class UpgradeView(PlayerView):
                 self.selected_up = u
                 p=self.store.get(self.user_id)
                 content = self.get_shop_text(p, selected_override=u)
-                await interaction.edit_original_response(content=content, view=UpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_up=u))
+                # Component callbacks must acknowledge the interaction before editing.
+                # Using edit_original_response() without defer/response caused the
+                # Armour/Loot selector buttons to show "didn't respond in time".
+                await interaction.response.edit_message(
+                    content=content,
+                    view=UpgradeView(
+                        self.user_id,
+                        self.store,
+                        display_name=getattr(self, "display_name", "Survivor"),
+                        selected_up=u,
+                    ),
+                )
             btn.callback = cb
             self.add_item(btn)
 
