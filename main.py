@@ -2467,6 +2467,10 @@ class ZombieMenuView(PlayerView):
 
         btn_lb = discord.ui.Button(label="🏆 Leaderboards", style=discord.ButtonStyle.primary, row=1)
         async def lb_cb(interaction: discord.Interaction):
+            # Acknowledge immediately because persistence can be slower than Discord's
+            # component-response window.  The old flow saved before acknowledging,
+            # which could produce "Zombie Survival didn’t respond in time".
+            await interaction.response.defer()
             p=self.store.get(self.user_id)
             name=getattr(interaction.user, "display_name", None) or getattr(interaction.user, "global_name", None) or interaction.user.name
             p.leaderboard_name=name[:32]
@@ -2474,7 +2478,7 @@ class ZombieMenuView(PlayerView):
             if gid is not None and str(gid) not in p.leaderboard_guilds:
                 p.leaderboard_guilds.append(str(gid))
             await self.store.save_one_async(str(self.user_id))
-            await interaction.response.edit_message(content=leaderboard_text(self.store, p.zone_name, None), embed=None, view=LeaderboardView(self.user_id,self.store,display_name=name,guild_id=gid,zone_name=p.zone_name))
+            await interaction.edit_original_response(content=leaderboard_text(self.store, p.zone_name, None), embed=None, view=LeaderboardView(self.user_id,self.store,display_name=name,guild_id=gid,zone_name=p.zone_name))
         lb_cb.__name__ = "leaderboards_cb"
         self.add_item(btn_lb)
         btn_lb.callback = lb_cb
