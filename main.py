@@ -90,10 +90,10 @@ MAX_LEVEL = 500
 MAX_PAINKILLERS_PER_RUN = 3
 MAX_FULL_RESTORES_PER_RUN = 1
 ZONES: dict[str, dict[str, Any]] = {
-    "Graveyard": {"min_level": 1, "hp_mult": 0.9, "dmg_mult": 0.9, "money_mult": 2.0, "xp_mult": 1.6, "desc": "Foggy, quiet, and good for learning.", "weights": [60, 25, 12, 3], "ammo_mods": {"Standard": 1.00, "Bleed": 1.00, "Incendiary": 1.00, "Frostbite": 1.00, "Toxic": 1.00, "Shock": 1.00}},
+    "Graveyard": {"min_level": 1, "hp_mult": 1.0, "dmg_mult": 0.9, "money_mult": 2.0, "xp_mult": 1.6, "desc": "Foggy, quiet, and good for learning.", "weights": [60, 25, 12, 3], "ammo_mods": {"Standard": 1.00, "Bleed": 1.00, "Incendiary": 1.00, "Frostbite": 1.00, "Toxic": 1.00, "Shock": 1.00}},
     "Mega Death City": {"min_level": 50, "hp_mult": 1.8, "dmg_mult": 1.3, "money_mult": 3.5, "xp_mult": 2.0, "desc": "A concrete jungle with tougher, richer zombies.", "weights": [30, 30, 25, 15], "ammo_mods": {"Standard": 1.00, "Bleed": 1.00, "Incendiary": 1.20, "Frostbite": 0.90, "Toxic": 1.00, "Shock": 1.15}},
-    "Frostbitten Outskirts": {"min_level": 100, "hp_mult": 3.2, "dmg_mult": 1.7, "money_mult": 5.0, "xp_mult": 2.4, "desc": "Freezing rain and frost armor - NOT for level 50s.", "weights": [20, 20, 35, 25], "ammo_mods": {"Standard": 1.00, "Bleed": 0.90, "Incendiary": 1.40, "Frostbite": 0.70, "Toxic": 1.00, "Shock": 1.15}},
-    "Toxic Wasteland": {"min_level": 150, "hp_mult": 5.0, "dmg_mult": 2.1, "money_mult": 7.5, "xp_mult": 3.2, "desc": "A green haze where toxic rounds shine. Bring real gear.", "weights": [15, 15, 35, 35], "ammo_mods": {"Standard": 1.00, "Bleed": 1.00, "Incendiary": 1.10, "Frostbite": 1.00, "Toxic": 1.50, "Shock": 0.90}},
+    "Frostbitten Outskirts": {"min_level": 100, "hp_mult": 2.8, "dmg_mult": 1.7, "money_mult": 5.0, "xp_mult": 2.4, "desc": "Freezing rain and frost armor - NOT for level 50s.", "weights": [20, 20, 35, 25], "ammo_mods": {"Standard": 1.00, "Bleed": 0.90, "Incendiary": 1.40, "Frostbite": 0.70, "Toxic": 1.00, "Shock": 1.15}},
+    "Toxic Wasteland": {"min_level": 150, "hp_mult": 3.7, "dmg_mult": 2.1, "money_mult": 7.5, "xp_mult": 3.2, "desc": "A green haze where toxic rounds shine. Bring real gear.", "weights": [15, 15, 35, 35], "ammo_mods": {"Standard": 1.00, "Bleed": 1.00, "Incendiary": 1.10, "Frostbite": 1.00, "Toxic": 1.50, "Shock": 0.90}},
     "The Void": {"min_level": 200, "hp_mult": 6.5, "dmg_mult": 2.6, "money_mult": 10.0, "xp_mult": 4.5, "desc": "Endgame. Everything wants you dead. 3-4 shots? Not here.", "weights": [10, 10, 30, 50], "ammo_mods": {"Standard": 0.90, "Bleed": 1.10, "Incendiary": 1.15, "Frostbite": 1.10, "Toxic": 1.25, "Shock": 1.50}},
 }
 ZONE_ORDER = ["Graveyard", "Mega Death City", "Frostbitten Outskirts", "Toxic Wasteland", "The Void"]
