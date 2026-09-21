@@ -698,13 +698,16 @@ def _make_bloater_enemy(player: Survivor) -> Enemy:
         bloater_timer=BLOATER_FUSE
     )
 
-def spawn_enemy(player: Survivor) -> Enemy:
-    # Bloater check first - if eligible, spawn it as solo wave boss
+def spawn_enemy(player: Survivor, recovery: bool = False) -> Enemy:
+    # Bloater check first - if eligible, spawn it as solo wave boss.
+    # A recovery of an already-decided Bloater wave restores that encounter
+    # without counting a second Bloater spawn or resetting its wave pressure.
     if _should_spawn_bloater(player):
         bloater = _make_bloater_enemy(player)
-        player.bloaters_spawned_this_run += 1
-        player.bloater_cooldown = 1  # prevent consecutive Bloater waves
-        player.bloater_chance_steps = 0  # reset chance after every Bloater
+        if not recovery:
+            player.bloaters_spawned_this_run += 1
+            player.bloater_cooldown = 1  # prevent consecutive Bloater waves
+            player.bloater_chance_steps = 0  # reset chance after every Bloater
         # Solo wave: only bloater this round = reward
         player.zombies_remaining = 1
         return bloater
@@ -883,7 +886,17 @@ def recover_stuck_run(player: Survivor) -> list[str]:
         player.wave = 1
     if player.zombies_remaining <= 0:
         player.zombies_remaining = max(3, player.wave + 2)
-    player.enemy = spawn_enemy(player)
+    player.enemy = spawn_enemy(player, recovery=True)
+
+    # Recovery must restore the persistent consequences of an already-decided
+    # Bloater wave without counting a second Bloater spawn. The normal spawn
+    # path sets these fields, but recovery intentionally skips those mutations
+    # to avoid duplicate run statistics. Re-apply the state here only when the
+    # restored encounter is a Bloater.
+    if player.enemy.is_bloater:
+        player.bloater_cooldown = 1
+        player.bloater_chance_steps = 0
+
     return [
         f"🛠️ **Run recovered!** Your saved Wave **{player.wave}** had no active enemy.",
         f"🧟 **{player.enemy.name}** has spawned with **{player.enemy.health} HP**. Your run can continue!",
@@ -1145,9 +1158,101 @@ def personal_records_text(player: Survivor) -> str:
     return "\n".join(lines)
 
 
+def _combat_action_noop(player: Survivor, action: str, heal_item: str | None = None) -> str | None:
+    """Return a message for an action that should consume no turn, else None.
+
+    A failed/no-op button press does not attack, reload, heal, or otherwise
+    change combat state, so it must not trigger pending DoT or an enemy attack.
+    """
+    if action == "reload":
+        if player.magazine == player.magazine_size:
+            return "✅ Mag full!"
+        # Having no spare ammo is handled as an end-of-run outcome in take_action.
+
+    if action == "heal":
+        if heal_item == "full_restore":
+            if player.full_restores_used_this_run >= MAX_FULL_RESTORES_PER_RUN:
+                return f"⚠️ Limit: {MAX_FULL_RESTORES_PER_RUN}/run."
+            if player.full_restores <= 0:
+                return "❌ No full restores."
+            if player.health >= player.max_health:
+                return "❤️ Full HP!"
+        elif heal_item == "painkillers":
+            if player.painkillers_used_this_run >= MAX_PAINKILLERS_PER_RUN:
+                return f"⚠️ Limit: {MAX_PAINKILLERS_PER_RUN}/run."
+            if player.painkillers <= 0:
+                return "❌ No painkillers."
+            if player.health >= player.max_health:
+                return "❤️ Full HP!"
+        elif heal_item is None:
+            return "Choose heal item."
+
+    if action == "attack":
+        ammo_data = AMMO[player.ammo_name]
+        base_cost = int(ammo_data["cost_per_attack"])
+        weapon_data = WEAPONS.get(player.weapon_name, WEAPONS["Pistol"])
+        shots = int(weapon_data.get("shots", 1))
+        cost = base_cost * shots
+        if player.magazine_size < base_cost:
+            return f"❌ **{player.weapon_name} mag too small for {player.ammo_name}!**"
+        if player.magazine_size < cost:
+            return f"❌ **{player.weapon_name} mag too small for {shots}x {player.ammo_name}!**"
+        if player.magazine < cost and player.get_spare() > 0:
+            return f"❌ Need {cost} {player.ammo_name} ammo! Have {player.magazine}/{player.magazine_size}"
+
+    if action in {"void_infusion", "void_shield", "void_execution"}:
+        perk_name = {
+            "void_infusion": "Void Infusion",
+            "void_shield": "Void Shield",
+            "void_execution": "Void Execution",
+        }[action]
+        if player.zone_name != "The Void":
+            return "❌ Void perks only work inside **The Void**."
+        lvl = void_perk_level(player, perk_name)
+        if lvl <= 0:
+            return f"🔒 **{perk_name}** is locked. Unlock it in the Void shop."
+        cooldown_field = {
+            "Void Infusion":"void_infusion_cooldown",
+            "Void Shield":"void_shield_cooldown",
+            "Void Execution":"void_execution_cooldown",
+        }[perk_name]
+        active_field = {
+            "Void Infusion":"void_infusion_active",
+            "Void Shield":"void_shield_active",
+            "Void Execution":"void_execution_active",
+        }[perk_name]
+        if getattr(player, cooldown_field) > 0:
+            return f"⏳ **{perk_name}** cooldown: {getattr(player, cooldown_field)} zombie(s) remaining."
+        if getattr(player, active_field):
+            return f"⚠️ **{perk_name}** is already armed."
+        if perk_name == "Void Execution" and player.enemy.health > player.enemy.max_health * 0.50:
+            return "⚠️ **Void Execution** only arms when the enemy is at **50% HP or lower**."
+        cost = VOID_PERKS[perk_name]["activation_cost"]
+        if player.void_essence < cost:
+            return f"❌ Need ◈{cost} Void Essence to activate **{perk_name}**; you have ◈{player.void_essence}."
+
+    if action == "void_bazooka":
+        if player.zone_name != "The Void":
+            return "❌ The Void Bazooka can only be fired inside **The Void**."
+        if "Void Bazooka" not in player.void_weapons_owned:
+            return "🔒 You do not own the **Void Bazooka** yet. Buy it in the Void shop."
+        enemy = player.enemy
+        is_boss_target = enemy.is_bloater or getattr(enemy, "is_void_boss", False)
+        if is_boss_target and player.void_bazooka_boss_fired:
+            return "⚠️ **Void Bazooka already fired at this boss!** Finish it with your primary weapon."
+        if player.void_bazooka_ammo <= 0 and player.void_essence < VOID_BAZOOKA_AMMO_COST:
+            return f"❌ **No Void Bazooka ammo!** Extra shots cost ◈{VOID_BAZOOKA_AMMO_COST} Void Essence."
+
+    return None
+
+
 def take_action(player: Survivor, action: str, heal_item: str | None = None) -> list[str]:
     if not player.run_active or player.enemy is None:
         return ["Not in a run. Use Start run."]
+
+    noop_message = _combat_action_noop(player, action, heal_item)
+    if noop_message is not None:
+        return [noop_message]
 
     messages: list[str] = []
     # Flee exits before the next enemy turn, so it does not take a pending DoT tick.
@@ -1383,8 +1488,10 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
                 enemy.health = max(0, enemy.health - shock_dmg)
                 messages.append(f"⚡ Shock deals {shock_dmg} dmg!")
     elif action == "reload":
-        if player.magazine == player.magazine_size:
-            return ["✅ Mag full!"]
+        # A successful reload is a real combat turn: after loading ammo,
+        # execution continues to the normal enemy-damage resolution below.
+        # Only the full-magazine check in _combat_action_noop() makes reload
+        # a free no-op.
         spare = player.get_spare()
         if spare <= 0:
             # OVERWHELMED on reload attempt with no spare
@@ -3793,7 +3900,7 @@ async def zombie_start_cmd(interaction: discord.Interaction):
         await interaction.followup.send(embed=embed, view=CombatView(interaction.user.id, game_store))
         return
     msgs = start_run(player)
-    await game_store.save_async()
+    await game_store.save_one_async(str(interaction.user.id))
     embed = combat_embed(player, msgs)
     await interaction.followup.send(embed=embed, view=CombatView(interaction.user.id, game_store))
 
