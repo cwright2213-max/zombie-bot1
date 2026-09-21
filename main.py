@@ -391,6 +391,10 @@ class Survivor:
     bloaters_spawned_this_run: int = 0
     bloater_cooldown: int = 0
     bloater_chance_steps: int = 0  # failed eligible rolls since the last Bloater
+    # Bloater decisions are locked to a wave so recovery/re-spawn calls cannot
+    # roll the Bloater chance multiple times for the same wave.
+    bloater_roll_wave: int = 0
+    bloater_wave_result: bool = False
     # --- UNIVERSAL MONEY UPGRADES ---
     health_upgrades: int = 0; armor_upgrades: int = 0; scavenger_upgrades: int = 0
     # --- INDIVIDUAL WEAPON UPGRADES (cash, per weapon) ---
@@ -558,6 +562,7 @@ class Survivor:
         allowed.setdefault("painkillers_used_this_run", 0); allowed.setdefault("full_restores_used_this_run", 0)
         allowed.setdefault("run_money_earned", 0); allowed.setdefault("run_xp_earned", 0)
         allowed.setdefault("bloaters_spawned_this_run", 0); allowed.setdefault("bloater_cooldown", 0); allowed.setdefault("bloater_chance_steps", 0)
+        allowed.setdefault("bloater_roll_wave", 0); allowed.setdefault("bloater_wave_result", False)
         allowed.setdefault("owned_ammo", ["Standard"]); allowed.setdefault("owned_weapons", ["Pistol"])
         allowed.setdefault("weapon_upgrades", {})
         allowed.setdefault("void_essence", 0)
@@ -632,31 +637,42 @@ def level_progress(player: Survivor) -> tuple[int, int]:
     return earned, xp_to_next_level(level)
 
 def _should_spawn_bloater(player: Survivor) -> bool:
-    """Roll Bloater chance with a per-spawn reset-and-ramp system.
+    """Return the Bloater result for this wave, rolling at most once.
 
-    Each Bloater resets the chance to the zone's starting value. A failed
-    eligible roll increases the chance for the next eligible wave. The
-    one-wave cooldown guarantees no consecutive Bloater waves, and the 35%
-    cap guarantees normal zombies remain possible forever.
+    The Bloater chance is a WAVE-level decision. A wave can cause spawn_enemy()
+    more than once because of recovery/state repair, so the result is cached by
+    wave number. This prevents multiple Bloater rolls for the same wave.
     """
+    # If this wave has already been decided, never roll again.
+    if player.bloater_roll_wave == player.wave:
+        return player.bloater_wave_result
+
     if player.wave < BLOATER_MIN_WAVE:
+        player.bloater_roll_wave = player.wave
+        player.bloater_wave_result = False
         return False
+
     if player.bloater_cooldown > 0:
-        # This is the protected wave immediately after a Bloater. Do not let
-        # the ramp advance while the player is guaranteed a normal encounter.
+        # Protected wave immediately after a Bloater. Consume the cooldown once
+        # for this wave and lock in a normal encounter.
         player.bloater_cooldown -= 1
+        player.bloater_roll_wave = player.wave
+        player.bloater_wave_result = False
         return False
 
     start_chance = BLOATER_ZONE_START_CHANCE.get(player.zone_name, 0.05)
     step = BLOATER_ZONE_CHANCE_STEP.get(player.zone_name, 0.03)
     chance = min(BLOATER_MAX_CHANCE, start_chance + player.bloater_chance_steps * step)
 
-    if random.random() < chance:
-        return True
+    result = random.random() < chance
+    player.bloater_roll_wave = player.wave
+    player.bloater_wave_result = result
 
-    # Failed eligible roll: increase pressure for the next eligible wave.
-    player.bloater_chance_steps += 1
-    return False
+    if not result:
+        # Failed eligible roll: increase pressure for the next eligible wave.
+        player.bloater_chance_steps += 1
+
+    return result
 
 def _make_bloater_enemy(player: Survivor) -> Enemy:
     zone = zone_for(player)
@@ -799,6 +815,8 @@ def start_run(player: Survivor) -> list[str]:
     player.run_zombies_killed = 0
     player.bloaters_spawned_this_run = 0
     player.bloater_cooldown = 0
+    player.bloater_roll_wave = 0
+    player.bloater_wave_result = False
     player.bloater_chance_steps = 0
 
     # The Void Bazooka is a dedicated backup weapon: one ready shot per run.
@@ -1141,50 +1159,74 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
             return messages
 
     if action == "heal":
+        heal_failed = False
         if heal_item == "full_restore":
             if player.full_restores_used_this_run >= MAX_FULL_RESTORES_PER_RUN:
-                return [f"⚠️ Limit: {MAX_FULL_RESTORES_PER_RUN}/run."]
-            if player.full_restores <= 0:
-                return ["❌ No full restores."]
-            if player.health >= player.max_health:
-                return ["❤️ Full HP!"]
-            # MEDIC STAR CHECK - chance to not consume
-            if player.medic_chance > 0 and random.random() < player.medic_chance:
-                player.health = player.max_health
-                player.full_restores_used_this_run += 1
-                left = MAX_FULL_RESTORES_PER_RUN - player.full_restores_used_this_run
-                messages.extend([f"💊 **MEDIC SAVE!** Full heal kept! ({player.medic_chance*100:.1f}%) {player.max_health} HP", f"{player.full_restores} owned • {left} left • ✨ Saved!"])
+                messages.append(f"⚠️ Limit: {MAX_FULL_RESTORES_PER_RUN}/run.")
+                heal_failed = True
+            elif player.full_restores <= 0:
+                messages.append("❌ No full restores.")
+                heal_failed = True
+            elif player.health >= player.max_health:
+                messages.append("❤️ Full HP!")
+                heal_failed = True
             else:
-                player.health = player.max_health
-                player.full_restores -= 1
-                player.full_restores_used_this_run += 1
-                left = MAX_FULL_RESTORES_PER_RUN - player.full_restores_used_this_run
-                messages.extend([f"✨ **Full heal!** {player.max_health} HP", f"{player.full_restores} owned • {left} left"])
+                # MEDIC STAR CHECK - chance to not consume
+                if player.medic_chance > 0 and random.random() < player.medic_chance:
+                    player.health = player.max_health
+                    player.full_restores_used_this_run += 1
+                    left = MAX_FULL_RESTORES_PER_RUN - player.full_restores_used_this_run
+                    messages.extend([
+                        f"💊 **MEDIC SAVE!** Full heal kept! ({player.medic_chance*100:.1f}%) {player.max_health} HP",
+                        f"{player.full_restores} owned • {left} left • ✨ Saved!"
+                    ])
+                else:
+                    player.health = player.max_health
+                    player.full_restores -= 1
+                    player.full_restores_used_this_run += 1
+                    left = MAX_FULL_RESTORES_PER_RUN - player.full_restores_used_this_run
+                    messages.extend([
+                        f"✨ **Full heal!** {player.max_health} HP",
+                        f"{player.full_restores} owned • {left} left"
+                    ])
             heal_item = None
+
         if heal_item == "painkillers":
             if player.painkillers_used_this_run >= MAX_PAINKILLERS_PER_RUN:
-                return [f"⚠️ Limit: {MAX_PAINKILLERS_PER_RUN}/run."]
-            if player.painkillers <= 0:
-                return ["❌ No painkillers."]
-            if player.health >= player.max_health:
-                return ["❤️ Full HP!"]
-            amount = max(1, player.max_health // 4)
-            # MEDIC STAR CHECK - chance to not consume
-            if player.medic_chance > 0 and random.random() < player.medic_chance:
-                player.health = min(player.max_health, player.health + amount)
-                player.painkillers_used_this_run += 1
-                left = MAX_PAINKILLERS_PER_RUN - player.painkillers_used_this_run
-                messages.extend([f"💊 **MEDIC SAVE!** +{amount} HP without using item! ({player.medic_chance*100:.1f}%) Now {player.health}/{player.max_health}", f"{player.painkillers} owned • {left} left • ✨ Saved!"])
+                messages.append(f"⚠️ Limit: {MAX_PAINKILLERS_PER_RUN}/run.")
+                heal_failed = True
+            elif player.painkillers <= 0:
+                messages.append("❌ No painkillers.")
+                heal_failed = True
+            elif player.health >= player.max_health:
+                messages.append("❤️ Full HP!")
+                heal_failed = True
             else:
-                player.health = min(player.max_health, player.health + amount)
-                player.painkillers -= 1
-                player.painkillers_used_this_run += 1
-                left = MAX_PAINKILLERS_PER_RUN - player.painkillers_used_this_run
-                messages.extend([f"💊 **+{amount} HP!** Now {player.health}/{player.max_health}", f"{player.painkillers} owned • {left} left"])
+                amount = max(1, player.max_health // 4)
+                # MEDIC STAR CHECK - chance to not consume
+                if player.medic_chance > 0 and random.random() < player.medic_chance:
+                    player.health = min(player.max_health, player.health + amount)
+                    player.painkillers_used_this_run += 1
+                    left = MAX_PAINKILLERS_PER_RUN - player.painkillers_used_this_run
+                    messages.extend([
+                        f"💊 **MEDIC SAVE!** +{amount} HP without using item! ({player.medic_chance*100:.1f}%) Now {player.health}/{player.max_health}",
+                        f"{player.painkillers} owned • {left} left • ✨ Saved!"
+                    ])
+                else:
+                    player.health = min(player.max_health, player.health + amount)
+                    player.painkillers -= 1
+                    player.painkillers_used_this_run += 1
+                    left = MAX_PAINKILLERS_PER_RUN - player.painkillers_used_this_run
+                    messages.extend([
+                        f"💊 **+{amount} HP!** Now {player.health}/{player.max_health}",
+                        f"{player.painkillers} owned • {left} left"
+                    ])
             heal_item = None
+
         if heal_item is not None:
             return ["Choose heal item."]
         action = "heal_done"
+
     enemy = player.enemy
     if action in {"void_infusion", "void_shield", "void_execution"}:
         perk_name = {"void_infusion":"Void Infusion", "void_shield":"Void Shield", "void_execution":"Void Execution"}[action]
@@ -2039,7 +2081,7 @@ async def background_autosave():
 
 
 class PlayerView(discord.ui.View):
-    def __init__(self, user_id: int, store: GameStore, display_name: str = "Survivor", timeout: float = 180):
+    def __init__(self, user_id: int, store: GameStore, display_name: str = "Survivor", timeout: float | None = None):
         # Handle case where display_name is passed as timeout positionally (old bug compat)
         if isinstance(display_name, (int, float)) and timeout == 180:
             # display_name is actually timeout value
@@ -2062,7 +2104,7 @@ class PlayerView(discord.ui.View):
 class RunEndedView(PlayerView):
     """End of run screen that disappears when you press any button"""
     def __init__(self, user_id: int, store, display_name: str = "Survivor", end_embed: discord.Embed = None):
-        super().__init__(user_id, store, display_name, timeout=180)
+        super().__init__(user_id, store, display_name, timeout=None)
         self.end_embed = end_embed
 
         btn_continue = discord.ui.Button(label="🏠 Main Menu", style=discord.ButtonStyle.success, row=0)
@@ -2096,7 +2138,7 @@ class RunEndedView(PlayerView):
             await interaction.response.defer()
             p = self.store.get(self.user_id)
             msgs = start_run(p)
-            await self.store.save_async()
+            await self.store.save_one_async(str(self.user_id))
             embed = combat_embed(p, msgs)
             await interaction.edit_original_response(content=None, embed=embed, view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
         btn_again.callback = again_cb
@@ -2106,7 +2148,7 @@ class RunEndedView(PlayerView):
 
 class LeaderboardView(PlayerView):
     """Compact leaderboard browser: Global, Server, and personal records."""
-    def __init__(self, user_id: int, store, display_name: str = "Survivor", guild_id: int | None = None, zone_name: str | None = None, timeout: float = 180):
+    def __init__(self, user_id: int, store, display_name: str = "Survivor", guild_id: int | None = None, zone_name: str | None = None, timeout: float | None = None):
         super().__init__(user_id, store, display_name, timeout)
         self.guild_id = guild_id
         self.zone_name = zone_name or store.get(user_id).zone_name
@@ -2176,7 +2218,7 @@ class LeaderboardView(PlayerView):
 
 class DailyCrateView(PlayerView):
     """Dedicated Daily Survivor Crate interface with no shop/upgrade controls."""
-    def __init__(self, user_id: int, store, display_name: str = "Survivor", timeout: float = 180):
+    def __init__(self, user_id: int, store, display_name: str = "Survivor", timeout: float | None = None):
         super().__init__(user_id, store, display_name, timeout)
         self.refresh_view()
 
@@ -2278,7 +2320,7 @@ class ZombieMenuView(PlayerView):
                 await interaction.edit_original_response(content=None, embed=embed, view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
                 return
             msgs = start_run(p)
-            await self.store.save_async()
+            await self.store.save_one_async(str(self.user_id))
             embed = combat_embed(p, msgs)
             await interaction.edit_original_response(content=None, embed=embed, view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
         btn_start.callback = start_cb
@@ -2533,7 +2575,7 @@ class VoidPerkView(PlayerView):
         ("Void Execution", "☠️", "Arms below 50% enemy HP for a heavy finishing bonus."),
     )
 
-    def __init__(self, user_id: int, store, display_name: str = "Survivor", timeout: float = 180):
+    def __init__(self, user_id: int, store, display_name: str = "Survivor", timeout: float | None = None):
         super().__init__(user_id, store, display_name, timeout)
         player = self.store.get(user_id)
         self.clear_items()
@@ -2624,7 +2666,7 @@ class VoidPerkView(PlayerView):
 
 
 class HealView(PlayerView):
-    def __init__(self, user_id: int, store, display_name: str = "Survivor", timeout: float = 180):
+    def __init__(self, user_id: int, store, display_name: str = "Survivor", timeout: float | None = None):
         super().__init__(user_id, store, display_name, timeout)
         player = self.store.get(user_id)
         self.clear_items()
@@ -2695,7 +2737,7 @@ class HealView(PlayerView):
 
 class ShopHubView(PlayerView):
     """Fisher-style Shop Categories hub"""
-    def __init__(self, user_id: int, store, display_name: str = "Survivor", timeout: float = 180):
+    def __init__(self, user_id: int, store, display_name: str = "Survivor", timeout: float | None = None):
         super().__init__(user_id, store, display_name, timeout)
         # No auto buttons, we add manually via decorators + callbacks below
 
@@ -2782,7 +2824,7 @@ ShopView = ShopHubView
 
 class WeaponShopView(PlayerView):
     """Fisher-style Weapon Shop"""
-    def __init__(self, user_id: int, store, display_name: str = "Survivor", selected_weapon: str = None, timeout: float = 180):
+    def __init__(self, user_id: int, store, display_name: str = "Survivor", selected_weapon: str = None, timeout: float | None = None):
         super().__init__(user_id, store, display_name, timeout)
         player = self.store.get(user_id)
         self.selected_weapon = selected_weapon or player.weapon_name
@@ -2813,7 +2855,7 @@ class WeaponShopView(PlayerView):
                     return
                 if wn not in p.owned_weapons:
                     msgs = buy_item(p, wn)
-                    await self.store.save_async()
+                    await self.store.save_one_async(str(self.user_id))
                 content = self.get_shop_text(p, selected_override=wn, extra_msgs=None)
                 await interaction.edit_original_response(content=content, view=WeaponShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_weapon=wn))
             btn.callback = cb
@@ -2832,7 +2874,7 @@ class WeaponShopView(PlayerView):
                 await interaction.edit_original_response(content=None, embed=combat_embed(p, ["🚫 **Shopping is locked during a run.** Flee or finish the run first."]), view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
                 return
             msgs = buy_item(p, self.selected_weapon)
-            await self.store.save_async()
+            await self.store.save_one_async(str(self.user_id))
             content = self.get_shop_text(p, selected_override=self.selected_weapon, extra_msgs=msgs)
             await interaction.edit_original_response(content=content, view=WeaponShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_weapon=self.selected_weapon))
         btn_buy.callback = buy_cb
@@ -2912,7 +2954,7 @@ class WeaponShopView(PlayerView):
 
 class WeaponUpgradeView(PlayerView):
     """Individual weapon upgrades inside the Weapons shop."""
-    def __init__(self, user_id: int, store, display_name: str = "Survivor", weapon_name: str | None = None, timeout: float = 180):
+    def __init__(self, user_id: int, store, display_name: str = "Survivor", weapon_name: str | None = None, timeout: float | None = None):
         super().__init__(user_id, store, display_name, timeout)
         player = self.store.get(user_id)
         self.weapon_name = weapon_name if weapon_name in WEAPONS else player.weapon_name
@@ -2956,7 +2998,7 @@ class WeaponUpgradeView(PlayerView):
 
 class AmmoShopView(PlayerView):
     """Fisher Bait Shop clone - list + select + bulk buy +1 +10 +100 +1000"""
-    def __init__(self, user_id: int, store, display_name: str = "Survivor", selected_ammo: str = None, timeout: float = 180):
+    def __init__(self, user_id: int, store, display_name: str = "Survivor", selected_ammo: str = None, timeout: float | None = None):
         super().__init__(user_id, store, display_name, timeout)
         player = self.store.get(user_id)
         self.selected_ammo = selected_ammo or player.ammo_name
@@ -2992,7 +3034,7 @@ class AmmoShopView(PlayerView):
                     # Check if equip failed (message starts with ❌ or Need or unlocks)
                     if msgs and any(x.startswith('❌') or 'Need $' in x or 'unlocks at level' in x.lower() for x in msgs):
                         success = False
-                    await self.store.save_async()
+                    await self.store.save_one_async(str(self.user_id))
                 else:
                     # Already owned, try to equip
                     msgs = equip_ammo(p, an)
@@ -3004,7 +3046,7 @@ class AmmoShopView(PlayerView):
                             # Check if error
                             if any(m.startswith('❌') for m in msgs):
                                 success = False
-                    await self.store.save_async()
+                    await self.store.save_one_async(str(self.user_id))
                 
                 if success:
                     self.selected_ammo = an
@@ -3102,7 +3144,7 @@ class AmmoShopView(PlayerView):
 
 class MedsShopView(PlayerView):
     """Fisher-style Meds Shop with bulk buy"""
-    def __init__(self, user_id: int, store, display_name: str = "Survivor", selected_med: str = "painkillers", timeout: float = 180):
+    def __init__(self, user_id: int, store, display_name: str = "Survivor", selected_med: str = "painkillers", timeout: float | None = None):
         super().__init__(user_id, store, display_name, timeout)
         player = self.store.get(user_id)
         self.selected_med = selected_med
@@ -3214,7 +3256,7 @@ class MedsShopView(PlayerView):
 
 class UpgradeView(PlayerView):
     """Fisher-style Upgrades Shop"""
-    def __init__(self, user_id: int, store, display_name: str = "Survivor", selected_up: str = "health", timeout: float = 180):
+    def __init__(self, user_id: int, store, display_name: str = "Survivor", selected_up: str = "health", timeout: float | None = None):
         super().__init__(user_id, store, display_name, timeout)
         player = self.store.get(user_id)
         self.selected_up = selected_up
@@ -3257,7 +3299,7 @@ class UpgradeView(PlayerView):
             try:
                 p=self.store.get(self.user_id)
                 msgs = upgrade(p, self.selected_up)
-                await self.store.save_async()
+                await self.store.save_one_async(str(self.user_id))
                 content = self.get_shop_text(p, selected_override=self.selected_up, extra_msgs=msgs)
                 await interaction.edit_original_response(content=content, view=UpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_up=self.selected_up))
             finally:
@@ -3380,7 +3422,7 @@ class StarUpgradeView(PlayerView):
             try:
                 p=self.store.get(self.user_id)
                 msgs = upgrade_star(p, self.selected_star)
-                await self.store.save_async()
+                await self.store.save_one_async(str(self.user_id))
                 content = self.get_shop_text(p, selected_override=self.selected_star, extra_msgs=msgs)
                 await interaction.edit_original_response(content=content, view=StarUpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_star=self.selected_star))
             finally:
@@ -3459,7 +3501,7 @@ class StarUpgradeView(PlayerView):
 
 class VoidUpgradeView(PlayerView):
     """Clean, compact Void progression page."""
-    def __init__(self, user_id: int, store, display_name: str = "Survivor", timeout: float = 180):
+    def __init__(self, user_id: int, store, display_name: str = "Survivor", timeout: float | None = None):
         super().__init__(user_id, store, display_name, timeout)
         player = self.store.get(user_id)
         self.clear_items()
@@ -3485,7 +3527,7 @@ class VoidUpgradeView(PlayerView):
                     p.money -= VOID_WEAPONS["Void Bazooka"]["price"]
                     p.void_weapons_owned.append("Void Bazooka")
                     msgs=["💥 **Void Bazooka acquired!**"]
-                    await self.store.save_async()
+                    await self.store.save_one_async(str(self.user_id))
             view=VoidUpgradeView(self.user_id,self.store,display_name=getattr(self,"display_name","Survivor"))
             await interaction.edit_original_response(content=None, embed=view.get_shop_embed(p,msgs), view=view)
         btn.callback=bazooka_select; self.add_item(btn)
@@ -3499,7 +3541,7 @@ class VoidUpgradeView(PlayerView):
             await interaction.response.defer()
             _purchase_locks.add(self.user_id)
             try:
-                p=self.store.get(self.user_id); msgs=upgrade_void_weapon(p); await self.store.save_async()
+                p=self.store.get(self.user_id); msgs=upgrade_void_weapon(p); await self.store.save_one_async(str(self.user_id))
                 view=VoidUpgradeView(self.user_id,self.store,display_name=getattr(self,"display_name","Survivor"))
                 await interaction.edit_original_response(content=None, embed=view.get_shop_embed(p,msgs), view=view)
             finally:
@@ -3520,7 +3562,7 @@ class VoidUpgradeView(PlayerView):
                 await interaction.response.defer()
                 _purchase_locks.add(self.user_id)
                 try:
-                    p=self.store.get(self.user_id); msgs=upgrade_void_perk(p,pn); await self.store.save_async()
+                    p=self.store.get(self.user_id); msgs=upgrade_void_perk(p,pn); await self.store.save_one_async(str(self.user_id))
                     view=VoidUpgradeView(self.user_id,self.store,display_name=getattr(self,"display_name","Survivor"))
                     await interaction.edit_original_response(content=None, embed=view.get_shop_embed(p,msgs), view=view)
                 finally:
@@ -3602,13 +3644,13 @@ def upgrade_void_weapon(player: Survivor) -> list[str]:
 
 
 class ZoneView(PlayerView):
-    def __init__(self, user_id, store, display_name: str = "Survivor", timeout: float = 180):
+    def __init__(self, user_id, store, display_name: str = "Survivor", timeout: float | None = None):
         super().__init__(user_id, store, display_name)
         for i, zone_name in enumerate(ZONES):
             btn = discord.ui.Button(label=zone_name, style=discord.ButtonStyle.primary, row=i//2)
             async def cb(interaction, zn=zone_name):
                 await interaction.response.defer()
-                p=self.store.get(self.user_id); msgs=change_zone(p,zn); await self.store.save_async()
+                p=self.store.get(self.user_id); msgs=change_zone(p,zn); await self.store.save_one_async(str(self.user_id))
                 await interaction.edit_original_response(content="\n".join(msgs)+"\n\n"+status(p, display_name=getattr(self, "display_name", "Survivor")), view=ZoneView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
             btn.callback = cb
             self.add_item(btn)
@@ -3883,6 +3925,8 @@ async def setwave(interaction: discord.Interaction, wave: int, user: discord.Use
         player.bloater_cooldown = 0
         player.bloaters_spawned_this_run = 0
         player.bloater_chance_steps = 0
+        player.bloater_roll_wave = 0
+        player.bloater_wave_result = False
         player.void_bazooka_boss_fired = False
         player.void_infusion_cooldown = 0
         player.void_shield_cooldown = 0
