@@ -2893,7 +2893,7 @@ class WeaponShopView(PlayerView):
             status_str = "Owned" if owned else f"LOCKED Level {w['unlock_level']} - ${w['price']}"
             if owned:
                 lv=player.weapon_upgrades.get(wname,{"damage":0,"mag":0,"crit":0}); shots=int(w.get("shots",1))
-                dmg=w.get("damage",0)+lv.get("damage",0)*3; mag=w.get("mag",0)+lv.get("mag",0)*shots
+                dmg=w.get("damage",0)+lv.get("damage",0)*WEAPON_DAMAGE_PER_UPGRADE.get(wname,3); mag=w.get("mag",0)+lv.get("mag",0)*shots
                 crit=0 if lv.get("crit",0)<=0 else min(0.02+(lv.get("crit",0)-1)*0.005,0.40)
                 status_str = f"Owned - Dmg {dmg} | Mag {mag} | Crit {crit*100:.1f}%"
             lines.append(f"🔫 **{wname}**{marker}")
@@ -3024,14 +3024,21 @@ class AmmoShopView(PlayerView):
             btn = discord.ui.Button(label=label[:80], style=discord.ButtonStyle.primary, row=row)
             async def bulk_cb(interaction, q=qty, ammo=self.selected_ammo):
                 await interaction.response.defer()
-                p=self.store.get(self.user_id)
-                if p.run_active:
-                    await interaction.edit_original_response(content=None, embed=combat_embed(p, ["🚫 **Ammo shopping is locked during a run.** Flee or finish the run first."]), view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+                if self.user_id in _purchase_locks:
+                    await interaction.edit_original_response(content="⏳ Purchase already processing. Try again in a moment.", view=self)
                     return
-                msgs = buy_ammo_boxes(p, ammo, q)
-                await self.store.save_async()
-                content = self.get_shop_text(p, selected_override=ammo, extra_msgs=msgs)
-                await interaction.edit_original_response(content=content, view=AmmoShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_ammo=ammo))
+                _purchase_locks.add(self.user_id)
+                try:
+                    p=self.store.get(self.user_id)
+                    if p.run_active:
+                        await interaction.edit_original_response(content=None, embed=combat_embed(p, ["🚫 **Ammo shopping is locked during a run.** Flee or finish the run first."]), view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+                        return
+                    msgs = buy_ammo_boxes(p, ammo, q)
+                    await self.store.save_one_async(str(self.user_id))
+                    content = self.get_shop_text(p, selected_override=ammo, extra_msgs=msgs)
+                    await interaction.edit_original_response(content=content, view=AmmoShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_ammo=ammo))
+                finally:
+                    _purchase_locks.discard(self.user_id)
             btn.callback = bulk_cb
             self.add_item(btn)
         
@@ -3128,30 +3135,34 @@ class MedsShopView(PlayerView):
             btn = discord.ui.Button(label=label[:80], style=discord.ButtonStyle.primary, row=row)
             async def bulk_cb(interaction, q=qty, med=self.selected_med):
                 await interaction.response.defer()
-                p = self.store.get(self.user_id)
-                if p.run_active:
-                    await interaction.edit_original_response(content=None, embed=combat_embed(p, ["🚫 **Med shopping is locked during a run.** Flee or finish the run first."]), view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+                if self.user_id in _purchase_locks:
+                    await interaction.edit_original_response(content="⏳ Purchase already processing. Try again in a moment.", view=self)
                     return
-                total_cost = (15 if med == "painkillers" else 80) * q
+                _purchase_locks.add(self.user_id)
+                try:
+                    p = self.store.get(self.user_id)
+                    if p.run_active:
+                        await interaction.edit_original_response(content=None, embed=combat_embed(p, ["🚫 **Med shopping is locked during a run.** Flee or finish the run first."]), view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+                        return
+                    total_cost = (15 if med == "painkillers" else 80) * q
 
-                if p.money < total_cost:
-                    msgs = [f"❌ Need ${total_cost} for {q}x {med}, you have ${p.money}"]
-                else:
-                    # The old callback purchased the items once with buy_item()
-                    # and then purchased them a second time in a second loop.
-                    # This performs exactly one bulk transaction.
-                    p.money -= total_cost
-                    if med == "painkillers":
-                        p.painkillers += 2 * q
-                        bought = 2 * q
-                        msgs = [f"💊 Bought {q}x Painkillers +{bought} | Now {p.painkillers}x | ${p.money} left"]
+                    if p.money < total_cost:
+                        msgs = [f"❌ Need ${total_cost} for {q}x {med}, you have ${p.money}"]
                     else:
-                        p.full_restores += q
-                        bought = q
-                        msgs = [f"✨ Bought {q}x Full Restore +{bought} | Now {p.full_restores}x | ${p.money} left"]
-                    await self.store.save_one_async(str(self.user_id))
-                content = self.get_shop_text(p, selected_override=med, extra_msgs=msgs)
-                await interaction.edit_original_response(content=content, view=MedsShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_med=med))
+                        p.money -= total_cost
+                        if med == "painkillers":
+                            p.painkillers += 2 * q
+                            bought = 2 * q
+                            msgs = [f"💊 Bought {q}x Painkillers +{bought} | Now {p.painkillers}x | ${p.money} left"]
+                        else:
+                            p.full_restores += q
+                            bought = q
+                            msgs = [f"✨ Bought {q}x Full Restore +{bought} | Now {p.full_restores}x | ${p.money} left"]
+                        await self.store.save_one_async(str(self.user_id))
+                    content = self.get_shop_text(p, selected_override=med, extra_msgs=msgs)
+                    await interaction.edit_original_response(content=content, view=MedsShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_med=med))
+                finally:
+                    _purchase_locks.discard(self.user_id)
             btn.callback = bulk_cb
             self.add_item(btn)
 
@@ -3304,8 +3315,8 @@ class UpgradeView(PlayerView):
 
 
 class StarUpgradeView(PlayerView):
-    """Fisher-style Star Upgrades - same layout"""
-    def __init__(self, user_id: int, store, display_name: str = "Survivor", selected_star: str = "dodge", timeout: float = 180):
+    """Star upgrade shop with persistent component controls and per-player purchase locking."""
+    def __init__(self, user_id: int, store, display_name: str = "Survivor", selected_star: str = "dodge", timeout: float | None = None):
         super().__init__(user_id, store, display_name, timeout)
         player = self.store.get(user_id)
         self.selected_star = selected_star
@@ -3337,9 +3348,18 @@ class StarUpgradeView(PlayerView):
             btn = discord.ui.Button(label=label[:80], style=style, row=0 if i < 3 else 1)
             async def cb(interaction, s=sid):
                 self.selected_star = s
-                p=self.store.get(self.user_id)
+                p = self.store.get(self.user_id)
                 content = self.get_shop_text(p, selected_override=s)
-                await interaction.edit_original_response(content=content, view=StarUpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_star=s))
+                view = StarUpgradeView(
+                    self.user_id,
+                    self.store,
+                    display_name=getattr(self, "display_name", "Survivor"),
+                    selected_star=s,
+                )
+                # A component callback must acknowledge the interaction before
+                # editing the message.  The old code called edit_original_response
+                # without responding/defering, which made the selector buttons fail.
+                await interaction.response.edit_message(content=content, view=view)
             btn.callback = cb
             self.add_item(btn)
 
