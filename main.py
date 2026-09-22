@@ -3,11 +3,17 @@ import os, sys, json, random, logging, time, uuid, asyncio
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import discord
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger('zombie-bot')
 from discord import app_commands
+
+OWNER_ID = 572053060969299977
+XP_BOOST_DURATION_SECONDS = 24 * 60 * 60
+CASH_BOOST_DURATION_SECONDS = 24 * 60 * 60
+GLOBAL_XP_BOOST_UNTIL: str | None = None
+GLOBAL_CASH_BOOST_UNTIL: str | None = None
 
 from storage import load_all_players, save_player, DB_PATH, SAVE_FILE, get_bot_admins, is_bot_admin, add_bot_admin, remove_bot_admin, verify_storage
 print(f"[STORAGE] Using POSTGRES - CONSTANT SAVE ENABLED - V6 FULL RESTORED")
@@ -443,6 +449,14 @@ class Survivor:
     leaderboard_guilds: list[str] = field(default_factory=list)
     # Daily Survivor Crate cooldown (UTC ISO timestamp of last claim).
     daily_claimed_at: str | None = None
+    # Owner-only temporary 2x XP boost for this player.
+    xp_boost_until: str | None = None
+    # Global 2x XP/cash expiries are persisted on the Owner record.
+    global_xp_boost_until: str | None = None
+    # Owner-only temporary 2x Cash boost for this player.
+    cash_boost_until: str | None = None
+    # Global 2x Cash boost is persisted on the Owner record.
+    global_cash_boost_until: str | None = None
     # Persistent flag so admin test runs stay excluded from leaderboards even across restarts.
     admin_test_mode: bool = False
     @property
@@ -626,6 +640,8 @@ class Survivor:
         allowed.setdefault("leaderboard_name", data.get("leaderboard_name", "Survivor"))
         allowed.setdefault("leaderboard_guilds", [])
         allowed.setdefault("daily_claimed_at", None)
+        allowed.setdefault("xp_boost_until", None)
+        allowed.setdefault("global_xp_boost_until", None)
         allowed.setdefault("admin_test_mode", False)
         if "Pistol" not in allowed["owned_weapons"]: allowed["owned_weapons"].append("Pistol")
         allowed["equipped_weapon"] = allowed.get("weapon_name", "Pistol")
@@ -1244,9 +1260,9 @@ def _finish_enemy(player: Survivor) -> list[str]:
     # they cannot accidentally inherit generic healing, ammo, or Bloater rewards.
     if enemy.is_zone_boss:
         mult = boss_reward_multiplier(player.wave)
-        xp_gain = int(enemy.xp_reward * mult * (1.0 + player.xp_bonus))
+        xp_gain = int(enemy.xp_reward * mult * (1.0 + player.xp_bonus) * xp_boost_multiplier(player))
         cash_base = int(enemy.money_reward * mult)
-        cash_gain = int(cash_base * player.scavenger_bonus)
+        cash_gain = int(cash_base * player.scavenger_bonus * cash_boost_multiplier(player))
         if enemy.boss_key == "Kingpin":
             cash_gain += enemy.boss_bonus_cash
         player.money += cash_gain
@@ -1302,9 +1318,9 @@ def _finish_enemy(player: Survivor) -> list[str]:
     # Star XP bonus: +10% base +1% per level, max 25%
     xp_bonus_mult = 1.0 + player.xp_bonus
     # Final XP: base (already includes zone_mult) * wave_mult * xp_bonus
-    xp_gain = int(enemy.xp_reward * wave_mult * xp_bonus_mult)
+    xp_gain = int(enemy.xp_reward * wave_mult * xp_bonus_mult * xp_boost_multiplier(player))
     
-    money_gain = int(enemy.money_reward * player.scavenger_bonus)
+    money_gain = int(enemy.money_reward * player.scavenger_bonus * cash_boost_multiplier(player))
     player.money += money_gain
     old_level = player.level
     player.xp += xp_gain
@@ -2432,13 +2448,14 @@ def _grant_random_elemental_drop(player: Survivor) -> list[str]:
 
 
 
+
 DAILY_COOLDOWN_SECONDS = 24 * 60 * 60
 
 def daily_crate_rewards(player: Survivor) -> tuple[int, int, int]:
     """Small level-scaled daily reward: cash, Standard ammo, XP."""
-    cash = min(100 + player.level * 5, 1100)
+    cash = int(min(100 + player.level * 5, 1100) * cash_boost_multiplier(player))
     ammo = min(10 + player.level // 10, 30)
-    xp = min(50 + player.level * 2, 400)
+    xp = int(min(50 + player.level * 2, 400) * xp_boost_multiplier(player))
     return cash, ammo, xp
 
 def daily_crate_status(player: Survivor) -> tuple[bool, int]:
@@ -2566,6 +2583,29 @@ def get_detailed_status(player: Survivor, display_name: str = "Survivor") -> str
 
 
 
+def _parse_xp_boost_expiry(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except (TypeError, ValueError):
+        return None
+
+def _xp_boost_active(value: str | None) -> bool:
+    expiry = _parse_xp_boost_expiry(value)
+    return bool(expiry and expiry > datetime.now(timezone.utc))
+
+def xp_boost_multiplier(player: Survivor) -> float:
+    """Return active XP multiplier; personal/global boosts never stack."""
+    return 1.5 if (_xp_boost_active(getattr(player, "xp_boost_until", None)) or _xp_boost_active(GLOBAL_XP_BOOST_UNTIL)) else 1.0
+
+def cash_boost_multiplier(player: Survivor) -> float:
+    """Return active cash multiplier; personal/global boosts never stack."""
+    return 1.5 if (_xp_boost_active(getattr(player, "cash_boost_until", None)) or _xp_boost_active(GLOBAL_CASH_BOOST_UNTIL)) else 1.0
+
 class GameStore:
     """CONSTANT SAVE - every player action triggers an instant persistent save.
 
@@ -2663,6 +2703,9 @@ class GameStore:
             # Advance the generation before replacing any player objects so
             # in-flight saves cannot write pre-reset snapshots after this point.
             self._reset_generation += 1
+            global GLOBAL_XP_BOOST_UNTIL, GLOBAL_CASH_BOOST_UNTIL
+            GLOBAL_XP_BOOST_UNTIL = None
+            GLOBAL_CASH_BOOST_UNTIL = None
             keys = list(self.players.keys())
             for key in keys:
                 self.players[key] = Survivor()
@@ -2740,6 +2783,18 @@ class GameStore:
             except Exception as e:
                 raise RuntimeError(f"Corrupt player save {k}: {e}") from e
         self.players = loaded
+        global GLOBAL_XP_BOOST_UNTIL, GLOBAL_CASH_BOOST_UNTIL
+        owner_record = self.players.get(str(OWNER_ID)) if "OWNER_ID" in globals() else None
+        GLOBAL_XP_BOOST_UNTIL = getattr(owner_record, "global_xp_boost_until", None) if owner_record else None
+        if GLOBAL_XP_BOOST_UNTIL and not _xp_boost_active(GLOBAL_XP_BOOST_UNTIL):
+            GLOBAL_XP_BOOST_UNTIL = None
+            if owner_record:
+                owner_record.global_xp_boost_until = None
+        GLOBAL_CASH_BOOST_UNTIL = getattr(owner_record, "global_cash_boost_until", None) if owner_record else None
+        if GLOBAL_CASH_BOOST_UNTIL and not _xp_boost_active(GLOBAL_CASH_BOOST_UNTIL):
+            GLOBAL_CASH_BOOST_UNTIL = None
+            if owner_record:
+                owner_record.global_cash_boost_until = None
         print(f"[STORE] Loaded {len(loaded)} players - PERSISTENT")
 
 game_store = GameStore()
@@ -4568,7 +4623,6 @@ async def zombie_start_cmd(interaction: discord.Interaction):
 # The bot uses its own permission hierarchy instead of Discord server roles:
 #   👑 Owner -> 🛠️ Game Admins -> 🧟 Players
 # OWNER_ID is intentionally fixed in code. No Discord command can change it.
-OWNER_ID = 572053060969299977
 
 
 def is_owner(interaction: discord.Interaction) -> bool:
@@ -4818,6 +4872,138 @@ async def setwave(interaction: discord.Interaction, wave: int, user: discord.Use
             )
         except Exception as followup_error:
             print(f"[ADMIN] /setwave error response failed: {followup_error}")
+
+
+def _resolve_xp_boost_target(interaction: discord.Interaction, target_text: str):
+    """Resolve Global, a Discord mention/ID, or an exact guild member name."""
+    target_text = (target_text or "").strip()
+    if target_text.lower() == "global":
+        return "global", None
+    import re
+    match = re.fullmatch(r"<@!?(\d+)>", target_text)
+    if match:
+        return "player", int(match.group(1))
+    if target_text.isdigit():
+        return "player", int(target_text)
+    guild = interaction.guild
+    if guild is None:
+        return None, None
+    lowered = target_text.casefold()
+    matches = []
+    for member in guild.members:
+        names = {
+            str(getattr(member, "name", "") or "").casefold(),
+            str(getattr(member, "display_name", "") or "").casefold(),
+            str(getattr(member, "global_name", "") or "").casefold(),
+        }
+        if lowered in names:
+            matches.append(member)
+    if len(matches) == 1:
+        return "player", matches[0].id
+    if len(matches) > 1:
+        return "ambiguous", matches
+    return None, None
+
+
+@bot.tree.command(name="xpbooster", description="[OWNER] Give a player or everyone 1.5x XP for 24 hours")
+@app_commands.describe(target="Player name/mention/ID, or type Global for everyone")
+async def xpbooster(interaction: discord.Interaction, target: str):
+    """Owner-only temporary 1.5x XP grant. Personal/global boosts do not stack."""
+    await interaction.response.defer(ephemeral=True)
+    if not is_owner(interaction):
+        await interaction.followup.send("❌ Owner only.", ephemeral=True)
+        return
+
+    kind, value = _resolve_xp_boost_target(interaction, target)
+    expiry = datetime.now(timezone.utc) + timedelta(seconds=XP_BOOST_DURATION_SECONDS)
+    expiry_iso = expiry.isoformat()
+
+    if kind == "global":
+        global GLOBAL_XP_BOOST_UNTIL
+        GLOBAL_XP_BOOST_UNTIL = expiry_iso
+        async with game_store.action_lock(OWNER_ID):
+            owner_player = game_store.get(OWNER_ID)
+            owner_player.global_xp_boost_until = expiry_iso
+        await game_store.save_one_async(str(OWNER_ID))
+        await interaction.followup.send(
+            f"🌍 **GLOBAL 1.5x XP ACTIVATED!**\n✨ Everyone earns **1.5× XP** for 24 hours.\n"
+            f"⏰ Expires <t:{int(expiry.timestamp())}:F> (<t:{int(expiry.timestamp())}:R>)\n"
+            f"⚠️ Personal + global boosts do **not** stack to 2.25×.",
+            ephemeral=True,
+        )
+        return
+
+    if kind == "ambiguous":
+        names = ", ".join(m.mention for m in value[:10])
+        await interaction.followup.send(f"❌ That name matches multiple players: {names}\nUse a mention or Discord user ID instead.", ephemeral=True)
+        return
+    if kind != "player" or value is None:
+        await interaction.followup.send("❌ Player not found. Use a mention, Discord user ID, exact server name, or `Global`.", ephemeral=True)
+        return
+
+    async with game_store.action_lock(value):
+        player = game_store.get(value)
+        player.xp_boost_until = expiry_iso
+    await game_store.save_one_async(str(value))
+    await interaction.followup.send(
+        f"✨ **1.5x XP ACTIVATED** for <@{value}>!\n"
+        f"⏰ Expires <t:{int(expiry.timestamp())}:F> (<t:{int(expiry.timestamp())}:R>)\n"
+        f"XP earned during the boost is increased by 50%. Personal + global boosts never stack to 2.25×.",
+        ephemeral=True,
+    )
+
+
+def _resolve_cash_boost_target(interaction: discord.Interaction, target_text: str):
+    """Resolve Global, a Discord mention/ID, or an exact guild member name."""
+    return _resolve_xp_boost_target(interaction, target_text)
+
+
+@bot.tree.command(name="moneybooster", description="[OWNER] Give a player or everyone 1.5x Cash for 24 hours")
+@app_commands.describe(target="Player name/mention/ID, or type Global for everyone")
+async def moneybooster(interaction: discord.Interaction, target: str):
+    """Owner-only temporary 1.5x Cash grant. Personal/global boosts do not stack."""
+    await interaction.response.defer(ephemeral=True)
+    if not is_owner(interaction):
+        await interaction.followup.send("❌ Owner only.", ephemeral=True)
+        return
+
+    kind, value = _resolve_cash_boost_target(interaction, target)
+    expiry = datetime.now(timezone.utc) + timedelta(seconds=CASH_BOOST_DURATION_SECONDS)
+    expiry_iso = expiry.isoformat()
+
+    if kind == "global":
+        global GLOBAL_CASH_BOOST_UNTIL
+        GLOBAL_CASH_BOOST_UNTIL = expiry_iso
+        async with game_store.action_lock(OWNER_ID):
+            owner_player = game_store.get(OWNER_ID)
+            owner_player.global_cash_boost_until = expiry_iso
+        await game_store.save_one_async(str(OWNER_ID))
+        await interaction.followup.send(
+            f"🌍 **GLOBAL 1.5x CASH ACTIVATED!**\n💰 Everyone earns **1.5× Cash** for 24 hours.\n"
+            f"⏰ Expires <t:{int(expiry.timestamp())}:F> (<t:{int(expiry.timestamp())}:R>)\n"
+            f"⚠️ Personal + global cash boosts do **not** stack to 2.25×.",
+            ephemeral=True,
+        )
+        return
+
+    if kind == "ambiguous":
+        names = ", ".join(m.mention for m in value[:10])
+        await interaction.followup.send(f"❌ That name matches multiple players: {names}\nUse a mention or Discord user ID instead.", ephemeral=True)
+        return
+    if kind != "player" or value is None:
+        await interaction.followup.send("❌ Player not found. Use a mention, Discord user ID, exact server name, or `Global`.", ephemeral=True)
+        return
+
+    async with game_store.action_lock(value):
+        player = game_store.get(value)
+        player.cash_boost_until = expiry_iso
+    await game_store.save_one_async(str(value))
+    await interaction.followup.send(
+        f"💰 **1.5x CASH ACTIVATED** for <@{value}>!\n"
+        f"⏰ Expires <t:{int(expiry.timestamp())}:F> (<t:{int(expiry.timestamp())}:R>)\n"
+        f"Cash earned during the boost is increased by 50%. Personal + global boosts never stack to 2.25×.",
+        ephemeral=True,
+    )
 
 
 @bot.tree.command(name="addmoney", description="[ADMIN] Add money to a player")
