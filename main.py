@@ -60,7 +60,7 @@ def combat_embed(player, last_msgs=None):
     )
     survivor_lines = [
         f"`{p_bar}`",
-        f"🔫 {player.weapon_name} {player.magazine}/{player.magazine_size} ({player.get_spare()} spare) [{player.ammo_name}]",
+        f"🔫 {player.weapon_name} {player.magazine}/{effective_magazine_size(player)} ({player.get_spare()} spare) [{player.ammo_name}]",
     ]
     if player.zone_name == "The Void":
         survivor_lines.append(f"◈ Bazooka: {player.void_bazooka_ammo} shot(s) ready | Lvl {player.void_weapon_level}/10")
@@ -77,11 +77,14 @@ def combat_embed(player, last_msgs=None):
     )
     if player.enemy and player.enemy.is_bloater:
         embed.add_field(name=f"💣 BLOATER - {player.enemy.bloater_timer} ATTACKS LEFT!", value=f"⏰ Kill it in {player.enemy.bloater_timer} attacks or take {int(BLOATER_EXPLODE_PCT*100)}% max HP damage! Solo wave - reward if you survive!", inline=False)
+    if player.enemy and player.enemy.is_zone_boss:
+        phase = " 🔥 FINAL PHASE" if ((player.enemy.boss_key == "Erased" and player.enemy.health <= player.enemy.max_health * 0.20) or (player.enemy.boss_key == "Undertaker" and player.enemy.health <= player.enemy.max_health * 0.25)) else ""
+        embed.add_field(name=f"👑 {player.enemy.name}{phase}", value=_boss_status_text(player.enemy), inline=False)
     if last_msgs:
         clean = [m for m in last_msgs if m and "HP restored" not in m and "Waves survived" not in m][:3]
         if clean:
             embed.add_field(name="⚔️ Last action", value="\n".join(clean)[:1024], inline=False)
-    embed.set_footer(text=f"💰 ${player.money} | ⭐ {player.stars} | ✨ {player.xp} XP | {player.ammo_name} {player.magazine}/{player.magazine_size}")
+    embed.set_footer(text=f"💰 ${player.money} | ⭐ {player.stars} | ✨ {player.xp} XP | {player.ammo_name} {player.magazine}/{effective_magazine_size(player)}")
     return embed
 
 
@@ -384,8 +387,13 @@ ZONE_ENEMY_NAMES: dict[str, dict[str, str]] = {
 class Enemy:
     name: str; health: int; max_health: int; damage: int; money_reward: int; xp_reward: int; effects: dict[str, int] = field(default_factory=dict)
     is_bloater: bool = False
-    is_void_boss: bool = False
+    is_zone_boss: bool = False
+    boss_key: str = ""
+    is_void_boss: bool = False  # backward-compatible alias for Void boss checks
     bloater_timer: int = 0  # fuse countdown for Bloater
+    boss_attacks_taken: int = 0  # successful player attack actions against this boss
+    boss_bounty_triggers: int = 0  # Kingpin: qualifying 500+ damage actions
+    boss_bonus_cash: int = 0  # Kingpin bounty payout accumulated on kill
 @dataclass
 class Survivor:
     max_health: int = 100; health: int = 100; money: int = 0; xp: int = 0; stars: int = 0
@@ -580,7 +588,14 @@ class Survivor:
         if "scavenger_upgrades" not in data:
             data["scavenger_upgrades"] = 0
         enemy_data = data.get("enemy")
-        enemy = Enemy(**enemy_data) if isinstance(enemy_data, dict) else None
+        if isinstance(enemy_data, dict):
+            enemy_allowed = {k: v for k, v in enemy_data.items() if k in Enemy.__dataclass_fields__}
+            enemy_allowed.setdefault("effects", {})
+            if not isinstance(enemy_allowed["effects"], dict):
+                enemy_allowed["effects"] = {}
+            enemy = Enemy(**enemy_allowed)
+        else:
+            enemy = None
         spare = data.get("spare_ammo", {"Standard": 36})
         if isinstance(spare, int): spare = {"Standard": spare}
         allowed = {k: v for k, v in data.items() if k in cls.__dataclass_fields__}
@@ -663,6 +678,88 @@ def level_progress(player: Survivor) -> tuple[int, int]:
         return 0, 0
     return earned, xp_to_next_level(level)
 
+# --- ZONE BOSS SYSTEM -------------------------------------------------------
+# Zone bosses are deterministic milestone encounters: Wave 20, 40, 60, ...
+# They are never RNG-spawned and always replace the normal/Bloater encounter.
+ZONE_BOSS_CONFIG: dict[str, dict[str, Any]] = {
+    "Graveyard": {
+        "key": "Undertaker", "display": "The Undertaker", "damage_mult": 1.35,
+        "cash": 1500, "xp": 500, "extra": None,
+    },
+    "Mega Death City": {
+        "key": "Kingpin", "display": "The Kingpin", "damage_mult": 1.45,
+        "cash": 5000, "xp": 1250, "extra": None,
+    },
+    "Frostbitten Outskirts": {
+        "key": "Wendigo", "display": "The Wendigo", "damage_mult": 1.30,
+        "cash": 12500, "xp": 2500, "extra": "ammo24",
+    },
+    "Toxic Wasteland": {
+        "key": "Contaminant", "display": "The Contaminant", "damage_mult": 1.25,
+        "cash": 30000, "xp": 5000, "extra": "ammo36",
+    },
+    "The Void": {
+        "key": "Erased", "display": "The Erased", "damage_mult": 1.35,
+        "cash": 75000, "xp": 10000, "extra": "essence8",
+    },
+}
+ZONE_BOSS_MILESTONE = 20
+ZONE_BOSS_HP_BASE = 900
+ZONE_BOSS_HP_WAVE_STEP = 25
+
+def is_zone_boss_wave(wave: int) -> bool:
+    return int(wave) >= ZONE_BOSS_MILESTONE and int(wave) % ZONE_BOSS_MILESTONE == 0
+
+def boss_reward_multiplier(wave: int) -> float:
+    return 1.0 + max(0, int(wave) - ZONE_BOSS_MILESTONE) / 40.0
+
+def _make_zone_boss_enemy(player: Survivor) -> Enemy:
+    cfg = ZONE_BOSS_CONFIG[player.zone_name]
+    zone = zone_for(player)
+    health = round((ZONE_BOSS_HP_BASE + ZONE_BOSS_HP_WAVE_STEP * (player.wave - ZONE_BOSS_MILESTONE)) * zone["hp_mult"])
+    # The existing zone damage baseline is 10 * zone dmg_mult; boss multipliers
+    # then produce the intended approximate values 12/19/22/26/35.
+    damage = max(1, int(10 * zone["dmg_mult"] * cfg["damage_mult"]))
+    return Enemy(
+        name=cfg["display"], health=health, max_health=health, damage=damage,
+        money_reward=cfg["cash"], xp_reward=cfg["xp"],
+        is_zone_boss=True, boss_key=cfg["key"],
+        is_void_boss=(cfg["key"] == "Erased"),
+    )
+
+def _boss_status_text(enemy: Enemy) -> str:
+    if not enemy.is_zone_boss:
+        return ""
+    if enemy.boss_key == "Undertaker":
+        marks = enemy.effects.get("grave_marks", 0)
+        required = 2 if enemy.health <= enemy.max_health * 0.25 else 3
+        return f"☠️ Grave Marks: **{marks}/{required}**"
+    if enemy.boss_key == "Kingpin":
+        return f"💰 Protection Racket: **{enemy.boss_attacks_taken % 3}/3** • Bounty: **+${enemy.boss_bonus_cash:,}**"
+    if enemy.boss_key == "Wendigo":
+        frost = enemy.effects.get("boss_frost", 0)
+        frozen = bool(enemy.effects.get("wendigo_frozen", 0))
+        return f"❄️ Frost: **{frost}/5**" + (" • 🥶 FROZEN" if frozen else "")
+    if enemy.boss_key == "Contaminant":
+        stacks = enemy.effects.get("contamination", 0)
+        return f"☣️ Contamination: **{stacks}/5** (+{stacks * 5}% poison)"
+    if enemy.boss_key == "Erased":
+        count = enemy.boss_attacks_taken % 3
+        if enemy.health <= enemy.max_health * 0.20:
+            count = enemy.boss_attacks_taken % 2
+        return f"🌀 Erasure: **{count}/{2 if enemy.health <= enemy.max_health * 0.20 else 3}**"
+    return ""
+
+
+def effective_magazine_size(player: Survivor) -> int:
+    """Return the temporary combat magazine capacity after boss debuffs."""
+    size = int(player.magazine_size)
+    enemy = player.enemy
+    if enemy and enemy.is_zone_boss and enemy.boss_key == "Wendigo" and enemy.effects.get("boss_frost", 0) >= 4:
+        size = max(1, size - 1)
+    return size
+
+
 def _should_spawn_bloater(player: Survivor) -> bool:
     """Return the Bloater result for this wave, rolling at most once.
 
@@ -675,6 +772,13 @@ def _should_spawn_bloater(player: Survivor) -> bool:
         return player.bloater_wave_result
 
     if player.wave < BLOATER_MIN_WAVE:
+        player.bloater_roll_wave = player.wave
+        player.bloater_wave_result = False
+        return False
+
+    # Keep the wave immediately before a guaranteed Zone Boss normal as well;
+    # otherwise Wave 19 -> Wave 20 would create back-to-back special waves.
+    if is_zone_boss_wave(player.wave + 1):
         player.bloater_roll_wave = player.wave
         player.bloater_wave_result = False
         return False
@@ -726,9 +830,15 @@ def _make_bloater_enemy(player: Survivor) -> Enemy:
     )
 
 def spawn_enemy(player: Survivor, recovery: bool = False) -> Enemy:
-    # Bloater check first - if eligible, spawn it as solo wave boss.
-    # A recovery of an already-decided Bloater wave restores that encounter
-    # without counting a second Bloater spawn or resetting its wave pressure.
+    # Zone Boss milestones always take priority over every other encounter.
+    # This makes boss waves deterministic and guarantees no Bloater/normal zombie
+    # can coexist with the Zone Boss.
+    if is_zone_boss_wave(player.wave):
+        boss = _make_zone_boss_enemy(player)
+        player.zombies_remaining = 1
+        return boss
+
+    # Non-boss waves retain the existing Bloater RNG system.
     if _should_spawn_bloater(player):
         bloater = _make_bloater_enemy(player)
         if not recovery:
@@ -801,9 +911,13 @@ def activate_void_perk(player: Survivor, perk_name: str) -> list[str]:
     if perk_name == "Void Execution" and player.enemy.health > player.enemy.max_health * 0.50:
         return ["⚠️ **Void Execution** only arms when the enemy is at **50% HP or lower**."]
     cost = VOID_PERKS[perk_name]["activation_cost"]
-    if player.void_essence < cost:
-        return [f"❌ Need ◈{cost} Void Essence to activate **{perk_name}**; you have ◈{player.void_essence}."]
-    player.void_essence -= cost
+    erasure_extra = 1 if (player.enemy and player.enemy.is_zone_boss and player.enemy.boss_key == "Erased" and player.enemy.effects.get("erasure_effect") == "essence") else 0
+    total_cost = cost + erasure_extra
+    if player.void_essence < total_cost:
+        return [f"❌ Need ◈{total_cost} Void Essence to activate **{perk_name}**; you have ◈{player.void_essence}."]
+    player.void_essence -= total_cost
+    if erasure_extra:
+        player.enemy.effects.pop("erasure_effect", None)
     setattr(player, active_field, True)
     bonus = int(void_perk_bonus(player, perk_name) * 100)
     return [f"◈ **{perk_name} ARMED!** Next eligible effect: **+{bonus}%**. Cost ◈{cost}. Cooldown after use: {VOID_PERKS[perk_name]['cooldown']} kills."]
@@ -936,7 +1050,82 @@ def action_help(player: Survivor) -> str:
     cost = AMMO[player.ammo_name]["cost_per_attack"]
     if player.enemy.is_bloater:
         return f"💣 BLOATER {player.enemy.bloater_timer} attacks left! {player.enemy.health} HP | 🔫 {player.ammo_name} {player.magazine}/{player.magazine_size} | 🧟 {player.enemy.name} 4 dmg"
-    return f"🔫 {player.ammo_name} {player.magazine}/{player.magazine_size} ({cost}/shot) | spare: {player.get_spare()} | 🧟 {player.enemy.name} {player.enemy.health} HP"
+    boss_text = f" • {_boss_status_text(player.enemy)}" if player.enemy.is_zone_boss else ""
+    return f"🔫 {player.ammo_name} {player.magazine}/{player.magazine_size} ({cost}/shot) | spare: {player.get_spare()} | 🧟 {player.enemy.name} {player.enemy.health} HP{boss_text}"
+
+def _apply_boss_attack_effect(player: Survivor, damage_dealt: int) -> tuple[int, list[str]]:
+    """Apply a successful Zone Boss attack's mechanic and return adjusted damage/messages."""
+    enemy = player.enemy
+    if enemy is None or not enemy.is_zone_boss or damage_dealt <= 0:
+        return damage_dealt, []
+    messages: list[str] = []
+    if enemy.boss_key == "Undertaker":
+        if enemy.effects.pop("grave_double_pending", 0):
+            # The attack that consumes the double-damage charge resets Marks; it
+            # does not immediately create a new mark on the same attack.
+            enemy.effects["grave_marks"] = 0
+            messages.append("☠️ **Grave Marks reset to 0.**")
+        else:
+            marks = enemy.effects.get("grave_marks", 0) + 1
+            enemy.effects["grave_marks"] = marks
+            required = 2 if enemy.health <= enemy.max_health * 0.25 else 3
+            messages.append(f"☠️ **Grave Mark +1** — {marks}/{required}")
+    elif enemy.boss_key == "Wendigo":
+        frost = enemy.effects.get("boss_frost", 0) + 1
+        if frost >= 5:
+            enemy.effects["boss_frost"] = 0
+            enemy.effects["wendigo_frozen"] = 1
+            messages.append("🥶 **FROZEN!** Your next normal attack will be skipped. Frost resets to 0.")
+        else:
+            enemy.effects["boss_frost"] = frost
+            if frost == 3:
+                messages.append("❄️ **Frost 3:** your damage is reduced by 10%.")
+            elif frost == 4:
+                messages.append("❄️ **Frost 4:** your magazine capacity is temporarily reduced by 1.")
+    elif enemy.boss_key == "Contaminant":
+        if enemy.effects.pop("contamination_skip_next", 0):
+            messages.append("☣️ **Contamination countered** — your medical item prevented this attack from adding a stack.")
+            return damage_dealt, messages
+        stacks = min(5, enemy.effects.get("contamination", 0) + 1)
+        enemy.effects["contamination"] = stacks
+        if stacks == 5:
+            burst = max(1, int(player.max_health * 0.25))
+            player.health = max(0, player.health - burst)
+            enemy.effects["contamination"] = 0
+            messages.append(f"☣️ **CRITICAL CONTAMINATION!** You take {burst} poison burst damage (25% max HP). Contamination resets.")
+        else:
+            messages.append(f"☣️ **Contamination +1** — {stacks}/5 (+{stacks * 5}% poison damage)")
+    return damage_dealt, messages
+
+def _boss_damage_multiplier_for_player_action(enemy: Enemy) -> float:
+    # Player-side boss modifiers. Undertaker's double hit is handled in
+    # _enemy_damage because it modifies the Undertaker's attack, not the player's.
+    return 1.0
+
+def _apply_boss_player_attack_counter(player: Survivor, action_damage: int) -> list[str]:
+    enemy = player.enemy
+    if enemy is None or not enemy.is_zone_boss or action_damage <= 0:
+        return []
+    messages: list[str] = []
+    enemy.boss_attacks_taken += 1
+    if enemy.boss_key == "Kingpin" and enemy.boss_attacks_taken % 3 == 0 and enemy.health > 0:
+        backup = max(1, enemy.damage // 2 - player.armor_reduction)
+        player.health = max(0, player.health - backup)
+        messages.append(f"💰 **PROTECTION RACKET!** Kingpin's backup hits you for {backup} damage (50% normal attack).")
+    if enemy.boss_key == "Kingpin" and action_damage >= 500:
+        enemy.boss_bounty_triggers += 1
+        enemy.boss_bonus_cash += 250
+        messages.append(f"💰 **BOUNTY INCREASED!** +$250 kill bounty ({enemy.boss_bounty_triggers} trigger(s)).")
+    if enemy.boss_key == "Erased" and enemy.health > 0:
+        interval = 2 if enemy.health <= enemy.max_health * 0.20 else 3
+        if enemy.boss_attacks_taken % interval == 0:
+            options = ["weapon", "defence", "medical", "essence"]
+            effect = random.choice(options)
+            enemy.effects["erasure_effect"] = effect
+            labels = {"weapon":"🔫 Weapon Erasure: next attack deals -25% damage.", "defence":"🛡️ Defence Erasure: next incoming attack ignores 10 Armour.", "medical":"💉 Medical Erasure: next healing restores 50% less HP.", "essence":"◈ Essence Erasure: next Void ability costs +1 Essence."}
+            messages.append(f"🌀 **ERASURE:** {labels[effect]}")
+    return messages
+
 
 def _enemy_damage(player: Survivor) -> list[str]:
     enemy = player.enemy
@@ -944,11 +1133,28 @@ def _enemy_damage(player: Survivor) -> list[str]:
         return []
     if enemy.effects.pop("shock", 0):
         return [f"⚡ **{enemy.name} stunned!** Misses."]
-    # DODGE CHECK - star prestige
     if player.dodge_chance > 0 and random.random() < player.dodge_chance:
         return [f"💨 **DODGED!** You evaded {enemy.name}'s attack! ({player.dodge_chance*100:.1f}% chance)"]
+
     base_dmg = enemy.damage // 2 if enemy.effects.get("freeze", 0) else enemy.damage
-    damage = max(1, base_dmg - player.armor_reduction)
+    undertaker_double = False
+    if enemy.is_zone_boss and enemy.boss_key == "Undertaker":
+        required = 2 if enemy.health <= enemy.max_health * 0.25 else 3
+        if enemy.effects.get("grave_marks", 0) >= required:
+            undertaker_double = True
+            enemy.effects["grave_marks"] = 0
+            enemy.effects["grave_double_pending"] = 1
+            base_dmg *= 2
+    # The Erased's Defence Erasure ignores 10 Armour for exactly one incoming hit.
+    armour = player.armor_reduction
+    erasure_defence = enemy.is_zone_boss and enemy.boss_key == "Erased" and enemy.effects.get("erasure_effect") == "defence"
+    if erasure_defence:
+        armour = max(0, armour - 10)
+        enemy.effects.pop("erasure_effect", None)
+    if enemy.is_zone_boss and enemy.boss_key == "Contaminant":
+        contamination = enemy.effects.get("contamination", 0)
+        base_dmg = int(base_dmg * (1.0 + 0.05 * contamination))
+    damage = max(1, base_dmg - armour)
     shield_used = False
     if player.void_shield_active:
         shield_bonus = void_perk_bonus(player, "Void Shield")
@@ -957,6 +1163,11 @@ def _enemy_damage(player: Survivor) -> list[str]:
         player.void_shield_cooldown = VOID_PERKS["Void Shield"]["cooldown"]
         shield_used = True
     player.health = max(0, player.health - damage)
+
+    boss_msgs: list[str] = []
+    if player.health > 0 and enemy.is_zone_boss:
+        _, boss_msgs = _apply_boss_attack_effect(player, damage)
+
     if enemy.effects.get("freeze", 0):
         enemy.effects["freeze"] -= 1
         if enemy.effects["freeze"] <= 0:
@@ -964,20 +1175,20 @@ def _enemy_damage(player: Survivor) -> list[str]:
         result = [f"🧊 Frozen! {enemy.name} hits for {damage} dmg." + (f" 🛡️ Void Shield absorbed {int(shield_bonus*100)}%." if shield_used else "")]
     else:
         result = [f"💥 {enemy.name} hits for {damage} dmg." + (f" 🛡️ Void Shield absorbed {int(shield_bonus*100)}%." if shield_used else "")]
+    if undertaker_double:
+        result.append("☠️ **THE UNDERTAKER CLAIMS YOU!** Double-damage attack!")
+    result.extend(boss_msgs)
+
     if player.health == 0:
         player.health = player.max_health
-        # CLEAN: only summary, no "Walker hits for X" clutter
         data = build_run_summary(player, "died")
-        # build_run_summary now returns dict, convert to pretty list
         if isinstance(data, dict):
             msgs = [
-                f"💀 **You died!** {get_cocky_line()}",
-                "",
+                f"💀 **You died!** {get_cocky_line()}", "",
                 f"🌊 **Waves survived:** {data['waves_survived']} (reached Wave {data['reached_wave']})",
                 f"🧟 **Zombies killed:** {data['zombies_killed']}",
                 f"💰 **Money earned:** +${data['money']}",
-                f"✨ **XP earned:** +{data['xp']} XP",
-                "",
+                f"✨ **XP earned:** +{data['xp']} XP", "",
                 f"❤️ **HP restored:** {data['max_hp']}/{data['max_hp']}"
             ]
         else:
@@ -1022,6 +1233,63 @@ def _finish_enemy(player: Survivor) -> list[str]:
     enemy = player.enemy
     if enemy is None or enemy.health > 0:
         return []
+
+    # Zone Bosses use their own milestone reward table and wave multiplier.
+    # They deliberately bypass the normal kill XP/wave-clear reward pipeline so
+    # they cannot accidentally inherit generic healing, ammo, or Bloater rewards.
+    if enemy.is_zone_boss:
+        mult = boss_reward_multiplier(player.wave)
+        xp_gain = int(enemy.xp_reward * mult * (1.0 + player.xp_bonus))
+        cash_base = int(enemy.money_reward * mult)
+        cash_gain = int(cash_base * player.scavenger_bonus)
+        if enemy.boss_key == "Kingpin":
+            cash_gain += enemy.boss_bonus_cash
+        player.money += cash_gain
+        old_level = player.level
+        player.xp += xp_gain
+        new_level = player.level
+        level_ups = max(0, new_level - old_level)
+        if level_ups:
+            player.stars += level_ups
+        player.run_money_earned += cash_gain
+        player.run_xp_earned += xp_gain
+        player.run_zombies_killed += 1
+        player.zombies_remaining = 0
+        player.void_infusion_cooldown = max(0, player.void_infusion_cooldown - 1)
+        player.void_shield_cooldown = max(0, player.void_shield_cooldown - 1)
+        player.void_execution_cooldown = max(0, player.void_execution_cooldown - 1)
+        messages = [f"👑 **{enemy.name} defeated!** +${cash_gain:,} • +{xp_gain:,} XP (×{mult:.2f} milestone scale)"]
+        if enemy.boss_key == "Wendigo":
+            player.spare_ammo[player.ammo_name] = player.spare_ammo.get(player.ammo_name, 0) + 24
+            messages.append(f"❄️ **Wendigo reward:** +24 {player.ammo_name} ammo")
+        elif enemy.boss_key == "Contaminant":
+            player.spare_ammo[player.ammo_name] = player.spare_ammo.get(player.ammo_name, 0) + 36
+            messages.append(f"☣️ **Contaminant reward:** +36 {player.ammo_name} ammo")
+        elif enemy.boss_key == "Erased":
+            player.void_essence += 8
+            messages.append("🌀 **The Erased reward:** +8 Void Essence")
+        if enemy.boss_key == "Kingpin" and enemy.boss_bonus_cash:
+            messages.append(f"💰 **Bounty collected:** +${enemy.boss_bonus_cash:,} ({enemy.boss_bounty_triggers} qualifying 500+ damage action(s))")
+        if level_ups:
+            messages.append(f"🎉 **LEVEL UP!** Level {player.level}! +{level_ups} ⭐")
+
+        # Boss clears are milestone rewards, not ordinary wave clears: no Medic
+        # drops, no passive healing, and no generic +5 ammo/+5 HP wave bonus.
+        if not getattr(player, "admin_test_mode", False):
+            record_completed_wave(player, player.wave)
+        player.wave += 1
+        player.zombies_remaining = player.wave + 2
+        # Guarantee a normal breathing-room wave after every Zone Boss.
+        player.bloater_cooldown = 1
+        player.bloater_roll_wave = 0
+        player.bloater_wave_result = False
+        player.void_bazooka_boss_fired = False
+        # Boss clears do not restore HP.
+        messages.append(f"🌊 **Boss milestone cleared!** Next wave: **{player.wave}**")
+        player.enemy = spawn_enemy(player)
+        messages.append(f"🧟 **{player.enemy.name}** appears! {player.enemy.health} HP")
+        return messages
+
     # FIXED XP SCALING - Feedback #3
     # Wave scaling: +8% XP per wave - Wave 20 = 2.6x, Wave 30 = 3.4x
     wave_mult = 1.0 + (player.wave * 0.08)
@@ -1192,7 +1460,7 @@ def _combat_action_noop(player: Survivor, action: str, heal_item: str | None = N
     change combat state, so it must not trigger pending DoT or an enemy attack.
     """
     if action == "reload":
-        if player.magazine == player.magazine_size:
+        if player.magazine >= effective_magazine_size(player):
             return "✅ Mag full!"
         # Having no spare ammo is handled as an end-of-run outcome in take_action.
 
@@ -1220,9 +1488,9 @@ def _combat_action_noop(player: Survivor, action: str, heal_item: str | None = N
         weapon_data = WEAPONS.get(player.weapon_name, WEAPONS["Pistol"])
         shots = int(weapon_data.get("shots", 1))
         cost = base_cost * shots
-        if player.magazine_size < base_cost:
+        if effective_magazine_size(player) < base_cost:
             return f"❌ **{player.weapon_name} mag too small for {player.ammo_name}!**"
-        if player.magazine_size < cost:
+        if effective_magazine_size(player) < cost:
             return f"❌ **{player.weapon_name} mag too small for {shots}x {player.ammo_name}!**"
         if player.magazine < cost and player.get_spare() > 0:
             return f"❌ Need {cost} {player.ammo_name} ammo! Have {player.magazine}/{player.magazine_size}"
@@ -1264,11 +1532,12 @@ def _combat_action_noop(player: Survivor, action: str, heal_item: str | None = N
         if "Void Bazooka" not in player.void_weapons_owned:
             return "🔒 You do not own the **Void Bazooka** yet. Buy it in the Void shop."
         enemy = player.enemy
-        is_boss_target = enemy.is_bloater or getattr(enemy, "is_void_boss", False)
+        is_boss_target = enemy.is_bloater or enemy.is_zone_boss or getattr(enemy, "is_void_boss", False)
         if is_boss_target and player.void_bazooka_boss_fired:
             return "⚠️ **Void Bazooka already fired at this boss!** Finish it with your primary weapon."
-        if player.void_bazooka_ammo <= 0 and player.void_essence < VOID_BAZOOKA_AMMO_COST:
-            return f"❌ **No Void Bazooka ammo!** Extra shots cost ◈{VOID_BAZOOKA_AMMO_COST} Void Essence."
+        extra_essence = 1 if (enemy.is_zone_boss and enemy.boss_key == "Erased" and enemy.effects.get("erasure_effect") == "essence") else 0
+        if player.void_bazooka_ammo <= 0 and player.void_essence < VOID_BAZOOKA_AMMO_COST + extra_essence:
+            return f"❌ **No Void Bazooka ammo!** This shot costs ◈{VOID_BAZOOKA_AMMO_COST + extra_essence} Void Essence."
 
     return None
 
@@ -1305,7 +1574,10 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
             else:
                 # MEDIC STAR CHECK - chance to not consume
                 if player.medic_chance > 0 and random.random() < player.medic_chance:
-                    player.health = player.max_health
+                    medical_erasure = bool(player.enemy and player.enemy.is_zone_boss and player.enemy.boss_key == "Erased" and player.enemy.effects.get("erasure_effect") == "medical")
+                    player.health = int(player.max_health * 0.50) if medical_erasure else player.max_health
+                    if medical_erasure:
+                        player.enemy.effects.pop("erasure_effect", None)
                     player.full_restores_used_this_run += 1
                     left = player.max_full_restores_per_run - player.full_restores_used_this_run
                     messages.extend([
@@ -1313,12 +1585,22 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
                         f"{player.full_restores} owned • {left} left • ✨ Saved!"
                     ])
                 else:
-                    player.health = player.max_health
+                    heal_mult = 0.50 if (player.enemy and player.enemy.is_zone_boss and player.enemy.boss_key == "Erased" and player.enemy.effects.get("erasure_effect") == "medical") else 1.0
+                    player.health = int(player.max_health * heal_mult) if heal_mult < 1.0 else player.max_health
+                    if heal_mult < 1.0:
+                        player.enemy.effects.pop("erasure_effect", None)
                     player.full_restores -= 1
                     player.full_restores_used_this_run += 1
+                    if player.enemy and player.enemy.is_zone_boss and player.enemy.boss_key == "Contaminant":
+                        stacks = player.enemy.effects.get("contamination", 0)
+                        if stacks > 0:
+                            removed = min(3, stacks)
+                            player.enemy.effects["contamination"] = stacks - removed
+                            player.enemy.effects["contamination_skip_next"] = 1
+                            messages.append(f"☣️ Full Restore removes {removed} Contamination → {stacks - removed}/5.")
                     left = player.max_full_restores_per_run - player.full_restores_used_this_run
                     messages.extend([
-                        f"✨ **Full heal!** {player.max_health} HP",
+                        f"✨ **Full heal!** {player.health} HP",
                         f"{player.full_restores} owned • {left} left"
                     ])
             heal_item = None
@@ -1337,6 +1619,9 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
                 amount = max(1, player.max_health // 4)
                 # MEDIC STAR CHECK - chance to not consume
                 if player.medic_chance > 0 and random.random() < player.medic_chance:
+                    if player.enemy and player.enemy.is_zone_boss and player.enemy.boss_key == "Erased" and player.enemy.effects.get("erasure_effect") == "medical":
+                        amount = max(1, amount // 2)
+                        player.enemy.effects.pop("erasure_effect", None)
                     player.health = min(player.max_health, player.health + amount)
                     player.painkillers_used_this_run += 1
                     left = player.max_painkillers_per_run - player.painkillers_used_this_run
@@ -1348,6 +1633,12 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
                     player.health = min(player.max_health, player.health + amount)
                     player.painkillers -= 1
                     player.painkillers_used_this_run += 1
+                    if player.enemy and player.enemy.is_zone_boss and player.enemy.boss_key == "Contaminant":
+                        stacks = player.enemy.effects.get("contamination", 0)
+                        if stacks > 0:
+                            player.enemy.effects["contamination"] = stacks - 1
+                            player.enemy.effects["contamination_skip_next"] = 1
+                            messages.append(f"☣️ Painkiller removes 1 Contamination → {stacks - 1}/5.")
                     left = player.max_painkillers_per_run - player.painkillers_used_this_run
                     messages.extend([
                         f"💊 **+{amount} HP!** Now {player.health}/{player.max_health}",
@@ -1371,7 +1662,7 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
         if "Void Bazooka" not in player.void_weapons_owned:
             return ["🔒 You do not own the **Void Bazooka** yet. Buy it in the Void shop."]
         bazooka = VOID_WEAPONS["Void Bazooka"]
-        is_boss_target = enemy.is_bloater or getattr(enemy, "is_void_boss", False)
+        is_boss_target = enemy.is_bloater or enemy.is_zone_boss or getattr(enemy, "is_void_boss", False)
         # A boss can only be hit by the Bazooka once per encounter.
         # Normal enemies can be hit repeatedly as long as the player can pay for ammo.
         if is_boss_target and player.void_bazooka_boss_fired:
@@ -1381,11 +1672,15 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
         if player.void_bazooka_ammo > 0:
             player.void_bazooka_ammo -= 1
             ammo_cost = 0
-        elif player.void_essence >= VOID_BAZOOKA_AMMO_COST:
-            player.void_essence -= VOID_BAZOOKA_AMMO_COST
-            ammo_cost = VOID_BAZOOKA_AMMO_COST
         else:
-            return [f"❌ **No Void Bazooka ammo!** Extra shots cost ◈{VOID_BAZOOKA_AMMO_COST} Void Essence."]
+            extra_essence = 1 if (enemy.is_zone_boss and enemy.boss_key == "Erased" and enemy.effects.get("erasure_effect") == "essence") else 0
+            total_cost = VOID_BAZOOKA_AMMO_COST + extra_essence
+            if player.void_essence < total_cost:
+                return [f"❌ **No Void Bazooka ammo!** This shot costs ◈{total_cost} Void Essence."]
+            player.void_essence -= total_cost
+            if extra_essence:
+                enemy.effects.pop("erasure_effect", None)
+            ammo_cost = total_cost
         if is_boss_target:
             player.void_bazooka_boss_fired = True
         void_level = max(0, min(VOID_UPGRADE_MAX, player.void_weapon_level))
@@ -1393,12 +1688,28 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
         boss_mult = bazooka["level_10_boss_mult"] if void_level >= VOID_UPGRADE_MAX else bazooka["boss_mult"]
         multiplier = boss_mult if is_boss_target else 1.0
         perk_multiplier, perk_text = _consume_void_offense_bonus(player, enemy)
-        bazooka_damage = int(raw_damage * multiplier * perk_multiplier)
+        boss_attack_mult = 1.0
+        if enemy.is_zone_boss and enemy.boss_key == "Erased" and enemy.effects.get("erasure_effect") == "weapon":
+            boss_attack_mult *= 0.75
+            enemy.effects.pop("erasure_effect", None)
+        frost_mult = 0.90 if (enemy.is_zone_boss and enemy.boss_key == "Wendigo" and enemy.effects.get("boss_frost", 0) >= 3) else 1.0
+        bazooka_damage = int(raw_damage * multiplier * perk_multiplier * boss_attack_mult * frost_mult)
         enemy.health = max(0, enemy.health - bazooka_damage)
         boss_text = f" ×{multiplier:.1f} BOSS DAMAGE" if is_boss_target else ""
         ammo_text = "FREE RUN AMMO" if ammo_cost == 0 else f"-◈{ammo_cost} Essence"
         perk_suffix = f" • ⚡ {perk_text}" if perk_text else ""
         messages.append(f"💥 **VOID BAZOOKA!** Hit **{enemy.name} for {bazooka_damage} dmg**! (Base {raw_damage}{boss_text}) ◈ Void Lvl {void_level}/{VOID_UPGRADE_MAX} • {ammo_text}{perk_suffix}")
+        if enemy.is_zone_boss and bazooka_damage > 0:
+            messages.extend(_apply_boss_player_attack_counter(player, bazooka_damage))
+            if player.health <= 0:
+                player.health = player.max_health
+                player.spare_ammo[player.ammo_name] = player.spare_ammo.get(player.ammo_name, 0) + player.magazine
+                player.magazine = 0
+                player.run_active = False
+                player.enemy = None
+                messages.append(f"💀 **The {enemy.name} got you!**")
+                messages.extend(_grant_end_of_run_rewards(player))
+                return messages
         # No standard crit, pet, ammo effect, or standard weapon upgrade applies.
     elif action == "heal_done":
         pass
@@ -1412,10 +1723,16 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
 
         # NEW: Mag size must support ammo type - e.g. Sawed-Off mag 2 can't use Shock cost 6
         # Check if max magazine size is too small for this ammo type (even with 1 shot)
-        if player.magazine_size < base_cost:
-            return [f"❌ **{player.weapon_name} mag too small for {player.ammo_name}!**", f"Need mag size {base_cost}, you have {player.magazine_size}. Upgrade mag or use lighter ammo.", f"🔧 {player.weapon_name} {player.magazine}/{player.magazine_size} can't fit {player.ammo_name} ({base_cost}/shot)"]
-        if player.magazine_size < cost:
-            return [f"❌ **{player.weapon_name} mag too small for {shots}x {player.ammo_name}!**", f"Need mag size {cost} ({base_cost}x{shots} shots), you have {player.magazine_size}. Upgrade mag!", f"🔧 {player.weapon_name} can't do {shots}x {player.ammo_name}"]
+        current_mag_size = effective_magazine_size(player)
+        if current_mag_size < base_cost:
+            return [f"❌ **{player.weapon_name} mag too small for {player.ammo_name}!**", f"Need mag size {base_cost}, you have {current_mag_size}. Upgrade mag or use lighter ammo.", f"🔧 {player.weapon_name} {player.magazine}/{current_mag_size} can't fit {player.ammo_name} ({base_cost}/shot)"]
+        if current_mag_size < cost:
+            return [f"❌ **{player.weapon_name} mag too small for {shots}x {player.ammo_name}!**", f"Need mag size {cost} ({base_cost}x{shots} shots), you have {current_mag_size}. Upgrade mag!", f"🔧 {player.weapon_name} can't do {shots}x {player.ammo_name}"]
+
+        if enemy.is_zone_boss and enemy.boss_key == "Wendigo" and enemy.effects.pop("wendigo_frozen", 0):
+            messages.append("🥶 **FROZEN!** Your next normal attack is skipped. Frost resets to 0.")
+            messages.extend(_enemy_damage(player))
+            return messages
 
         if player.magazine < cost:
             spare = player.get_spare()
@@ -1438,14 +1755,30 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
             is_magical = True
         else:
             player.magazine -= cost
-        
+
+        # Wendigo counterplay: Incendiary ammo removes 2 boss Frost stacks.
+        if enemy.is_zone_boss and enemy.boss_key == "Wendigo" and player.ammo_name == "Incendiary":
+            frost_before = enemy.effects.get("boss_frost", 0)
+            if frost_before > 0:
+                frost_removed = min(2, frost_before)
+                enemy.effects["boss_frost"] = frost_before - frost_removed
+                messages.append(f"🔥 Incendiary clears **{frost_removed} Frost** from the Wendigo.")
+                if enemy.effects["boss_frost"] <= 0:
+                    enemy.effects.pop("boss_frost", None)
+
         mod = ammo_modifier(player, player.ammo_name)
         perk_multiplier, perk_text = _consume_void_offense_bonus(player, enemy)
         total_dmg = 0
         total_crits = 0
         hit_details = []
+        boss_attack_mult = _boss_damage_multiplier_for_player_action(enemy)
+        weapon_erasure_active = bool(enemy.is_zone_boss and enemy.boss_key == "Erased" and enemy.effects.get("erasure_effect") == "weapon")
+        if weapon_erasure_active:
+            boss_attack_mult *= 0.75
+            enemy.effects.pop("erasure_effect", None)
+        frost_mult = 0.90 if (enemy.is_zone_boss and enemy.boss_key == "Wendigo" and enemy.effects.get("boss_frost", 0) >= 3) else 1.0
         for shot_i in range(shots):
-            dmg = int(player.weapon_damage * mod * perk_multiplier)
+            dmg = int(player.weapon_damage * mod * perk_multiplier * boss_attack_mult * frost_mult)
             is_crit = random.random() < player.crit_chance
             if is_crit:
                 dmg = int(dmg * 2)
@@ -1474,7 +1807,7 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
             bonus_crits = 0
             bonus_hits = []
             for shot_i in range(shots):
-                bonus_dmg = int(player.weapon_damage * mod)
+                bonus_dmg = int(player.weapon_damage * mod * frost_mult * (0.75 if weapon_erasure_active else 1.0))
                 bonus_crit = random.random() < player.crit_chance
                 if bonus_crit:
                     bonus_dmg = int(bonus_dmg * 2)
@@ -1515,6 +1848,20 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
             pet_dmg = player.pet_damage
             enemy.health = max(0, enemy.health - pet_dmg)
             messages.append(f"🐺 **Wolf bites {enemy.name} for {pet_dmg} dmg!** ({player.pet_chance*100:.0f}% chance)")
+            total_dmg += pet_dmg
+
+        # Count one successful player attack action for boss mechanics.
+        if enemy.is_zone_boss and total_dmg > 0:
+            messages.extend(_apply_boss_player_attack_counter(player, total_dmg))
+            if player.health <= 0:
+                player.health = player.max_health
+                player.spare_ammo[player.ammo_name] = player.spare_ammo.get(player.ammo_name, 0) + player.magazine
+                player.magazine = 0
+                player.run_active = False
+                player.enemy = None
+                messages.append(f"💀 **The {enemy.name} got you!**")
+                messages.extend(_grant_end_of_run_rewards(player))
+                return messages
 
         # BLOATER TICKING BOMB LOGIC - 5 attacks then 65% max HP explosion
         if enemy.is_bloater and enemy.health > 0:
@@ -1584,7 +1931,7 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
                 f"🧟‍♂️ {get_no_ammo_line()}",
                 f"💰 You escaped with ${player.run_money_earned} • {player.run_xp_earned} XP.",
             ] + _grant_end_of_run_rewards(player)
-        amount = min(player.magazine_size - player.magazine, spare)
+        amount = min(effective_magazine_size(player) - player.magazine, spare)
         player.magazine += amount
         player.spare_ammo[player.ammo_name] = spare - amount
         messages.append(f"🔄 Reloaded {amount} {player.ammo_name}. {player.spare_ammo[player.ammo_name]} spare left.")
