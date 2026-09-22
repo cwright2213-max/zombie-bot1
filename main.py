@@ -1698,7 +1698,10 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
 
         if heal_item is not None:
             return ["Choose heal item."]
-        action = "heal_done"
+
+        # Healing is a free combat action: it restores HP without consuming
+        # the player's turn, so the enemy does not get an attack afterward.
+        return messages
 
     enemy = player.enemy
     if action in {"void_infusion", "void_shield", "void_execution"}:
