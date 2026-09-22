@@ -2286,10 +2286,18 @@ def upgrade_star(player: Survivor, stat: str) -> list[str]:
     if not canonical:
         return [f"Unknown star upgrade '{stat}'. Options: dodge(⭐{get_star_upgrade_cost(player,'dodge')}) / magical(⭐{get_star_upgrade_cost(player,'magical')}) / medic(⭐{get_star_upgrade_cost(player,'medic')}) / pet(⭐{get_star_upgrade_cost(player,'pet')}) | ⭐ {player.stars} stars"]
 
-    cost = get_star_upgrade_cost(player, canonical)
+    # Read the current level before checking the cap.
+    lvl = {
+        "dodge": player.star_dodge_upgrades,
+        "magical": player.star_magical_upgrades,
+        "medic": player.star_medic_upgrades,
+        "pet": player.star_pet_upgrades,
+        "xp": player.star_xp_upgrades,
+    }.get(canonical, 0)
     if canonical in STAR_MAX_LEVELS and lvl >= STAR_MAX_LEVELS[canonical]:
         caps = {"dodge": "30%", "magical": "20%", "medic": "7%", "pet": "10%", "xp": "25%"}
         return [f"❌ {canonical.title()} already maxed at {caps[canonical]}! (Lvl {lvl})"]
+    cost = get_star_upgrade_cost(player, canonical)
     if player.stars < cost:
         return [f"Need ⭐{cost} for {canonical}, you have ⭐{player.stars}. Keep grinding waves!"]
 
