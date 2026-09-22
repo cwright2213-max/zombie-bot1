@@ -1,5 +1,5 @@
 """Ultimate clean bot V6 FULL RESTORED - POSTGRES CONSTANT SAVE - every action saves instantly - zero loss"""
-import os, sys, json, random, logging, time, uuid
+import os, sys, json, random, logging, time, uuid, asyncio
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict
@@ -1693,7 +1693,8 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
             boss_attack_mult *= 0.75
             enemy.effects.pop("erasure_effect", None)
         frost_mult = 0.90 if (enemy.is_zone_boss and enemy.boss_key == "Wendigo" and enemy.effects.get("boss_frost", 0) >= 3) else 1.0
-        bazooka_damage = int(raw_damage * multiplier * perk_multiplier * boss_attack_mult * frost_mult)
+        erased_final_mult = 1.25 if (enemy.is_zone_boss and enemy.boss_key == "Erased" and enemy.health <= enemy.max_health * 0.20) else 1.0
+        bazooka_damage = int(raw_damage * multiplier * perk_multiplier * boss_attack_mult * frost_mult * erased_final_mult)
         enemy.health = max(0, enemy.health - bazooka_damage)
         boss_text = f" ×{multiplier:.1f} BOSS DAMAGE" if is_boss_target else ""
         ammo_text = "FREE RUN AMMO" if ammo_cost == 0 else f"-◈{ammo_cost} Essence"
@@ -1772,13 +1773,17 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
         total_crits = 0
         hit_details = []
         boss_attack_mult = _boss_damage_multiplier_for_player_action(enemy)
+        # The Erased's final phase makes all player attacks deal +25% damage.
+        # This applies to each normal attack action (and is intentionally
+        # evaluated after the attack's current HP threshold is known).
+        erased_final_mult = 1.25 if (enemy.is_zone_boss and enemy.boss_key == "Erased" and enemy.health <= enemy.max_health * 0.20) else 1.0
         weapon_erasure_active = bool(enemy.is_zone_boss and enemy.boss_key == "Erased" and enemy.effects.get("erasure_effect") == "weapon")
         if weapon_erasure_active:
             boss_attack_mult *= 0.75
             enemy.effects.pop("erasure_effect", None)
         frost_mult = 0.90 if (enemy.is_zone_boss and enemy.boss_key == "Wendigo" and enemy.effects.get("boss_frost", 0) >= 3) else 1.0
         for shot_i in range(shots):
-            dmg = int(player.weapon_damage * mod * perk_multiplier * boss_attack_mult * frost_mult)
+            dmg = int(player.weapon_damage * mod * perk_multiplier * boss_attack_mult * frost_mult * erased_final_mult)
             is_crit = random.random() < player.crit_chance
             if is_crit:
                 dmg = int(dmg * 2)
@@ -1792,10 +1797,11 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
         crit_txt = f" **{total_crits}x CRIT!**" if total_crits > 0 else ""
         magical_txt = " ✨ **MAGICAL! Free shot!**" if is_magical else ""
         perk_txt = f" ⚡ **{perk_text}**" if perk_text else ""
+        final_phase_txt = " 🔥 **ERASED FINAL PHASE: +25% DAMAGE**" if erased_final_mult > 1 else ""
         if shots > 1:
-            messages.append(f"🔫 **{shots}x** {player.weapon_name} Hit **{enemy.name} for {total_dmg}** ({'+'.join(map(str, hit_details))}){crit_txt}{magical_txt}{perk_txt} using {player.ammo_name} ({base_cost}x{shots}={cost} ammo){mod_txt}")
+            messages.append(f"🔫 **{shots}x** {player.weapon_name} Hit **{enemy.name} for {total_dmg}** ({'+'.join(map(str, hit_details))}){crit_txt}{magical_txt}{perk_txt} using {player.ammo_name} ({base_cost}x{shots}={cost} ammo){mod_txt}{final_phase_txt}")
         else:
-            messages.append(f"🔫 Hit **{enemy.name} for {total_dmg}**{crit_txt}{magical_txt}{perk_txt} using {player.ammo_name} ({cost}/shot){mod_txt}")
+            messages.append(f"🔫 Hit **{enemy.name} for {total_dmg}**{crit_txt}{magical_txt}{perk_txt} using {player.ammo_name} ({cost}/shot){mod_txt}{final_phase_txt}")
         
         # DOUBLE-TAP: per-weapon premium upgrade. The proc immediately repeats
         # the weapon attack for free, inherits weapon/ammo/crit behavior, cannot
@@ -1807,7 +1813,7 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
             bonus_crits = 0
             bonus_hits = []
             for shot_i in range(shots):
-                bonus_dmg = int(player.weapon_damage * mod * frost_mult * (0.75 if weapon_erasure_active else 1.0))
+                bonus_dmg = int(player.weapon_damage * mod * frost_mult * erased_final_mult * (0.75 if weapon_erasure_active else 1.0))
                 bonus_crit = random.random() < player.crit_chance
                 if bonus_crit:
                     bonus_dmg = int(bonus_dmg * 2)
@@ -2513,6 +2519,8 @@ class GameStore:
         self._save_count = 0
         self._action_locks = {}
         self._save_locks = {}
+        self._reset_lock = asyncio.Lock()
+        self._reset_generation = 0
         self.load()
 
     def action_lock(self, user_id: int):
@@ -2562,46 +2570,92 @@ class GameStore:
         self._save_count += 1
 
     async def save_one_async(self, key: str):
-        import asyncio
         key = str(key)
         p = self.players.get(key)
         if p is None:
             return
-        # Snapshot while the per-player action lock is held. This prevents an
-        # autosave or another callback from taking a stale snapshot halfway
-        # through a state mutation. Database I/O itself happens off the event
-        # loop and is serialized separately per player.
+        # Snapshot while the per-player action lock is held. The reset
+        # generation prevents a save that started before /launch_reset from
+        # writing stale progress back over the fresh-launch state.
         async with self.action_lock(int(key)):
+            generation = self._reset_generation
             snapshot = self._player_dict(p)
         async with self.save_lock(int(key)):
+            if generation != self._reset_generation:
+                # A full reset happened while this save was waiting. Re-snapshot
+                # the current (post-reset) player instead of restoring old data.
+                p = self.players.get(key)
+                if p is None:
+                    return
+                async with self.action_lock(int(key)):
+                    generation = self._reset_generation
+                    snapshot = self._player_dict(p)
             ok = await asyncio.to_thread(save_player, key, snapshot)
             if not ok:
                 raise RuntimeError(f"Could not save player {key}")
             self._save_count += 1
 
-    async def save_async(self):
-        """Persist every player without blocking Discord's event loop.
+    async def reset_all_players(self) -> int:
+        """Reset every persisted survivor to a brand-new launch state.
 
-        Each player's snapshot is taken under that player's action lock and
-        written under that player's save lock. This prevents an older
-        autosave snapshot from being written after a newer action snapshot.
+        Player IDs remain in storage, but all gameplay progression and
+        leaderboard records are replaced with Survivor defaults. The separate
+        Game Admin list is intentionally untouched.
         """
-        import asyncio
-        if not self.players:
-            print("[AUTOSAVE] REFUSING ASYNC SAVE: no players are loaded")
-            return
-        keys = list(self.players.keys())
-        results = await asyncio.gather(
-            *(self.save_one_async(k) for k in keys),
-            return_exceptions=True,
-        )
-        failed = []
-        for k, result in zip(keys, results):
-            if isinstance(result, Exception):
-                failed.append(f"{k}: {result}")
-        if failed:
-            raise RuntimeError("Failed to save players: " + "; ".join(failed[:10]))
-        print(f"[AUTOSAVE] Saved {len(keys)} players to Postgres - all safe")
+        async with self._reset_lock:
+            # Advance the generation before replacing any player objects so
+            # in-flight saves cannot write pre-reset snapshots after this point.
+            self._reset_generation += 1
+            keys = list(self.players.keys())
+            for key in keys:
+                self.players[key] = Survivor()
+
+            if not keys:
+                print("[LAUNCH RESET] No player records found; nothing to reset.")
+                return 0
+
+            # Persist the complete fresh state before reporting success.
+            results = await asyncio.gather(
+                *(self._save_fresh_player(key) for key in keys),
+                return_exceptions=True,
+            )
+            failed = [f"{key}: {result}" for key, result in zip(keys, results) if isinstance(result, Exception)]
+            if failed:
+                raise RuntimeError("Launch reset failed for: " + "; ".join(failed[:10]))
+
+            print(f"[LAUNCH RESET] Reset {len(keys)} player records to fresh-launch defaults.")
+            return len(keys)
+
+    async def _save_fresh_player(self, key: str):
+        """Save one already-reset player without taking a pre-reset snapshot."""
+        async with self.save_lock(int(key)):
+            p = self.players.get(str(key))
+            if p is None:
+                return
+            snapshot = self._player_dict(p)
+            ok = await asyncio.to_thread(save_player, str(key), snapshot)
+            if not ok:
+                raise RuntimeError(f"Could not save player {key}")
+            self._save_count += 1
+
+    async def save_async(self):
+        """Persist every player without racing a full launch reset."""
+        async with self._reset_lock:
+            if not self.players:
+                print("[AUTOSAVE] REFUSING ASYNC SAVE: no players are loaded")
+                return
+            keys = list(self.players.keys())
+            results = await asyncio.gather(
+                *(self.save_one_async(k) for k in keys),
+                return_exceptions=True,
+            )
+            failed = []
+            for k, result in zip(keys, results):
+                if isinstance(result, Exception):
+                    failed.append(f"{k}: {result}")
+            if failed:
+                raise RuntimeError("Failed to save players: " + "; ".join(failed[:10]))
+            print(f"[AUTOSAVE] Saved {len(keys)} players to Postgres - all safe")
 
     def save(self):
         if not self.players:
@@ -4413,30 +4467,25 @@ async def zombie_start_cmd(interaction: discord.Interaction):
     embed = combat_embed(player, msgs)
     await interaction.followup.send(embed=embed, view=CombatView(interaction.user.id, game_store))
 
-# --- ADMIN COMMANDS ---
-# Server admins can grant the bot's admin commands to specific players.
-# Delegated bot-admins are stored by storage.py and survive bot restarts.
-def is_server_admin(interaction: discord.Interaction) -> bool:
-    # DM check - no guild = not a server admin
-    if interaction.guild is None:
-        return False
-    try:
-        perms = interaction.user.guild_permissions
-        if perms.administrator:
-            return True
-        # Also allow Manage Guild as an admin fallback
-        if perms.manage_guild:
-            return True
-    except Exception:
-        pass
-    return False
+# --- OWNER / GAME ADMIN COMMANDS ---
+# The bot uses its own permission hierarchy instead of Discord server roles:
+#   👑 Owner -> 🛠️ Game Admins -> 🧟 Players
+# OWNER_ID is intentionally fixed in code. No Discord command can change it.
+OWNER_ID = 572053060969299977
+
+
+def is_owner(interaction: discord.Interaction) -> bool:
+    return int(interaction.user.id) == OWNER_ID
 
 
 def has_admin_commands(interaction: discord.Interaction) -> bool:
-    """True for real Discord server admins OR delegated bot admins."""
-    if interaction.guild is None:
-        return False
-    if is_server_admin(interaction):
+    """True only for the fixed Owner or a delegated Game Admin.
+
+    Discord server Administrator/Manage Guild permissions are deliberately NOT
+    sufficient. This prevents a server administrator from gaining the bot's
+    game-admin powers unless the Owner explicitly delegates them.
+    """
+    if is_owner(interaction):
         return True
     try:
         return bool(is_bot_admin(interaction.user.id))
@@ -4446,65 +4495,155 @@ def has_admin_commands(interaction: discord.Interaction) -> bool:
 
 
 def admin_denied_message() -> str:
-    return "❌ You need **Administrator** permission in this server (or delegated bot-admin access)."
+    return "❌ You do not have **Zombie Game Admin** access."
 
 
-# /give admin @player
-# IMPORTANT: only a real Discord server admin can grant/revoke delegated access.
-give_group = app_commands.Group(name="give", description="[ADMIN] Grant bot permissions")
+def owner_denied_message() -> str:
+    return "❌ Only the **Owner** can manage Zombie Game Admins."
 
 
-@give_group.command(name="admin", description="[ADMIN] Give bot admin commands to a player")
-@app_commands.describe(user="Player who should receive the bot admin commands")
-async def give_admin(interaction: discord.Interaction, user: discord.Member):
-    if not is_server_admin(interaction):
-        await interaction.response.send_message(
-            "❌ Only a **Discord Server Administrator** can give bot admin access.",
-            ephemeral=True,
-        )
+admin_group = app_commands.Group(name="admin", description="[OWNER] Manage Zombie Game Admins")
+
+
+@admin_group.command(name="add", description="[OWNER] Give a player Zombie Game Admin access")
+@app_commands.describe(user="Player who should receive Zombie Game Admin access")
+async def admin_add(interaction: discord.Interaction, user: discord.User):
+    if not is_owner(interaction):
+        await interaction.response.send_message(owner_denied_message(), ephemeral=True)
         return
-
-    if interaction.guild is None:
-        await interaction.response.send_message("❌ This command can only be used inside a server.", ephemeral=True)
+    if user.id == OWNER_ID:
+        await interaction.response.send_message("ℹ️ You are already the **Owner**.", ephemeral=True)
         return
 
     import asyncio
     try:
         already_admin = bool(await asyncio.to_thread(is_bot_admin, user.id))
-    except Exception as e:
-        print(f"[ADMIN] Failed delegated-admin lookup for {user.id}: {e}")
-        already_admin = False
-
-    if already_admin:
-        await interaction.response.send_message(
-            f"ℹ️ {user.mention} already has **bot admin commands**.",
-            ephemeral=True,
-        )
-        return
-
-    try:
+        if already_admin:
+            await interaction.response.send_message(f"ℹ️ {user.mention} is already a **Zombie Game Admin**.", ephemeral=True)
+            return
         result = await asyncio.to_thread(add_bot_admin, user.id)
-        # Support storage implementations that return a success flag, while
-        # also treating a None return as success (common for simple setters).
         if result is False:
             raise RuntimeError("storage.add_bot_admin returned False")
     except Exception as e:
-        print(f"[ADMIN] Failed to grant bot admin to {user.id}: {e}")
-        await interaction.response.send_message(
-            f"❌ Could not give bot admin access to {user.mention}.",
-            ephemeral=True,
-        )
+        print(f"[OWNER] Failed to grant Game Admin to {user.id}: {e}")
+        await interaction.response.send_message(f"❌ Could not give {user.mention} Game Admin access.", ephemeral=True)
         return
 
     await interaction.response.send_message(
-        f"✅ {user.mention} now has **bot admin commands**.\n"
-        f"They do **not** become a Discord server administrator; they only gain this bot's admin commands.",
+        f"🛠️ {user.mention} is now a **Zombie Game Admin**.\n"
+        "They can use game-admin/testing tools, but they cannot manage admins or use Owner-only reset controls.",
         ephemeral=True,
     )
 
 
-# Register the /give command group with Discord.
-bot.tree.add_command(give_group)
+@admin_group.command(name="remove", description="[OWNER] Remove Zombie Game Admin access")
+@app_commands.describe(user="Game Admin to remove")
+async def admin_remove(interaction: discord.Interaction, user: discord.User):
+    if not is_owner(interaction):
+        await interaction.response.send_message(owner_denied_message(), ephemeral=True)
+        return
+    if user.id == OWNER_ID:
+        await interaction.response.send_message("❌ The Owner cannot be removed.", ephemeral=True)
+        return
+
+    import asyncio
+    try:
+        if not bool(await asyncio.to_thread(is_bot_admin, user.id)):
+            await interaction.response.send_message(f"ℹ️ {user.mention} is not a Zombie Game Admin.", ephemeral=True)
+            return
+        result = await asyncio.to_thread(remove_bot_admin, user.id)
+        if result is False:
+            raise RuntimeError("storage.remove_bot_admin returned False")
+    except Exception as e:
+        print(f"[OWNER] Failed to remove Game Admin {user.id}: {e}")
+        await interaction.response.send_message(f"❌ Could not remove Game Admin access from {user.mention}.", ephemeral=True)
+        return
+
+    await interaction.response.send_message(f"✅ {user.mention} is no longer a **Zombie Game Admin**.", ephemeral=True)
+
+
+@admin_group.command(name="list", description="[OWNER] List Zombie Game Admins")
+async def admin_list(interaction: discord.Interaction):
+    if not is_owner(interaction):
+        await interaction.response.send_message(owner_denied_message(), ephemeral=True)
+        return
+
+    import asyncio
+    try:
+        admin_ids = await asyncio.to_thread(get_bot_admins)
+    except Exception as e:
+        print(f"[OWNER] Failed to list Game Admins: {e}")
+        await interaction.response.send_message("❌ Could not load the Game Admin list.", ephemeral=True)
+        return
+
+    lines = [f"👑 **Owner:** <@{OWNER_ID}>"]
+    if not admin_ids:
+        lines.append("🛠️ **Game Admins:** None")
+    else:
+        entries = []
+        for admin_id in sorted({int(x) for x in admin_ids}):
+            try:
+                member = interaction.guild.get_member(admin_id) if interaction.guild else None
+                user_obj = member or await bot.fetch_user(admin_id)
+                entries.append(f"• {user_obj.mention} (`{admin_id}`)")
+            except Exception:
+                entries.append(f"• <@{admin_id}> (`{admin_id}`)")
+        lines.append("🛠️ **Game Admins:**\n" + "\n".join(entries))
+
+    await interaction.response.send_message("\n".join(lines), ephemeral=True)
+
+
+# Register the /admin command group with Discord.
+bot.tree.add_command(admin_group)
+
+
+async def _run_launch_reset(interaction: discord.Interaction, confirm: bool = False):
+    """Owner-only nuclear reset: fresh player state + empty leaderboards."""
+    if not is_owner(interaction):
+        await interaction.response.send_message(owner_denied_message(), ephemeral=True)
+        return
+
+    if not confirm:
+        await interaction.response.send_message(
+            "☢️ **LAUNCH RESET** will reset **every player** to fresh-start defaults and clear **all personal/server/global leaderboard records**.\n"
+            "Your Zombie Game Admin list is **not** changed.\n\n"
+            "If this is intentional, run **`/launch_reset confirm:true`**.",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    try:
+        count = await game_store.reset_all_players()
+    except Exception as e:
+        logger.exception("[LAUNCH RESET] Failed")
+        await interaction.followup.send(
+            f"❌ **Launch reset FAILED.** No success confirmation was issued.\nError: `{type(e).__name__}`",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.followup.send(
+        "☢️ **LAUNCH RESET COMPLETE**\n\n"
+        f"🧟 Players reset: **{count}**\n"
+        "🏆 Global/server/personal leaderboards: **0 / cleared**\n"
+        "💰 Player cash, ⭐ Stars, ✨ XP, weapons, upgrades, Void progression, zones, meds, ammo and active runs: **fresh defaults**\n"
+        "🛠️ Game Admin access: **unchanged**\n\n"
+        "🚀 **The game is ready for a fresh launch.**",
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(name="launch_reset", description="[OWNER] Reset all players and leaderboards for a fresh launch")
+@app_commands.describe(confirm="Set this to True to confirm the full launch reset")
+async def launch_reset(interaction: discord.Interaction, confirm: bool = False):
+    await _run_launch_reset(interaction, confirm)
+
+
+@bot.tree.command(name="reset_everything", description="[OWNER] Reset all player progress and leaderboards")
+@app_commands.describe(confirm="Set this to True to confirm the full reset")
+async def reset_everything(interaction: discord.Interaction, confirm: bool = False):
+    await _run_launch_reset(interaction, confirm)
 
 
 @bot.tree.command(name="setwave", description="[ADMIN] Set a player's current test wave")
@@ -4590,6 +4729,10 @@ async def addmoney(interaction: discord.Interaction, amount: int, user: discord.
     if not has_admin_commands(interaction):
         await interaction.followup.send(admin_denied_message(), ephemeral=True)
         return
+    if amount < 0:
+        await interaction.followup.send("❌ Amount must be **0 or greater**.", ephemeral=True)
+        return
+
     target = user or interaction.user
     player = game_store.get(target.id)
     player.money += amount
@@ -4604,6 +4747,10 @@ async def addstars(interaction: discord.Interaction, amount: int, user: discord.
     if not has_admin_commands(interaction):
         await interaction.followup.send(admin_denied_message(), ephemeral=True)
         return
+    if amount < 0:
+        await interaction.followup.send("❌ Amount must be **0 or greater**.", ephemeral=True)
+        return
+
     target = user or interaction.user
     player = game_store.get(target.id)
     player.stars += amount
@@ -4618,6 +4765,10 @@ async def addxp(interaction: discord.Interaction, amount: int, user: discord.Use
     if not has_admin_commands(interaction):
         await interaction.followup.send(admin_denied_message(), ephemeral=True)
         return
+    if amount < 0:
+        await interaction.followup.send("❌ Amount must be **0 or greater**.", ephemeral=True)
+        return
+
     target = user or interaction.user
     player = game_store.get(target.id)
     old_level = player.level
@@ -4674,6 +4825,10 @@ async def addvoidessence(interaction: discord.Interaction, amount: int, user: di
     if not has_admin_commands(interaction):
         await interaction.followup.send(admin_denied_message(), ephemeral=True)
         return
+    if amount < 0:
+        await interaction.followup.send("❌ Amount must be **0 or greater**.", ephemeral=True)
+        return
+
     
     target=user or interaction.user
     player=game_store.get(target.id)
