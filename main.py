@@ -1288,8 +1288,12 @@ def _finish_enemy(player: Survivor) -> list[str]:
         xp_gain = int(enemy.xp_reward * mult * (1.0 + player.xp_bonus) * xp_boost_multiplier(player))
         cash_base = int(enemy.money_reward * mult)
         cash_gain = int(cash_base * player.scavenger_bonus * cash_boost_multiplier(player))
-        if enemy.boss_key == "Kingpin":
-            cash_gain += enemy.boss_bonus_cash
+        bounty_cash = 0
+        if enemy.boss_key == "Kingpin" and enemy.boss_bonus_cash:
+            # Kingpin bounty is part of the cash reward, so active cash boosts
+            # and Scavenger apply consistently to the entire boss payout.
+            bounty_cash = int(enemy.boss_bonus_cash * player.scavenger_bonus * cash_boost_multiplier(player))
+            cash_gain += bounty_cash
         player.money += cash_gain
         old_level = player.level
         player.xp += xp_gain
@@ -1315,7 +1319,7 @@ def _finish_enemy(player: Survivor) -> list[str]:
             player.void_essence += 8
             messages.append("🌀 **The Erased reward:** +8 Void Essence")
         if enemy.boss_key == "Kingpin" and enemy.boss_bonus_cash:
-            messages.append(f"💰 **Bounty collected:** +${enemy.boss_bonus_cash:,} ({enemy.boss_bounty_triggers} qualifying 500+ damage action(s))")
+            messages.append(f"💰 **Bounty collected:** +${bounty_cash:,} ({enemy.boss_bounty_triggers} qualifying 500+ damage action(s))")
         if level_ups:
             messages.append(f"🎉 **LEVEL UP!** Level {player.level}! +{level_ups} ⭐")
 
@@ -3313,27 +3317,32 @@ class CombatView(PlayerView):
         # Always provide a safe exit from combat. This does not abandon the run;
         # it simply returns to the menu so the player can resume it later.
         await interaction.response.defer()
-        player = self.store.get(self.user_id)
-        if player.run_active and player.enemy is None:
-            msgs = recover_stuck_run(player)
-            await self.store.save_one_async(str(self.user_id))
-        else:
-            msgs = []
-        name = getattr(self, "display_name", "Survivor")
-        content = status(player, display_name=name)
+        lock = self.store.action_lock(self.user_id)
+        async with lock:
+            player = self.store.get(self.user_id)
+            if player.run_active and player.enemy is None:
+                msgs = recover_stuck_run(player)
+            else:
+                msgs = []
+            name = getattr(self, "display_name", "Survivor")
+            content = status(player, display_name=name)
+            if msgs:
+                content += "\n\n" + "\n".join(msgs)
         if msgs:
-            content += "\n\n" + "\n".join(msgs)
+            await self.store.save_one_async(str(self.user_id))
         await interaction.edit_original_response(content=content, embed=None, view=ZombieMenuView(self.user_id, self.store, display_name=name))
 
     @discord.ui.button(label="🛠️ Recover Run", style=discord.ButtonStyle.secondary, row=3)
     async def recover_run(self, interaction: discord.Interaction, _b):
         await interaction.response.defer()
-        player = self.store.get(self.user_id)
-        msgs = recover_stuck_run(player)
-        if not msgs:
-            msgs = ["✅ Your run is already healthy — an enemy is active."]
+        lock = self.store.action_lock(self.user_id)
+        async with lock:
+            player = self.store.get(self.user_id)
+            msgs = recover_stuck_run(player)
+            if not msgs:
+                msgs = ["✅ Your run is already healthy — an enemy is active."]
+            embed = combat_embed(player, msgs)
         await self.store.save_one_async(str(self.user_id))
-        embed = combat_embed(player, msgs)
         await interaction.edit_original_response(content=None, embed=embed, view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
 
 
@@ -4505,11 +4514,16 @@ class ZoneView(PlayerView):
             btn = discord.ui.Button(label=zone_name, style=discord.ButtonStyle.primary, row=i//2)
             async def cb(interaction, zn=zone_name):
                 await interaction.response.defer()
-                p=self.store.get(self.user_id); msgs=change_zone(p,zn); await self.store.save_one_async(str(self.user_id))
+                user_id = self.user_id
+                lock = self.store.action_lock(user_id)
+                async with lock:
+                    p = self.store.get(user_id)
+                    msgs = change_zone(p, zn)
+                await self.store.save_one_async(str(user_id))
                 # Keep the zone picker focused on the zone-change result.  The old
                 # flow appended the full player status/inventory here, which made a
                 # simple zone tap suddenly replace the picker with the inventory screen.
-                await interaction.edit_original_response(content="\n".join(msgs), view=ZoneView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+                await interaction.edit_original_response(content="\n".join(msgs), view=ZoneView(user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
             btn.callback = cb
             self.add_item(btn)
     @discord.ui.button(label="🏠 Main menu", style=discord.ButtonStyle.secondary, row=2)
@@ -4616,15 +4630,18 @@ async def daily_cmd(interaction: discord.Interaction):
 @app_commands.choices(scope=[app_commands.Choice(name="Global",value="global"),app_commands.Choice(name="Server",value="server"),app_commands.Choice(name="My Records",value="personal")])
 async def leaderboard_cmd(interaction: discord.Interaction, scope: str = "global", zone: str | None = None):
     await interaction.response.defer()
-    p=game_store.get(interaction.user.id)
-    name=getattr(interaction.user,"display_name",None) or getattr(interaction.user,"global_name",None) or interaction.user.name
-    p.leaderboard_name=name[:32]
-    gid=interaction.guild.id if interaction.guild else None
-    if gid is not None and str(gid) not in p.leaderboard_guilds:
-        p.leaderboard_guilds.append(str(gid))
-    if zone not in ZONES:
-        zone=p.zone_name
-    await game_store.save_one_async(str(interaction.user.id))
+    user_id = interaction.user.id
+    lock = game_store.action_lock(user_id)
+    async with lock:
+        p=game_store.get(user_id)
+        name=getattr(interaction.user,"display_name",None) or getattr(interaction.user,"global_name",None) or interaction.user.name
+        p.leaderboard_name=name[:32]
+        gid=interaction.guild.id if interaction.guild else None
+        if gid is not None and str(gid) not in p.leaderboard_guilds:
+            p.leaderboard_guilds.append(str(gid))
+        if zone not in ZONES:
+            zone=p.zone_name
+    await game_store.save_one_async(str(user_id))
     if scope == "personal":
         content=personal_records_text(p)
     elif scope == "server":
@@ -4636,24 +4653,27 @@ async def leaderboard_cmd(interaction: discord.Interaction, scope: str = "global
 @bot.tree.command(name="zombie_start", description="Start a zombie run")
 async def zombie_start_cmd(interaction: discord.Interaction):
     await interaction.response.defer()  # Prevent timeout - fixes "didn't respond in time"
-    player = game_store.get(interaction.user.id)
-    player.leaderboard_name = (getattr(interaction.user, "display_name", None) or getattr(interaction.user, "global_name", None) or interaction.user.name)[:32]
-    if interaction.guild and str(interaction.guild.id) not in player.leaderboard_guilds:
-        player.leaderboard_guilds.append(str(interaction.guild.id))
-    await game_store.save_one_async(str(interaction.user.id))
-    if player.run_active:
-        recovery_msgs = recover_stuck_run(player) if player.enemy is None else []
-        if recovery_msgs:
-            await game_store.save_one_async(str(interaction.user.id))
-            embed = combat_embed(player, recovery_msgs)
+    user_id = interaction.user.id
+    lock = game_store.action_lock(user_id)
+    async with lock:
+        player = game_store.get(user_id)
+        player.leaderboard_name = (getattr(interaction.user, "display_name", None) or getattr(interaction.user, "global_name", None) or interaction.user.name)[:32]
+        if interaction.guild and str(interaction.guild.id) not in player.leaderboard_guilds:
+            player.leaderboard_guilds.append(str(interaction.guild.id))
+        if player.run_active:
+            recovery_msgs = recover_stuck_run(player) if player.enemy is None else []
+            if recovery_msgs:
+                result_msgs = recovery_msgs
+            else:
+                result_msgs = [f"Already in run! Wave {player.wave}"]
+            embed = combat_embed(player, result_msgs)
         else:
-            embed = combat_embed(player, [f"Already in run! Wave {player.wave}"])
-        await interaction.followup.send(embed=embed, view=CombatView(interaction.user.id, game_store))
-        return
-    msgs = start_run(player)
-    await game_store.save_one_async(str(interaction.user.id))
-    embed = combat_embed(player, msgs)
-    await interaction.followup.send(embed=embed, view=CombatView(interaction.user.id, game_store))
+            result_msgs = start_run(player)
+            embed = combat_embed(player, result_msgs)
+    # Persist only after the mutation lock is released; save_one_async takes the
+    # same action lock while snapshotting and therefore must not be called inside it.
+    await game_store.save_one_async(str(user_id))
+    await interaction.followup.send(embed=embed, view=CombatView(user_id, game_store))
 
 # --- OWNER / GAME ADMIN COMMANDS ---
 # The bot uses its own permission hierarchy instead of Discord server roles:
