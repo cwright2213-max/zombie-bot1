@@ -87,8 +87,14 @@ def combat_embed(player, last_msgs=None):
 
 
 MAX_LEVEL = 500
-MAX_PAINKILLERS_PER_RUN = 3
-MAX_FULL_RESTORES_PER_RUN = 1
+COMBAT_MEDIC_PAINKILLERS_PER_RUN = (3, 4, 4, 5, 5, 6, 6)
+COMBAT_MEDIC_FULL_RESTORES_PER_RUN = (1, 1, 1, 1, 1, 2, 2)
+COMBAT_MEDIC_COSTS = (5000, 25000, 75000, 180000, 250000, 400000)
+COMBAT_MEDIC_MAX_LEVEL = 6
+
+# Backward-compatible aliases for code/UI that still refers to the base limits.
+MAX_PAINKILLERS_PER_RUN = COMBAT_MEDIC_PAINKILLERS_PER_RUN[0]
+MAX_FULL_RESTORES_PER_RUN = COMBAT_MEDIC_FULL_RESTORES_PER_RUN[0]
 ZONES: dict[str, dict[str, Any]] = {
     "Graveyard": {"min_level": 1, "hp_mult": 1.0, "dmg_mult": 0.9, "money_mult": 2.0, "xp_mult": 1.6, "desc": "Foggy, quiet, and good for learning.", "weights": [60, 25, 12, 3], "ammo_mods": {"Standard": 1.00, "Bleed": 1.00, "Incendiary": 1.00, "Frostbite": 1.00, "Toxic": 1.00, "Shock": 1.00}},
     "Mega Death City": {"min_level": 50, "hp_mult": 1.8, "dmg_mult": 1.3, "money_mult": 3.5, "xp_mult": 2.0, "desc": "A concrete jungle with tougher, richer zombies.", "weights": [30, 30, 25, 15], "ammo_mods": {"Standard": 1.00, "Bleed": 1.00, "Incendiary": 1.20, "Frostbite": 0.90, "Toxic": 1.00, "Shock": 1.15}},
@@ -157,7 +163,13 @@ WEAPONS: dict[str, dict[str, Any]] = {
     },
 }
 
-WEAPON_UPGRADE_BASE_COSTS: dict[str, int] = {"damage": 250, "mag": 350, "crit": 400}
+WEAPON_UPGRADE_BASE_COSTS: dict[str, int] = {"damage": 250, "mag": 350, "crit": 400, "double_tap": 5000}
+DOUBLE_TAP_COSTS = (5000, 10000, 20000, 35000, 55000, 85000, 125000, 180000, 260000, 375000)
+DOUBLE_TAP_WEAPON_MULT: dict[str, float] = {
+    "Pistol": 1.00, "Shotgun": 1.20, "Rifle": 1.45,
+    "SMG": 1.65, "Sawed-Off": 1.90, "Tactical Sniper": 2.25,
+}
+DOUBLE_TAP_MAX_LEVEL = 10
 WEAPON_DAMAGE_PER_UPGRADE: dict[str, int] = {
     "Pistol": 3,
     "Shotgun": 3,
@@ -399,6 +411,7 @@ class Survivor:
     health_upgrades: int = 0; armor_upgrades: int = 0; scavenger_upgrades: int = 0
     # --- INDIVIDUAL WEAPON UPGRADES (cash, per weapon) ---
     weapon_upgrades: dict[str, dict[str, int]] = field(default_factory=dict)
+    combat_medic_level: int = 0
     # --- STAR UPGRADES (prestige) - CUSTOM 4 ---
     star_dodge_upgrades: int = 0; star_magical_upgrades: int = 0
     star_medic_upgrades: int = 0; star_pet_upgrades: int = 0; star_xp_upgrades: int = 0
@@ -422,6 +435,18 @@ class Survivor:
     @property
     def level(self) -> int: return level_for_xp(self.xp)
     def get_spare(self, ammo_type: str | None = None) -> int: return self.spare_ammo.get(ammo_type or self.ammo_name, 0)
+    @property
+    def max_painkillers_per_run(self) -> int:
+        return COMBAT_MEDIC_PAINKILLERS_PER_RUN[self.combat_medic_level]
+
+    @property
+    def max_full_restores_per_run(self) -> int:
+        return COMBAT_MEDIC_FULL_RESTORES_PER_RUN[self.combat_medic_level]
+
+    @property
+    def double_tap_chance(self) -> float:
+        level = self.weapon_upgrade_level("double_tap")
+        return min(0.01 * level, 0.10)
     def _ensure_weapon_upgrades(self):
         if not isinstance(self.weapon_upgrades, dict):
             self.weapon_upgrades = {}
@@ -433,6 +458,7 @@ class Survivor:
                 "damage": max(0, int(current.get("damage", 0) or 0)),
                 "mag": max(0, int(current.get("mag", 0) or 0)),
                 "crit": max(0, int(current.get("crit", 0) or 0)),
+                "double_tap": max(0, min(DOUBLE_TAP_MAX_LEVEL, int(current.get("double_tap", 0) or 0))),
             }
 
     def weapon_upgrade_level(self, stat: str, weapon_name: str | None = None) -> int:
@@ -505,7 +531,7 @@ class Survivor:
         # when a run is resumed after a restart.
         d = asdict(self)
         d["equipped_weapon"] = self.weapon_name
-        d["__version"] = 4
+        d["__version"] = 5
         return d
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Survivor":
@@ -560,6 +586,7 @@ class Survivor:
         allowed = {k: v for k, v in data.items() if k in cls.__dataclass_fields__}
         allowed["spare_ammo"] = spare; allowed["enemy"] = enemy
         allowed.setdefault("painkillers_used_this_run", 0); allowed.setdefault("full_restores_used_this_run", 0)
+        allowed["combat_medic_level"] = max(0, min(COMBAT_MEDIC_MAX_LEVEL, int(allowed.get("combat_medic_level", 0) or 0)))
         allowed.setdefault("run_money_earned", 0); allowed.setdefault("run_xp_earned", 0)
         allowed.setdefault("bloaters_spawned_this_run", 0); allowed.setdefault("bloater_cooldown", 0); allowed.setdefault("bloater_chance_steps", 0)
         allowed.setdefault("bloater_roll_wave", 0); allowed.setdefault("bloater_wave_result", False)
@@ -1171,15 +1198,15 @@ def _combat_action_noop(player: Survivor, action: str, heal_item: str | None = N
 
     if action == "heal":
         if heal_item == "full_restore":
-            if player.full_restores_used_this_run >= MAX_FULL_RESTORES_PER_RUN:
-                return f"⚠️ Limit: {MAX_FULL_RESTORES_PER_RUN}/run."
+            if player.full_restores_used_this_run >= player.max_full_restores_per_run:
+                return f"⚠️ Limit: {player.max_full_restores_per_run}/run."
             if player.full_restores <= 0:
                 return "❌ No full restores."
             if player.health >= player.max_health:
                 return "❤️ Full HP!"
         elif heal_item == "painkillers":
-            if player.painkillers_used_this_run >= MAX_PAINKILLERS_PER_RUN:
-                return f"⚠️ Limit: {MAX_PAINKILLERS_PER_RUN}/run."
+            if player.painkillers_used_this_run >= player.max_painkillers_per_run:
+                return f"⚠️ Limit: {player.max_painkillers_per_run}/run."
             if player.painkillers <= 0:
                 return "❌ No painkillers."
             if player.health >= player.max_health:
@@ -1266,8 +1293,8 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
     if action == "heal":
         heal_failed = False
         if heal_item == "full_restore":
-            if player.full_restores_used_this_run >= MAX_FULL_RESTORES_PER_RUN:
-                messages.append(f"⚠️ Limit: {MAX_FULL_RESTORES_PER_RUN}/run.")
+            if player.full_restores_used_this_run >= player.max_full_restores_per_run:
+                messages.append(f"⚠️ Limit: {player.max_full_restores_per_run}/run.")
                 heal_failed = True
             elif player.full_restores <= 0:
                 messages.append("❌ No full restores.")
@@ -1280,7 +1307,7 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
                 if player.medic_chance > 0 and random.random() < player.medic_chance:
                     player.health = player.max_health
                     player.full_restores_used_this_run += 1
-                    left = MAX_FULL_RESTORES_PER_RUN - player.full_restores_used_this_run
+                    left = player.max_full_restores_per_run - player.full_restores_used_this_run
                     messages.extend([
                         f"💊 **MEDIC SAVE!** Full heal kept! ({player.medic_chance*100:.1f}%) {player.max_health} HP",
                         f"{player.full_restores} owned • {left} left • ✨ Saved!"
@@ -1289,7 +1316,7 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
                     player.health = player.max_health
                     player.full_restores -= 1
                     player.full_restores_used_this_run += 1
-                    left = MAX_FULL_RESTORES_PER_RUN - player.full_restores_used_this_run
+                    left = player.max_full_restores_per_run - player.full_restores_used_this_run
                     messages.extend([
                         f"✨ **Full heal!** {player.max_health} HP",
                         f"{player.full_restores} owned • {left} left"
@@ -1297,8 +1324,8 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
             heal_item = None
 
         if heal_item == "painkillers":
-            if player.painkillers_used_this_run >= MAX_PAINKILLERS_PER_RUN:
-                messages.append(f"⚠️ Limit: {MAX_PAINKILLERS_PER_RUN}/run.")
+            if player.painkillers_used_this_run >= player.max_painkillers_per_run:
+                messages.append(f"⚠️ Limit: {player.max_painkillers_per_run}/run.")
                 heal_failed = True
             elif player.painkillers <= 0:
                 messages.append("❌ No painkillers.")
@@ -1312,7 +1339,7 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
                 if player.medic_chance > 0 and random.random() < player.medic_chance:
                     player.health = min(player.max_health, player.health + amount)
                     player.painkillers_used_this_run += 1
-                    left = MAX_PAINKILLERS_PER_RUN - player.painkillers_used_this_run
+                    left = player.max_painkillers_per_run - player.painkillers_used_this_run
                     messages.extend([
                         f"💊 **MEDIC SAVE!** +{amount} HP without using item! ({player.medic_chance*100:.1f}%) Now {player.health}/{player.max_health}",
                         f"{player.painkillers} owned • {left} left • ✨ Saved!"
@@ -1321,7 +1348,7 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
                     player.health = min(player.max_health, player.health + amount)
                     player.painkillers -= 1
                     player.painkillers_used_this_run += 1
-                    left = MAX_PAINKILLERS_PER_RUN - player.painkillers_used_this_run
+                    left = player.max_painkillers_per_run - player.painkillers_used_this_run
                     messages.extend([
                         f"💊 **+{amount} HP!** Now {player.health}/{player.max_health}",
                         f"{player.painkillers} owned • {left} left"
@@ -1437,6 +1464,52 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
         else:
             messages.append(f"🔫 Hit **{enemy.name} for {total_dmg}**{crit_txt}{magical_txt}{perk_txt} using {player.ammo_name} ({cost}/shot){mod_txt}")
         
+        # DOUBLE-TAP: per-weapon premium upgrade. The proc immediately repeats
+        # the weapon attack for free, inherits weapon/ammo/crit behavior, cannot
+        # chain, and does not trigger a second pet attack or consume ammo.
+        double_tap_level = player.weapon_upgrade_level("double_tap")
+        double_tap_bloater_tick = False
+        if enemy.health > 0 and double_tap_level > 0 and random.random() < player.double_tap_chance:
+            bonus_total = 0
+            bonus_crits = 0
+            bonus_hits = []
+            for shot_i in range(shots):
+                bonus_dmg = int(player.weapon_damage * mod)
+                bonus_crit = random.random() < player.crit_chance
+                if bonus_crit:
+                    bonus_dmg = int(bonus_dmg * 2)
+                    bonus_crits += 1
+                enemy.health = max(0, enemy.health - bonus_dmg)
+                bonus_total += bonus_dmg
+                bonus_hits.append(bonus_dmg)
+                if enemy.health <= 0:
+                    break
+            dt_crit_txt = f" **{bonus_crits}x CRIT!**" if bonus_crits else ""
+            dt_detail = '+'.join(map(str, bonus_hits)) if len(bonus_hits) > 1 else str(bonus_total)
+            messages.append(f"🔫 **DOUBLE-TAP!** Free repeat for **{bonus_total} dmg** ({dt_detail}){dt_crit_txt} using {player.ammo_name} — no ammo consumed.")
+            # A Double-Tap is a real second attack for Bloater fuse purposes.
+            # If it consumes the penultimate fuse point, the normal Bloater
+            # resolver below consumes the final point and handles the explosion.
+            if enemy.is_bloater and enemy.health > 0:
+                enemy.bloater_timer = max(1, enemy.bloater_timer - 1)
+                double_tap_bloater_tick = True
+
+            # Apply the equipped ammo's proc to the bonus attack as part of
+            # mimicking the first attack. It still cannot trigger Double-Tap.
+            effect = ammo_data["effect"]
+            chances = {"bleed": 0.25, "burn": 0.30, "freeze": 0.25, "poison": 0.40, "shock": 0.20}
+            if enemy.health > 0 and effect and random.random() < chances[effect]:
+                durations = {"bleed": 3, "burn": 3, "freeze": 4, "poison": 5, "shock": 1}
+                enemy.effects[effect] = durations[effect]
+                if effect == "freeze":
+                    enemy.effects["freeze_dot"] = 2
+                messages.append(f"💥 Double-Tap {player.ammo_name} procs **{effect}**!")
+                if effect == "shock":
+                    shock_dmg = int(30 * ammo_modifier(player, "Shock"))
+                    enemy.health = max(0, enemy.health - shock_dmg)
+                    messages.append(f"⚡ Double-Tap Shock deals {shock_dmg} dmg!")
+
+
         # PET ATTACK CHECK
         if player.pet_chance > 0 and random.random() < player.pet_chance:
             pet_dmg = player.pet_damage
@@ -1445,7 +1518,13 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
 
         # BLOATER TICKING BOMB LOGIC - 5 attacks then 65% max HP explosion
         if enemy.is_bloater and enemy.health > 0:
-            enemy.bloater_timer -= 1
+            if not double_tap_bloater_tick:
+                enemy.bloater_timer -= 1
+            else:
+                # The Double-Tap already consumed one fuse point. The normal
+                # attack consumes the next point, preserving a 2-attacks-used
+                # outcome for a successful Double-Tap turn.
+                enemy.bloater_timer -= 1
             if enemy.bloater_timer > 0:
                 messages.append(f"⏰ **BLOATER TICKING!** {enemy.bloater_timer} attacks left before it EXPLODES! 💣")
             else:
@@ -1630,13 +1709,18 @@ def weapon_upgrade_summary(player: Survivor, weapon_name: str | None = None) -> 
     wn = weapon_name or player.weapon_name
     player._ensure_weapon_upgrades()
     lv = player.weapon_upgrades.get(wn, {"damage": 0, "mag": 0, "crit": 0})
-    return f"⚔️ Dmg Lv {lv['damage']} • 📦 Mag Lv {lv['mag']} • 🎯 Crit Lv {lv['crit']}"
+    return f"⚔️ Dmg Lv {lv['damage']} • 📦 Mag Lv {lv['mag']} • 🎯 Crit Lv {lv['crit']} • 🔫 Double-Tap Lv {lv.get('double_tap', 0)}"
 
 def get_weapon_upgrade_cost(player: Survivor, weapon_name: str, stat: str) -> int:
     stat = stat.lower().strip()
     if weapon_name not in WEAPONS or stat not in WEAPON_UPGRADE_BASE_COSTS:
         return 999999999
     level = player.weapon_upgrade_level(stat, weapon_name)
+    if stat == "double_tap":
+        if level >= DOUBLE_TAP_MAX_LEVEL:
+            return 999999999
+        base_cost = DOUBLE_TAP_COSTS[level]
+        return int(base_cost * DOUBLE_TAP_WEAPON_MULT.get(weapon_name, 1.0))
     rarity = WEAPON_UPGRADE_RARITY_MULT.get(weapon_name, 1.0)
     return int(WEAPON_UPGRADE_BASE_COSTS[stat] * rarity * (WEAPON_UPGRADE_EARLY_MULT[stat] ** min(level, 10)) * (WEAPON_UPGRADE_LATE_MULT[stat] ** max(level - 10, 0)))
 
@@ -1650,15 +1734,20 @@ def upgrade_weapon(player: Survivor, weapon_name: str, stat: str) -> list[str]:
     stat = stat.lower().strip()
     if stat not in WEAPON_UPGRADE_BASE_COSTS:
         return ["❌ Invalid weapon upgrade."]
+    old = player.weapon_upgrade_level(stat, weapon_name)
+    if stat == "double_tap" and old >= DOUBLE_TAP_MAX_LEVEL:
+        return [f"🔥 **{weapon_name} Double-Tap is MAXED at 10%!**"]
     cost = get_weapon_upgrade_cost(player, weapon_name, stat)
     if player.money < cost:
         return [f"❌ Need ${cost:,} for {weapon_name} {stat} upgrade, you have ${player.money:,}."]
     player._ensure_weapon_upgrades()
-    old = player.weapon_upgrade_level(stat, weapon_name)
     player.money -= cost
     player.weapon_upgrades[weapon_name][stat] = old + 1
     player.recalc_stats()
-    if stat == "damage":
+    if stat == "double_tap":
+        chance = min((old + 1), 10)
+        detail = f"Double-Tap chance → **{chance}%** (free second attack)"
+    elif stat == "damage":
         damage_per_upgrade = WEAPON_DAMAGE_PER_UPGRADE.get(weapon_name, 3)
         value = WEAPONS[weapon_name]["damage"] + (old + 1) * damage_per_upgrade
         detail = f"+{damage_per_upgrade} damage → **{value}**"
@@ -1670,6 +1759,31 @@ def upgrade_weapon(player: Survivor, weapon_name: str, stat: str) -> list[str]:
         value = min(0.02 + old * 0.005, 0.40)
         detail = f"Crit → **{value*100:.1f}%**"
     return [f"🔧 **{weapon_name} {stat.capitalize()} upgraded!** {detail} | Lv {old + 1} | Paid **${cost:,}** | 💰 ${player.money:,} left."]
+
+
+def get_combat_medic_cost(player: Survivor) -> int:
+    level = player.combat_medic_level
+    if level >= COMBAT_MEDIC_MAX_LEVEL:
+        return 999999999
+    return COMBAT_MEDIC_COSTS[level]
+
+
+def upgrade_combat_medic(player: Survivor) -> list[str]:
+    if player.run_active:
+        return ["⚠️ Can't upgrade Combat Medic during a run! Flee first."]
+    level = player.combat_medic_level
+    if level >= COMBAT_MEDIC_MAX_LEVEL:
+        return ["💉 **Combat Medic is MAXED at Level 6!**"]
+    cost = get_combat_medic_cost(player)
+    if player.money < cost:
+        return [f"❌ Need ${cost:,} for Combat Medic Level {level + 1}, you have ${player.money:,}."]
+    player.money -= cost
+    player.combat_medic_level = level + 1
+    return [
+        f"💉 **Combat Medic → Level {player.combat_medic_level}/6!**",
+        f"Run limits: 💊 {player.max_painkillers_per_run} Painkillers • ✨ {player.max_full_restores_per_run} Full Restores",
+        f"Paid **${cost:,}** • 💰 ${player.money:,} left.",
+    ]
 
 
 def get_upgrade_cost(player: Survivor, stat: str) -> int:
@@ -2026,6 +2140,7 @@ def status_detailed(player: Survivor, display_name: str = "Survivor") -> str:
         f"🔫 {player.weapon_name} [{player.ammo_name}] | 📦 Spare: {player.get_spare()}",
          f"◈ Void Essence: {player.void_essence} | Void Bazooka: {'Owned' if 'Void Bazooka' in player.void_weapons_owned else 'Locked'} | Void Lvl {player.void_weapon_level}/10",
         f"🎒 Ammo: {', '.join([f'{k}:{v}' for k,v in player.spare_ammo.items() if v>0]) or 'Empty'}",
+        f"💉 Combat Medic: L{player.combat_medic_level}/6 | Run limits: 💊{player.max_painkillers_per_run} • ✨{player.max_full_restores_per_run}",
         f"💊 Painkillers: {player.painkillers} | ✨ Restores: {player.full_restores}",
         f"🗺️ Zone: {player.zone_name} | Guns: {', '.join(player.owned_weapons)}",
     ]
@@ -2781,7 +2896,7 @@ class HealView(PlayerView):
         super().__init__(user_id, store, display_name, timeout)
         player = self.store.get(user_id)
         self.clear_items()
-        pk_left = 3 - player.painkillers_used_this_run
+        pk_left = player.max_painkillers_per_run - player.painkillers_used_this_run
         pk_label = f"💊 Painkillers ({player.painkillers}x - {pk_left} left this run)"
         pk_btn = discord.ui.Button(label=pk_label[:80], style=discord.ButtonStyle.success, row=0)
         async def pk_cb(interaction):
@@ -2803,7 +2918,7 @@ class HealView(PlayerView):
         pk_btn.callback = pk_cb
         self.add_item(pk_btn)
 
-        fr_left = 1 - player.full_restores_used_this_run
+        fr_left = player.max_full_restores_per_run - player.full_restores_used_this_run
         fr_label = f"✨ Full restore ({player.full_restores}x - {fr_left} left)"
         fr_btn = discord.ui.Button(label=fr_label[:80], style=discord.ButtonStyle.success, row=0)
         async def fr_cb(interaction):
@@ -3034,7 +3149,7 @@ class WeaponShopView(PlayerView):
         lines.append(f"Selected: 🔫 **{sel}**")
         if sel in player.owned_weapons:
             lv=player.weapon_upgrades.get(sel,{"damage":0,"mag":0,"crit":0})
-            lines.append(f"🔧 Upgrades: ⚔️ Lv {lv['damage']} • 📦 Lv {lv['mag']} • 🎯 Lv {lv['crit']}")
+            lines.append(f"🔧 Upgrades: ⚔️ Lv {lv['damage']} • 📦 Lv {lv['mag']} • 🎯 Lv {lv['crit']} • 🔫 Double-Tap Lv {lv.get('double_tap',0)}")
         lines.append("---")
         for wname in ["Pistol", "Shotgun", "Rifle", "SMG", "Sawed-Off", "Tactical Sniper"]:
             if wname not in WEAPONS:
@@ -3048,7 +3163,7 @@ class WeaponShopView(PlayerView):
                 lv=player.weapon_upgrades.get(wname,{"damage":0,"mag":0,"crit":0}); shots=int(w.get("shots",1))
                 dmg=w.get("damage",0)+lv.get("damage",0)*WEAPON_DAMAGE_PER_UPGRADE.get(wname,3); mag=w.get("mag",0)+lv.get("mag",0)*shots
                 crit=0 if lv.get("crit",0)<=0 else min(0.02+(lv.get("crit",0)-1)*0.005,0.40)
-                status_str = f"Owned - Dmg {dmg} | Mag {mag} | Crit {crit*100:.1f}%"
+                status_str = f"Owned - Dmg {dmg} | Mag {mag} | Crit {crit*100:.1f}% | Double-Tap {lv.get('double_tap',0)}%"
             lines.append(f"🔫 **{wname}**{marker}")
             lines.append(f"{status_str}")
             lines.append(f"{w.get('desc','')}")
@@ -3070,7 +3185,7 @@ class WeaponUpgradeView(PlayerView):
         player = self.store.get(user_id)
         self.weapon_name = weapon_name if weapon_name in WEAPONS else player.weapon_name
         self.clear_items()
-        for row, (stat, label, icon) in enumerate([("damage","Damage","⚔️"),("mag","Magazine","📦"),("crit","Crit","🎯")]):
+        for row, (stat, label, icon) in enumerate([("damage","Damage","⚔️"),("mag","Magazine","📦"),("crit","Crit","🎯"),("double_tap","Double-Tap","🔫")]):
             lvl = player.weapon_upgrade_level(stat, self.weapon_name); cost = get_weapon_upgrade_cost(player, self.weapon_name, stat)
             btn = discord.ui.Button(label=f"{icon} {label} L{lvl} • ${cost:,}", style=discord.ButtonStyle.success, row=row)
             async def cb(interaction, st=stat):
@@ -3099,11 +3214,19 @@ class WeaponUpgradeView(PlayerView):
         crit=0 if lv["crit"]<=0 else min(0.02+(lv["crit"]-1)*0.005,0.40)
         lines=[]
         if messages: lines.extend(messages); lines.append("")
-        lines += [f"🔧 **{self.weapon_name} Upgrades**","",f"💰 Cash: **${player.money:,}**",f"⚔️ Damage: **{w['damage']+lv['damage']*WEAPON_DAMAGE_PER_UPGRADE.get(self.weapon_name,3)}**",f"📦 Magazine: **{w['mag']+lv['mag']*shots}** ({shots} shot(s) per attack)",f"🎯 Crit: **{crit*100:.1f}%**","","Each upgrade uses cash and affects **only this weapon**.","Magazine upgrades follow the weapon's shot pattern.",""]
-        for stat,label,icon in [("damage","Damage","⚔️"),("mag","Magazine","📦"),("crit","Crit","🎯")]:
+        dt_level = lv.get("double_tap", 0)
+        dt_chance = min(dt_level, 10)
+        lines += [f"🔧 **{self.weapon_name} Upgrades**","",f"💰 Cash: **${player.money:,}**",f"⚔️ Damage: **{w['damage']+lv['damage']*WEAPON_DAMAGE_PER_UPGRADE.get(self.weapon_name,3)}**",f"📦 Magazine: **{w['mag']+lv['mag']*shots}** ({shots} shot(s) per attack)",f"🎯 Crit: **{crit*100:.1f}%**",f"🔫 Double-Tap: **{dt_chance}%**", "","Each upgrade uses cash and affects **only this weapon**.","Double-Tap gives a chance to immediately repeat the attack for free; the bonus attack cannot chain.",""]
+        for stat,label,icon in [("damage","Damage","⚔️"),("mag","Magazine","📦"),("crit","Crit","🎯"),("double_tap","Double-Tap","🔫")]:
             cost=get_weapon_upgrade_cost(player,self.weapon_name,stat)
-            detail=f"+{WEAPON_DAMAGE_PER_UPGRADE.get(self.weapon_name, 3)} damage" if stat=="damage" else (f"+{shots} capacity" if stat=="mag" else "+2% first, +0.5% after")
-            lines.append(f"{icon} **{label}** — Lv {lv[stat]} → {lv[stat]+1} | {detail} | **${cost:,}**")
+            if stat=="damage": detail=f"+{WEAPON_DAMAGE_PER_UPGRADE.get(self.weapon_name, 3)} damage"
+            elif stat=="mag": detail=f"+{shots} capacity"
+            elif stat=="crit": detail="+2% first, +0.5% after"
+            else: detail=f"+1% proc chance (free second attack)"
+            if stat=="double_tap" and lv[stat] >= DOUBLE_TAP_MAX_LEVEL:
+                lines.append(f"{icon} **{label}** — **MAX 10%**")
+            else:
+                lines.append(f"{icon} **{label}** — Lv {lv[stat]} → {lv[stat]+1} | {detail} | **${cost:,}**")
         return "\n".join(lines)
 
 
@@ -3377,11 +3500,12 @@ class UpgradeView(PlayerView):
             ("health", "❤️ Health", "+20 HP"),
             ("armor", "🛡️ Armor", "-2 Dmg"),
             ("scavenger", "💰 Loot", "+10%"),
+            ("combat_medic", "💉 Combat Medic", "More meds/run"),
         ]
         for i, (uid, uname, plus) in enumerate(upgrades):
             is_sel = uid == self.selected_up
-            cost = get_upgrade_cost(player, uid)
-            lvl = getattr(player, f"{uid}_upgrades", 0) if uid != "scavenger" else player.scavenger_upgrades
+            cost = get_combat_medic_cost(player) if uid == "combat_medic" else get_upgrade_cost(player, uid)
+            lvl = player.combat_medic_level if uid == "combat_medic" else (getattr(player, f"{uid}_upgrades", 0) if uid != "scavenger" else player.scavenger_upgrades)
             label = f"{uname.split()[1]} ({lvl}) {'✅' if is_sel else ''}"
             style = discord.ButtonStyle.success if is_sel else discord.ButtonStyle.primary
             btn = discord.ui.Button(label=label[:80], style=style, row=0 if i < 3 else 1)
@@ -3405,8 +3529,8 @@ class UpgradeView(PlayerView):
             self.add_item(btn)
 
         # Single buy button for selected upgrade - no bulk as requested
-        cost = get_upgrade_cost(player, self.selected_up)
-        buy_label = f"Buy {self.selected_up.capitalize()} ${cost}"
+        cost = get_combat_medic_cost(player) if self.selected_up == "combat_medic" else get_upgrade_cost(player, self.selected_up)
+        buy_label = f"Buy {self.selected_up.replace('_', ' ').title()} ${cost:,}"
         btn_buy = discord.ui.Button(label=buy_label[:80], style=discord.ButtonStyle.success, row=2)
         async def buy_cb(interaction):
             # FIX #1: Prevent double-click race - locks per user
@@ -3420,7 +3544,7 @@ class UpgradeView(PlayerView):
             _purchase_locks.add(self.user_id)
             try:
                 p=self.store.get(self.user_id)
-                msgs = upgrade(p, self.selected_up)
+                msgs = upgrade_combat_medic(p) if self.selected_up == "combat_medic" else upgrade(p, self.selected_up)
                 await self.store.save_one_async(str(self.user_id))
                 content = self.get_shop_text(p, selected_override=self.selected_up, extra_msgs=msgs)
                 await interaction.edit_original_response(content=content, view=UpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_up=self.selected_up))
@@ -3460,21 +3584,40 @@ class UpgradeView(PlayerView):
         lines.append("Universal survivor upgrades only. Weapon Damage, Magazine and Crit are now upgraded inside each individual weapon.")
         lines.append("")
         lines.append(f"Your balance: **${player.money:,}** | Stars: **{player.stars}**")
-        lines.append(f"Selected: **{sel.capitalize()}**")
+        lines.append(f"Selected: **{sel.replace('_', ' ').title()}**")
         lines.append("---")
+        if sel == "combat_medic":
+            next_cost = get_combat_medic_cost(player)
+            lines.append(f"💉 **Combat Medic** — Level {player.combat_medic_level}/6")
+            lines.append(f"Run allowance: **{player.max_painkillers_per_run} 💊 Painkillers** + **{player.max_full_restores_per_run} ✨ Full Restores**")
+            lines.append("Heavy cash investment. Increases only the number of uses available per run; it does not change heal amount or cooldown.")
+            if player.combat_medic_level < COMBAT_MEDIC_MAX_LEVEL:
+                lines.append(f"Next level: **${next_cost:,}**")
+            else:
+                lines.append("🔥 MAXED")
+            lines.append("")
         for uid, uname, plus in [
             ("health", "❤️ Health", "+20 HP"),
             ("armor", "🛡️ Armor", "-2 Dmg taken"),
             ("scavenger", "💰 Loot", "+10% Money"),
+            ("combat_medic", "💉 Combat Medic", "More meds/run"),
         ]:
-            cost = get_upgrade_cost(player, uid)
-            lvl = getattr(player, f"{uid}_upgrades", 0) if uid != "scavenger" else player.scavenger_upgrades
+            cost = get_combat_medic_cost(player) if uid == "combat_medic" else get_upgrade_cost(player, uid)
+            lvl = player.combat_medic_level if uid == "combat_medic" else (getattr(player, f"{uid}_upgrades", 0) if uid != "scavenger" else player.scavenger_upgrades)
             sel_mark = " ← SELECTED" if uid == sel else ""
             lines.append(f"{uname} ({lvl}){sel_mark}")
-            lines.append(f"{plus} per level - Cost ${cost:,} - Lvl {lvl}")
+            if uid == "combat_medic":
+                lines.append(f"{plus} | {player.max_painkillers_per_run}💊 + {player.max_full_restores_per_run}✨ per run | Cost ${cost:,}" if lvl < COMBAT_MEDIC_MAX_LEVEL else "MAXED")
+            else:
+                lines.append(f"{plus} per level - Cost ${cost:,} - Lvl {lvl}")
             lines.append("")
-        next_lvl = (getattr(player, f"{sel}_upgrades", 0) + 1) if sel != "scavenger" else player.scavenger_upgrades + 1
-        lines.append(f"Next: {sel} Lvl {next_lvl} for ${get_upgrade_cost(player, sel):,}")
+        if sel == "combat_medic":
+            next_lvl = player.combat_medic_level + 1
+            next_cost = get_combat_medic_cost(player)
+        else:
+            next_lvl = (getattr(player, f"{sel}_upgrades", 0) + 1) if sel != "scavenger" else player.scavenger_upgrades + 1
+            next_cost = get_upgrade_cost(player, sel)
+        lines.append(f"Next: {sel.replace('_', ' ').title()} Lvl {next_lvl} for ${next_cost:,}" if next_lvl <= COMBAT_MEDIC_MAX_LEVEL or sel != "combat_medic" else f"{sel.replace('_', ' ').title()} MAXED")
         return "\n".join(lines)
 
 
