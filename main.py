@@ -499,7 +499,7 @@ class Survivor:
         return min(0.02 + (level - 1) * 0.005, 0.40)
     @property
     def armor_reduction(self) -> int:
-        return min(self.armor_upgrades * 2, 35)
+        return self.armor_upgrades * 2
     @property
     def scavenger_bonus(self) -> float:
         return 1.0 + self.scavenger_upgrades * 0.10
@@ -880,7 +880,7 @@ def void_perk_bonus(player: Survivor, perk_name: str) -> float:
 def get_void_perk_cost(player: Survivor, perk_name: str) -> int:
     lvl = void_perk_level(player, perk_name)
     costs = VOID_PERK_UPGRADE_COSTS[perk_name]
-    return costs[lvl] if lvl < len(costs) else 999999999
+    return costs[lvl] if lvl < len(costs) else 0
 
 def upgrade_void_perk(player: Survivor, perk_name: str) -> list[str]:
     if player.run_active:
@@ -1851,15 +1851,22 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
                 if effect == "shock":
                     shock_dmg = int(30 * ammo_modifier(player, "Shock"))
                     enemy.health = max(0, enemy.health - shock_dmg)
+                    bonus_total += shock_dmg
                     messages.append(f"⚡ Double-Tap Shock deals {shock_dmg} dmg!")
 
 
         # PET ATTACK CHECK
-        if player.pet_chance > 0 and random.random() < player.pet_chance:
+        if enemy.health > 0 and player.pet_chance > 0 and random.random() < player.pet_chance:
             pet_dmg = player.pet_damage
             enemy.health = max(0, enemy.health - pet_dmg)
             messages.append(f"🐺 **Wolf bites {enemy.name} for {pet_dmg} dmg!** ({player.pet_chance*100:.0f}% chance)")
             total_dmg += pet_dmg
+
+        # Double-Tap is part of the same successful attack action. Include its
+        # damage in the action total so Kingpin's 500+ bounty threshold sees the
+        # full action damage, while the action counter itself still increments once.
+        if double_tap_level > 0 and 'bonus_total' in locals():
+            total_dmg += bonus_total
 
         # Count one successful player attack action for boss mechanics.
         if enemy.is_zone_boss and total_dmg > 0:
@@ -1911,7 +1918,7 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
 
         effect = ammo_data["effect"]
         chances = {"bleed": 0.25, "burn": 0.30, "freeze": 0.25, "poison": 0.40, "shock": 0.20}
-        if effect and random.random() < chances[effect]:
+        if enemy.health > 0 and effect and random.random() < chances[effect]:
             durations = {"bleed": 3, "burn": 3, "freeze": 4, "poison": 5, "shock": 1}
             enemy.effects[effect] = durations[effect]
             if effect == "freeze":
@@ -1923,6 +1930,7 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
             if effect == "shock":
                 shock_dmg = int(30 * ammo_modifier(player, "Shock"))
                 enemy.health = max(0, enemy.health - shock_dmg)
+                total_dmg += shock_dmg
                 messages.append(f"⚡ Shock deals {shock_dmg} dmg!")
     elif action == "reload":
         # A successful reload is a real combat turn: after loading ammo,
@@ -2140,7 +2148,7 @@ def upgrade_weapon(player: Survivor, weapon_name: str, stat: str) -> list[str]:
 def get_combat_medic_cost(player: Survivor) -> int:
     level = player.combat_medic_level
     if level >= COMBAT_MEDIC_MAX_LEVEL:
-        return 999999999
+        return 0
     return COMBAT_MEDIC_COSTS[level]
 
 
@@ -2191,7 +2199,6 @@ def get_upgrade_cost(player: Survivor, stat: str) -> int:
     if stat == "health": count = player.health_upgrades
     elif stat == "armor": count = player.armor_upgrades
     elif stat == "scavenger": count = player.scavenger_upgrades
-
     # cost = base * early_mult^min(count, 10) * late_mult^max(count-10, 0)
     early_levels = min(count, 10)
     late_levels = max(count - 10, 0)
@@ -2218,7 +2225,7 @@ def upgrade(player: Survivor, stat: str) -> list[str]:
         return [f"❤️ Max HP → **{player.max_health}** (+20). ${player.money} left. Lvl {player.health_upgrades}"]
     if canonical == "armor":
         player.armor_upgrades += 1
-        return [f"🛡️ Armor → **-{player.armor_reduction} dmg** (cap -35). ${player.money} left. Lvl {player.armor_upgrades}"]
+        return [f"🛡️ Armor → **-{player.armor_reduction} dmg**. ${player.money} left. Lvl {player.armor_upgrades}"]
     if canonical == "scavenger":
         player.scavenger_upgrades += 1
         return [f"💰 Loot bonus → **+{int((player.scavenger_bonus-1)*100)}%** (+10% per lvl). ${player.money} left. Lvl {player.scavenger_upgrades}"]
@@ -2307,32 +2314,37 @@ def upgrade_star(player: Survivor, stat: str) -> list[str]:
             return [f"❌ Dodge already maxed at 30%! (Lvl {player.star_dodge_upgrades})"]
         player.stars -= cost
         player.star_dodge_upgrades += 1
-        return [f"💨 Dodge → **{player.dodge_chance*100:.1f}%** dodge chance (Lvl {player.star_dodge_upgrades}) | Paid ⭐{cost} | ⭐ {player.stars} left | Next: ⭐{get_star_upgrade_cost(player,'dodge')} (cap 30%)"]
+        next_text = "MAXED" if player.star_dodge_upgrades >= STAR_MAX_LEVELS["dodge"] else f"Next: ⭐{get_star_upgrade_cost(player,'dodge')} (cap 30%)"
+        return [f"💨 Dodge → **{player.dodge_chance*100:.1f}%** dodge chance (Lvl {player.star_dodge_upgrades}) | Paid ⭐{cost} | ⭐ {player.stars} left | {next_text}"]
     if canonical == "magical":
         if player.star_magical_upgrades > 0 and player.magical_bullet_chance >= 0.20:
             return [f"❌ Magical Bullet already maxed at 20%! (Lvl {player.star_magical_upgrades})"]
         player.stars -= cost
         player.star_magical_upgrades += 1
-        return [f"✨ Magical Bullet → **{player.magical_bullet_chance*100:.1f}%** free shot (Lvl {player.star_magical_upgrades}) | Paid ⭐{cost} | ⭐ {player.stars} left | Next: ⭐{get_star_upgrade_cost(player,'magical')} (cap 20%)"]
+        next_text = "MAXED" if player.star_magical_upgrades >= STAR_MAX_LEVELS["magical"] else f"Next: ⭐{get_star_upgrade_cost(player,'magical')} (cap 20%)"
+        return [f"✨ Magical Bullet → **{player.magical_bullet_chance*100:.1f}%** free shot (Lvl {player.star_magical_upgrades}) | Paid ⭐{cost} | ⭐ {player.stars} left | {next_text}"]
     if canonical == "medic":
         if player.star_medic_upgrades > 0 and player.medic_chance >= 0.07:
             return [f"❌ Medic already maxed at 7%! (Lvl {player.star_medic_upgrades})"]
         player.stars -= cost
         player.star_medic_upgrades += 1
-        return [f"💊 Medic → **{player.medic_chance*100:.2f}%** heal drop (Lvl {player.star_medic_upgrades}) | Paid ⭐{cost} | ⭐ {player.stars} left | Next: ⭐{get_star_upgrade_cost(player,'medic')} (cap 7%)"]
+        next_text = "MAXED" if player.star_medic_upgrades >= STAR_MAX_LEVELS["medic"] else f"Next: ⭐{get_star_upgrade_cost(player,'medic')} (cap 7%)"
+        return [f"💊 Medic → **{player.medic_chance*100:.2f}%** heal drop (Lvl {player.star_medic_upgrades}) | Paid ⭐{cost} | ⭐ {player.stars} left | {next_text}"]
     if canonical == "pet":
         if player.star_pet_upgrades > 0 and player.pet_chance >= 0.10:
             return [f"❌ Pet already maxed at 10%! (Lvl {player.star_pet_upgrades})"]
         player.stars -= cost
         player.star_pet_upgrades += 1
-        return [f"🐺 Wolf Pet → **{player.pet_chance*100:.0f}%** to deal {player.pet_damage} dmg (Lvl {player.star_pet_upgrades}) | Paid ⭐{cost} | ⭐ {player.stars} left | Next: ⭐{get_star_upgrade_cost(player,'pet')} (cap 10%)"]
+        next_text = "MAXED" if player.star_pet_upgrades >= STAR_MAX_LEVELS["pet"] else f"Next: ⭐{get_star_upgrade_cost(player,'pet')} (cap 10%)"
+        return [f"🐺 Wolf Pet → **{player.pet_chance*100:.0f}%** to deal {player.pet_damage} dmg (Lvl {player.star_pet_upgrades}) | Paid ⭐{cost} | ⭐ {player.stars} left | {next_text}"]
 
     if canonical == "xp":
         if player.star_xp_upgrades > 0 and player.xp_bonus >= 0.25:
             return [f"❌ XP Gain already maxed at 25%! (Lvl {player.star_xp_upgrades})"]
         player.stars -= cost
         player.star_xp_upgrades += 1
-        return [f"✨ XP Gain → **{player.xp_bonus*100:.1f}%** bonus XP (Lvl {player.star_xp_upgrades}) | Paid ⭐{cost} | ⭐ {player.stars} left | Next: ⭐{get_star_upgrade_cost(player,'xp')} (cap 25%)"]
+        next_text = "MAXED" if player.star_xp_upgrades >= STAR_MAX_LEVELS["xp"] else f"Next: ⭐{get_star_upgrade_cost(player,'xp')} (cap 25%)"
+        return [f"✨ XP Gain → **{player.xp_bonus*100:.1f}%** bonus XP (Lvl {player.star_xp_upgrades}) | Paid ⭐{cost} | ⭐ {player.stars} left | {next_text}"]
 
     return ["Unknown error"]
 
@@ -3988,8 +4000,15 @@ class UpgradeView(PlayerView):
 
         # Single buy button for selected upgrade - no bulk as requested
         cost = get_combat_medic_cost(player) if self.selected_up == "combat_medic" else get_upgrade_cost(player, self.selected_up)
-        buy_label = f"Buy {self.selected_up.replace('_', ' ').title()} ${cost:,}"
-        btn_buy = discord.ui.Button(label=buy_label[:80], style=discord.ButtonStyle.success, row=2)
+        selected_max = (
+            (self.selected_up == "combat_medic" and player.combat_medic_level >= COMBAT_MEDIC_MAX_LEVEL)
+        )
+        if selected_max:
+            max_label = "Combat Medic MAXED"
+            btn_buy = discord.ui.Button(label=f"🔥 {max_label}", style=discord.ButtonStyle.secondary, disabled=True, row=2)
+        else:
+            buy_label = f"Buy {self.selected_up.replace('_', ' ').title()} ${cost:,}"
+            btn_buy = discord.ui.Button(label=buy_label[:80], style=discord.ButtonStyle.success, row=2)
         async def buy_cb(interaction):
             # FIX #1: Prevent double-click race - locks per user
             if self.user_id in _purchase_locks:
@@ -4073,13 +4092,16 @@ class UpgradeView(PlayerView):
             else:
                 lines.append(f"{plus} per level - Cost ${cost:,} - Lvl {lvl}")
             lines.append("")
-        if sel == "combat_medic":
-            next_lvl = player.combat_medic_level + 1
-            next_cost = get_combat_medic_cost(player)
+        if sel == "combat_medic" and player.combat_medic_level >= COMBAT_MEDIC_MAX_LEVEL:
+            lines.append("Next: **Combat Medic MAXED — Lvl 6**")
         else:
-            next_lvl = (getattr(player, f"{sel}_upgrades", 0) + 1) if sel != "scavenger" else player.scavenger_upgrades + 1
-            next_cost = get_upgrade_cost(player, sel)
-        lines.append(f"Next: {sel.replace('_', ' ').title()} Lvl {next_lvl} for ${next_cost:,}" if next_lvl <= COMBAT_MEDIC_MAX_LEVEL or sel != "combat_medic" else f"{sel.replace('_', ' ').title()} MAXED")
+            if sel == "combat_medic":
+                next_lvl = player.combat_medic_level + 1
+                next_cost = get_combat_medic_cost(player)
+            else:
+                next_lvl = (getattr(player, f"{sel}_upgrades", 0) + 1) if sel != "scavenger" else player.scavenger_upgrades + 1
+                next_cost = get_upgrade_cost(player, sel)
+            lines.append(f"Next: {sel.replace('_', ' ').title()} Lvl {next_lvl} for ${next_cost:,}")
         return "\n".join(lines)
 
 
@@ -4257,7 +4279,7 @@ class VoidUpgradeView(PlayerView):
             baz_label = "💥 Bazooka MAX"
         else:
             baz_label = "💥 Void Bazooka" + (" ✅" if owned else " 🔒")
-        btn = discord.ui.Button(label=baz_label, style=discord.ButtonStyle.success if owned else discord.ButtonStyle.primary, row=0)
+        btn = discord.ui.Button(label=baz_label, style=discord.ButtonStyle.secondary if lvl >= VOID_UPGRADE_MAX else (discord.ButtonStyle.success if owned else discord.ButtonStyle.primary), disabled=(lvl >= VOID_UPGRADE_MAX), row=0)
         async def bazooka_select(interaction):
             await interaction.response.defer()
             p=self.store.get(self.user_id); msgs=[]
@@ -4300,7 +4322,7 @@ class VoidUpgradeView(PlayerView):
                 label=f"{icon} {perk_name.split()[-1]} MAX"
             else:
                 label=f"{icon} {perk_name.split()[-1]} L{plvl} • ◈{get_void_perk_cost(player,perk_name)}"
-            b=discord.ui.Button(label=label[:80], style=discord.ButtonStyle.success if plvl else discord.ButtonStyle.primary, row=2)
+            b=discord.ui.Button(label=label[:80], style=discord.ButtonStyle.secondary if plvl>=10 else (discord.ButtonStyle.success if plvl else discord.ButtonStyle.primary), disabled=(plvl>=10), row=2)
             async def perk_cb(interaction,pn=perk_name):
                 if self.user_id in _purchase_locks:
                     await interaction.response.defer(); return
@@ -4365,7 +4387,7 @@ def get_void_upgrade_cost(player: Survivor) -> int:
     """Escalating Void Essence cost for the 10-level Void weapon track."""
     costs = [10, 20, 35, 55, 80, 110, 150, 200, 275, 375]
     lvl=max(0,min(VOID_UPGRADE_MAX,player.void_weapon_level))
-    return costs[lvl] if lvl < VOID_UPGRADE_MAX else 999999999
+    return costs[lvl] if lvl < VOID_UPGRADE_MAX else 0
 
 
 def upgrade_void_weapon(player: Survivor) -> list[str]:
@@ -4740,33 +4762,34 @@ async def setwave(interaction: discord.Interaction, wave: int, user: discord.Use
             return
 
         target = user or interaction.user
-        player = game_store.get(target.id)
+        async with game_store.action_lock(target.id):
+            player = game_store.get(target.id)
 
-        # If the player is not currently running, initialise a normal run first.
-        # Then jump directly to the requested wave and create a fresh encounter.
-        if not player.run_active:
-            start_run(player)
+            # If the player is not currently running, initialise a normal run first.
+            # Then jump directly to the requested wave and create a fresh encounter.
+            if not player.run_active:
+                start_run(player)
 
-        player.run_active = True
-        player.run_id = uuid.uuid4().hex
-        player.wave = int(wave)
-        player.zombies_remaining = 3
-        player.enemy = None
-        player.bloater_cooldown = 0
-        player.bloaters_spawned_this_run = 0
-        player.bloater_chance_steps = 0
-        player.bloater_roll_wave = 0
-        player.bloater_wave_result = False
-        player.void_bazooka_boss_fired = False
-        player.void_infusion_cooldown = 0
-        player.void_shield_cooldown = 0
-        player.void_execution_cooldown = 0
-        player.void_infusion_active = False
-        player.void_shield_active = False
-        player.void_execution_active = False
-        # Admin test runs never write leaderboard records.
-        player.admin_test_mode = True
-        player.enemy = spawn_enemy(player)
+            player.run_active = True
+            player.run_id = uuid.uuid4().hex
+            player.wave = int(wave)
+            player.zombies_remaining = 3
+            player.enemy = None
+            player.bloater_cooldown = 0
+            player.bloaters_spawned_this_run = 0
+            player.bloater_chance_steps = 0
+            player.bloater_roll_wave = 0
+            player.bloater_wave_result = False
+            player.void_bazooka_boss_fired = False
+            player.void_infusion_cooldown = 0
+            player.void_shield_cooldown = 0
+            player.void_execution_cooldown = 0
+            player.void_infusion_active = False
+            player.void_shield_active = False
+            player.void_execution_active = False
+            # Admin test runs never write leaderboard records.
+            player.admin_test_mode = True
+            player.enemy = spawn_enemy(player)
 
         # Keep the save synchronous for consistency with the rest of the bot,
         # but it now happens after the interaction has already been deferred.
@@ -4809,8 +4832,9 @@ async def addmoney(interaction: discord.Interaction, amount: int, user: discord.
         return
 
     target = user or interaction.user
-    player = game_store.get(target.id)
-    player.money += amount
+    async with game_store.action_lock(target.id):
+        player = game_store.get(target.id)
+        player.money += amount
     await game_store.save_one_async(str(target.id))
     await interaction.followup.send(f"💰 **+${amount}** added to {target.mention} → Now has **${player.money}**", ephemeral=True)
 
@@ -4827,8 +4851,9 @@ async def addstars(interaction: discord.Interaction, amount: int, user: discord.
         return
 
     target = user or interaction.user
-    player = game_store.get(target.id)
-    player.stars += amount
+    async with game_store.action_lock(target.id):
+        player = game_store.get(target.id)
+        player.stars += amount
     await game_store.save_one_async(str(target.id))
     await interaction.followup.send(f"⭐ **+{amount} stars** to {target.mention} → Now has **{player.stars}** ⭐", ephemeral=True)
 
@@ -4845,12 +4870,13 @@ async def addxp(interaction: discord.Interaction, amount: int, user: discord.Use
         return
 
     target = user or interaction.user
-    player = game_store.get(target.id)
-    old_level = player.level
-    player.xp += amount
-    level_ups = max(0, player.level - old_level)
-    if level_ups:
-        player.stars += level_ups
+    async with game_store.action_lock(target.id):
+        player = game_store.get(target.id)
+        old_level = player.level
+        player.xp += amount
+        level_ups = max(0, player.level - old_level)
+        if level_ups:
+            player.stars += level_ups
     await game_store.save_one_async(str(target.id))
     await interaction.followup.send(f"✨ **+{amount} XP** to {target.mention} → Level {player.level} | XP: {player.xp}" + (f" | +{level_ups} ⭐" if level_ups else ""), ephemeral=True)
 
@@ -4865,11 +4891,10 @@ async def resetplayer(interaction: discord.Interaction, user: discord.User):
     
     # Create fresh survivor
     from dataclasses import replace
-    fresh = game_store.get(user.id)
-    # Reset to defaults - we will create new Survivor instance
-    new_player = fresh.__class__()  # fresh Survivor
-    # Preserve user id via store logic
-    game_store.players[str(user.id)] = new_player
+    async with game_store.action_lock(user.id):
+        fresh = game_store.get(user.id)
+        new_player = fresh.__class__()
+        game_store.players[str(user.id)] = new_player
     await game_store.save_one_async(str(user.id))
     await interaction.followup.send(f"🔄 {user.mention} has been reset to level 1!", ephemeral=True)
 
@@ -4881,15 +4906,19 @@ async def zombie_give(interaction: discord.Interaction, user: discord.User, mone
     if not has_admin_commands(interaction):
         await interaction.followup.send(admin_denied_message(), ephemeral=True)
         return
+    if money < 0 or stars < 0 or xp < 0:
+        await interaction.followup.send("❌ Money, Stars and XP must all be **0 or greater**.", ephemeral=True)
+        return
     
-    player = game_store.get(user.id)
-    old_level = player.level
-    player.money += money
-    player.stars += stars
-    player.xp += xp
-    level_ups = max(0, player.level - old_level)
-    if level_ups:
-        player.stars += level_ups
+    async with game_store.action_lock(user.id):
+        player = game_store.get(user.id)
+        old_level = player.level
+        player.money += money
+        player.stars += stars
+        player.xp += xp
+        level_ups = max(0, player.level - old_level)
+        if level_ups:
+            player.stars += level_ups
     await game_store.save_one_async(str(user.id))
     await interaction.followup.send(f"✅ Restored {user.mention}: +${money}, +{stars}⭐, +{xp} XP" + (f" +{level_ups}⭐ level-up bonus" if level_ups else "") + f"\nNow: ${player.money} | {player.stars}⭐ | Lvl {player.level} ({player.xp} XP)", ephemeral=True)
 
@@ -4906,8 +4935,9 @@ async def addvoidessence(interaction: discord.Interaction, amount: int, user: di
 
     
     target=user or interaction.user
-    player=game_store.get(target.id)
-    player.void_essence=max(0, player.void_essence + amount)
+    async with game_store.action_lock(target.id):
+        player=game_store.get(target.id)
+        player.void_essence=max(0, player.void_essence + amount)
     await game_store.save_one_async(str(target.id))
     await interaction.followup.send(f"◈ **+{amount} Void Essence** added to {target.mention} → Now has **◈{player.void_essence}**", ephemeral=True)
 
