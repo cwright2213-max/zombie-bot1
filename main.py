@@ -21,6 +21,31 @@ print(f"[STORAGE] Using POSTGRES - CONSTANT SAVE ENABLED - V6 FULL RESTORED")
 _purchase_locks: set[int] = set()
 
 
+def schedule_shop_save(store, user_id: int):
+    """Persist a shop mutation without making the Discord UI wait on PostgreSQL I/O.
+
+    Shop callbacks update the in-memory Survivor first, schedule the durable save,
+    and then edit the Discord message. GameStore.save_one_async() still snapshots
+    under the per-player action lock and serializes database writes with save_lock(),
+    so this changes response latency without removing the persistence safeguards.
+    """
+    import asyncio
+
+    async def _save():
+        try:
+            await store.save_one_async(str(user_id))
+        except Exception as e:
+            print(f"[SHOP SAVE ERROR] {user_id}: {e}")
+
+    try:
+        asyncio.create_task(_save())
+    except RuntimeError as e:
+        # Normally the Discord event loop is running. If it is not, surface the
+        # problem rather than silently pretending the save was scheduled.
+        print(f"[SHOP SAVE SCHEDULE ERROR] {user_id}: {e}")
+
+
+
 def make_bar(current: int, max_val: int, length: int = 12) -> str:
     if max_val <= 0:
         return "░" * length
@@ -3594,7 +3619,7 @@ class WeaponShopView(PlayerView):
                     return
                 if wn not in p.owned_weapons:
                     msgs = buy_item(p, wn)
-                    await self.store.save_one_async(str(self.user_id))
+                    schedule_shop_save(self.store, self.user_id)
                 content = self.get_shop_text(p, selected_override=wn, extra_msgs=None)
                 await interaction.edit_original_response(content=content, view=WeaponShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_weapon=wn))
             btn.callback = cb
@@ -3613,7 +3638,7 @@ class WeaponShopView(PlayerView):
                 await interaction.edit_original_response(content=None, embed=combat_embed(p, ["🚫 **Shopping is locked during a run.** Flee or finish the run first."]), view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
                 return
             msgs = buy_item(p, self.selected_weapon)
-            await self.store.save_one_async(str(self.user_id))
+            schedule_shop_save(self.store, self.user_id)
             content = self.get_shop_text(p, selected_override=self.selected_weapon, extra_msgs=msgs)
             await interaction.edit_original_response(content=content, view=WeaponShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_weapon=self.selected_weapon))
         btn_buy.callback = buy_cb
@@ -3717,7 +3742,7 @@ class WeaponUpgradeView(PlayerView):
                     await interaction.edit_original_response(content="⏳ Purchase already processing. Try again in a moment.", view=self); return
                 _purchase_locks.add(self.user_id)
                 try:
-                    p=self.store.get(self.user_id); msgs=upgrade_weapon(p,self.weapon_name,st); await self.store.save_one_async(str(self.user_id))
+                    p=self.store.get(self.user_id); msgs=upgrade_weapon(p,self.weapon_name,st); schedule_shop_save(self.store, self.user_id)
                     view=WeaponUpgradeView(self.user_id,self.store,display_name=getattr(self,"display_name","Survivor"),weapon_name=self.weapon_name)
                     await interaction.edit_original_response(content=view.get_shop_text(p,msgs),view=view)
                 finally: _purchase_locks.discard(self.user_id)
@@ -3793,7 +3818,7 @@ class AmmoShopView(PlayerView):
                     # Check if equip failed (message starts with ❌ or Need or unlocks)
                     if msgs and any(x.startswith('❌') or 'Need $' in x or 'unlocks at level' in x.lower() for x in msgs):
                         success = False
-                    await self.store.save_one_async(str(self.user_id))
+                    schedule_shop_save(self.store, self.user_id)
                 else:
                     # Already owned, try to equip
                     msgs = equip_ammo(p, an)
@@ -3805,7 +3830,7 @@ class AmmoShopView(PlayerView):
                             # Check if error
                             if any(m.startswith('❌') for m in msgs):
                                 success = False
-                    await self.store.save_one_async(str(self.user_id))
+                    schedule_shop_save(self.store, self.user_id)
                 
                 if success:
                     self.selected_ammo = an
@@ -3835,7 +3860,7 @@ class AmmoShopView(PlayerView):
                         await interaction.edit_original_response(content=None, embed=combat_embed(p, ["🚫 **Ammo shopping is locked during a run.** Flee or finish the run first."]), view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
                         return
                     msgs = buy_ammo_boxes(p, ammo, q)
-                    await self.store.save_one_async(str(self.user_id))
+                    schedule_shop_save(self.store, self.user_id)
                     content = self.get_shop_text(p, selected_override=ammo, extra_msgs=msgs)
                     await interaction.edit_original_response(content=content, view=AmmoShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_ammo=ammo))
                 finally:
@@ -3959,7 +3984,7 @@ class MedsShopView(PlayerView):
                             p.full_restores += q
                             bought = q
                             msgs = [f"✨ Bought {q}x Full Restore +{bought} | Now {p.full_restores}x | ${p.money} left"]
-                        await self.store.save_one_async(str(self.user_id))
+                        schedule_shop_save(self.store, self.user_id)
                     content = self.get_shop_text(p, selected_override=med, extra_msgs=msgs)
                     await interaction.edit_original_response(content=content, view=MedsShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_med=med))
                 finally:
@@ -4077,7 +4102,7 @@ class UpgradeView(PlayerView):
             try:
                 p=self.store.get(self.user_id)
                 msgs = upgrade_combat_medic(p) if self.selected_up == "combat_medic" else upgrade(p, self.selected_up)
-                await self.store.save_one_async(str(self.user_id))
+                schedule_shop_save(self.store, self.user_id)
                 content = self.get_shop_text(p, selected_override=self.selected_up, extra_msgs=msgs)
                 await interaction.edit_original_response(content=content, view=UpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_up=self.selected_up))
             finally:
@@ -4234,7 +4259,7 @@ class StarUpgradeView(PlayerView):
             try:
                 p=self.store.get(self.user_id)
                 msgs = upgrade_star(p, self.selected_star)
-                await self.store.save_one_async(str(self.user_id))
+                schedule_shop_save(self.store, self.user_id)
                 content = self.get_shop_text(p, selected_override=self.selected_star, extra_msgs=msgs)
                 await interaction.edit_original_response(content=content, view=StarUpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), selected_star=self.selected_star))
             finally:
@@ -4349,7 +4374,7 @@ class VoidUpgradeView(PlayerView):
                     p.money -= VOID_WEAPONS["Void Bazooka"]["price"]
                     p.void_weapons_owned.append("Void Bazooka")
                     msgs=["💥 **Void Bazooka acquired!**"]
-                    await self.store.save_one_async(str(self.user_id))
+                    schedule_shop_save(self.store, self.user_id)
             view=VoidUpgradeView(self.user_id,self.store,display_name=getattr(self,"display_name","Survivor"))
             await interaction.edit_original_response(content=None, embed=view.get_shop_embed(p,msgs), view=view)
         btn.callback=bazooka_select; self.add_item(btn)
@@ -4363,7 +4388,7 @@ class VoidUpgradeView(PlayerView):
             await interaction.response.defer()
             _purchase_locks.add(self.user_id)
             try:
-                p=self.store.get(self.user_id); msgs=upgrade_void_weapon(p); await self.store.save_one_async(str(self.user_id))
+                p=self.store.get(self.user_id); msgs=upgrade_void_weapon(p); schedule_shop_save(self.store, self.user_id)
                 view=VoidUpgradeView(self.user_id,self.store,display_name=getattr(self,"display_name","Survivor"))
                 await interaction.edit_original_response(content=None, embed=view.get_shop_embed(p,msgs), view=view)
             finally:
@@ -4384,7 +4409,7 @@ class VoidUpgradeView(PlayerView):
                 await interaction.response.defer()
                 _purchase_locks.add(self.user_id)
                 try:
-                    p=self.store.get(self.user_id); msgs=upgrade_void_perk(p,pn); await self.store.save_one_async(str(self.user_id))
+                    p=self.store.get(self.user_id); msgs=upgrade_void_perk(p,pn); schedule_shop_save(self.store, self.user_id)
                     view=VoidUpgradeView(self.user_id,self.store,display_name=getattr(self,"display_name","Survivor"))
                     await interaction.edit_original_response(content=None, embed=view.get_shop_embed(p,msgs), view=view)
                 finally:
