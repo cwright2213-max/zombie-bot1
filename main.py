@@ -115,7 +115,7 @@ def combat_embed(player, last_msgs=None):
         clean = [m for m in last_msgs if m and "HP restored" not in m and "Waves survived" not in m][:3]
         if clean:
             embed.add_field(name="⚔️ Last action", value="\n".join(clean)[:1024], inline=False)
-    embed.set_footer(text=f"💰 ${player.money} | ⭐ {player.stars} | ✨ {player.xp} XP | {player.ammo_name} {player.magazine}/{effective_magazine_size(player)}")
+    embed.set_footer(text=f"💰 ${player.money} | ⭐ {player.stars} | ✨ {player.xp} XP | {player.ammo_name} {player.magazine}/{effective_magazine_size(player)}\nCreated By Freak - Royal Reapers")
     return embed
 
 
@@ -3021,7 +3021,7 @@ class DailyCrateView(PlayerView):
             value=f"Level **{player.level}** • 💰 ${player.money:,} • 🌍 {player.zone_name}",
             inline=False,
         )
-        embed.set_footer(text="No Essence • No shop • No upgrades from this screen")
+        embed.set_footer(text="No Essence • No shop • No upgrades from this screen\nCreated By Freak - Royal Reapers")
         return embed
 
     def refresh_view(self):
@@ -3225,7 +3225,7 @@ class CombatView(PlayerView):
                 embed.add_field(name="🌊 Waves", value=f"{player.wave - 1 if player.run_zombies_killed>0 else 0} survived\nReached Wave {player.wave}", inline=True)
                 embed.add_field(name="🧟 Kills", value=f"{player.run_zombies_killed} zombies", inline=True)
                 embed.add_field(name="💰 Rewards", value=f"+${player.run_money_earned}\n+{player.run_xp_earned} XP", inline=True)
-                embed.set_footer(text=f"HP restored to {player.max_health}/{player.max_health} • Press any button to continue")
+                embed.set_footer(text=f"HP restored to {player.max_health}/{player.max_health} • Press any button to continue\nCreated By Freak - Royal Reapers")
                 next_view = RunEndedView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), end_embed=embed)
             else:
                 embed = combat_embed(player, msgs)
@@ -3247,7 +3247,7 @@ class CombatView(PlayerView):
                 embed.add_field(name="🌊 Waves", value=f"{player.wave - 1 if player.run_zombies_killed>0 else 0} survived\nReached Wave {player.wave}", inline=True)
                 embed.add_field(name="🧟 Kills", value=f"{player.run_zombies_killed} zombies", inline=True)
                 embed.add_field(name="💰 Rewards", value=f"+${player.run_money_earned}\n+{player.run_xp_earned} XP", inline=True)
-                embed.set_footer(text=f"HP restored to {player.max_health}/{player.max_health} • Press any button to continue")
+                embed.set_footer(text=f"HP restored to {player.max_health}/{player.max_health} • Press any button to continue\nCreated By Freak - Royal Reapers")
                 next_view = RunEndedView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), end_embed=embed)
             else:
                 embed=combat_embed(player,msgs)
@@ -3273,7 +3273,7 @@ class CombatView(PlayerView):
                 embed.add_field(name="🌊 Waves", value=f"{player.wave - 1 if player.run_zombies_killed>0 else 0} survived\nReached Wave {player.wave}", inline=True)
                 embed.add_field(name="🧟 Kills", value=f"{player.run_zombies_killed} zombies", inline=True)
                 embed.add_field(name="💰 Rewards", value=f"+${player.run_money_earned}\n+{player.run_xp_earned} XP", inline=True)
-                embed.set_footer(text=f"HP restored to {player.max_health}/{player.max_health} • Press any button to continue")
+                embed.set_footer(text=f"HP restored to {player.max_health}/{player.max_health} • Press any button to continue\nCreated By Freak - Royal Reapers")
                 next_view = RunEndedView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), end_embed=embed)
             else:
                 embed = combat_embed(player, msgs)
@@ -3302,7 +3302,7 @@ class CombatView(PlayerView):
                 embed.add_field(name="🌊 Waves", value=f"{player.wave - 1 if player.run_zombies_killed>0 else 0} survived\nReached Wave {player.wave}", inline=True)
                 embed.add_field(name="🧟 Kills", value=f"{player.run_zombies_killed} zombies", inline=True)
                 embed.add_field(name="💰 Rewards", value=f"+${player.run_money_earned}\n+{player.run_xp_earned} XP", inline=True)
-                embed.set_footer(text=f"HP restored to {player.max_health}/{player.max_health} • Press any button to continue")
+                embed.set_footer(text=f"HP restored to {player.max_health}/{player.max_health} • Press any button to continue\nCreated By Freak - Royal Reapers")
                 next_view = RunEndedView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), end_embed=embed)
             else:
                 embed = combat_embed(player, msgs)
@@ -3442,7 +3442,7 @@ class VoidPerkView(PlayerView):
 
         if extra_msgs:
             embed.add_field(name="⚔️ Result", value="\n".join(extra_msgs)[:1024], inline=False)
-        embed.set_footer(text="Activation costs Essence • Cooldowns reset after enough kills")
+        embed.set_footer(text="Activation costs Essence • Cooldowns reset after enough kills\nCreated By Freak - Royal Reapers")
         return embed
 
 
@@ -4468,7 +4468,7 @@ class VoidUpgradeView(PlayerView):
             cost="MAX" if plvl>=10 else f"◈{get_void_perk_cost(player,pn)}"
             perk_lines.append(f"{icon} **{pn.split()[-1]}** L{plvl}/10 • {effect} • Next {cost}")
         embed.add_field(name="⚡ Void Perks",value="\n".join(perk_lines),inline=False)
-        embed.set_footer(text="Perks work in The Void and can modify the Bazooka.")
+        embed.set_footer(text="Perks work in The Void and can modify the Bazooka.\nCreated By Freak - Royal Reapers")
         return embed
 
     def get_shop_text(self, player, extra_msgs=None):
