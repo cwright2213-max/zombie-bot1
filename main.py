@@ -130,11 +130,11 @@ COMBAT_MEDIC_MAX_LEVEL = 6
 MAX_PAINKILLERS_PER_RUN = COMBAT_MEDIC_PAINKILLERS_PER_RUN[0]
 MAX_FULL_RESTORES_PER_RUN = COMBAT_MEDIC_FULL_RESTORES_PER_RUN[0]
 ZONES: dict[str, dict[str, Any]] = {
-    "Graveyard": {"min_level": 1, "hp_mult": 1.0, "dmg_mult": 0.9, "money_mult": 2.0, "xp_mult": 1.6, "desc": "Foggy, quiet, and good for learning.", "weights": [60, 25, 12, 3], "ammo_mods": {"Standard": 1.00, "Bleed": 1.00, "Incendiary": 1.00, "Frostbite": 1.00, "Toxic": 1.00, "Shock": 1.00}},
-    "Mega Death City": {"min_level": 50, "hp_mult": 1.8, "dmg_mult": 1.3, "money_mult": 3.5, "xp_mult": 2.0, "desc": "A concrete jungle with tougher, richer zombies.", "weights": [30, 30, 25, 15], "ammo_mods": {"Standard": 1.00, "Bleed": 1.00, "Incendiary": 1.20, "Frostbite": 0.90, "Toxic": 1.00, "Shock": 1.15}},
-    "Frostbitten Outskirts": {"min_level": 100, "hp_mult": 2.8, "dmg_mult": 1.7, "money_mult": 5.0, "xp_mult": 2.4, "desc": "Freezing rain and frost armor - NOT for level 50s.", "weights": [20, 20, 35, 25], "ammo_mods": {"Standard": 1.00, "Bleed": 0.90, "Incendiary": 1.40, "Frostbite": 0.70, "Toxic": 1.00, "Shock": 1.15}},
-    "Toxic Wasteland": {"min_level": 150, "hp_mult": 3.7, "dmg_mult": 2.1, "money_mult": 7.5, "xp_mult": 3.2, "desc": "A green haze where toxic rounds shine. Bring real gear.", "weights": [15, 15, 35, 35], "ammo_mods": {"Standard": 1.00, "Bleed": 1.00, "Incendiary": 1.10, "Frostbite": 1.00, "Toxic": 1.50, "Shock": 0.90}},
-    "The Void": {"min_level": 200, "hp_mult": 6.5, "dmg_mult": 2.6, "money_mult": 10.0, "xp_mult": 4.5, "desc": "Endgame. Everything wants you dead. 3-4 shots? Not here.", "weights": [10, 10, 30, 50], "ammo_mods": {"Standard": 0.90, "Bleed": 1.10, "Incendiary": 1.15, "Frostbite": 1.10, "Toxic": 1.25, "Shock": 1.50}},
+    "Graveyard": {"min_level": 1, "hp_mult": 1.0, "dmg_mult": 0.9, "money_mult": 2.0, "xp_mult": 1.6, "desc": "The dead don’t stay buried.", "weights": [60, 25, 12, 3], "ammo_mods": {"Standard": 1.00, "Bleed": 1.00, "Incendiary": 1.00, "Frostbite": 1.00, "Toxic": 1.00, "Shock": 1.00}},
+    "Mega Death City": {"min_level": 50, "hp_mult": 1.8, "dmg_mult": 1.3, "money_mult": 3.5, "xp_mult": 2.0, "desc": "The city belongs to the dead.", "weights": [30, 30, 25, 15], "ammo_mods": {"Standard": 1.00, "Bleed": 1.00, "Incendiary": 1.20, "Frostbite": 0.90, "Toxic": 1.00, "Shock": 1.15}},
+    "Frostbitten Outskirts": {"min_level": 100, "hp_mult": 2.8, "dmg_mult": 1.7, "money_mult": 5.0, "xp_mult": 2.4, "desc": "The cold is the least of your problems.", "weights": [20, 20, 35, 25], "ammo_mods": {"Standard": 1.00, "Bleed": 0.90, "Incendiary": 1.40, "Frostbite": 0.70, "Toxic": 1.00, "Shock": 1.15}},
+    "Toxic Wasteland": {"min_level": 150, "hp_mult": 3.7, "dmg_mult": 2.1, "money_mult": 7.5, "xp_mult": 3.2, "desc": "The land itself wants you dead.", "weights": [15, 15, 35, 35], "ammo_mods": {"Standard": 1.00, "Bleed": 1.00, "Incendiary": 1.10, "Frostbite": 1.00, "Toxic": 1.50, "Shock": 0.90}},
+    "The Void": {"min_level": 200, "hp_mult": 6.5, "dmg_mult": 2.6, "money_mult": 10.0, "xp_mult": 4.5, "desc": "Nothing should exist here.", "weights": [10, 10, 30, 50], "ammo_mods": {"Standard": 0.90, "Bleed": 1.10, "Incendiary": 1.15, "Frostbite": 1.10, "Toxic": 1.25, "Shock": 1.50}},
 }
 ZONE_ORDER = ["Graveyard", "Mega Death City", "Frostbitten Outskirts", "Toxic Wasteland", "The Void"]
 WAVE_STAR_CHANCE = {"Graveyard": 0.05, "Mega Death City": 0.07, "Frostbitten Outskirts": 0.10, "Toxic Wasteland": 0.13, "The Void": 0.16}
@@ -1896,6 +1896,20 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
                     messages.append(f"⚡ Double-Tap Shock deals {shock_dmg} dmg!")
 
 
+        # NORMAL SHOCK PROC: resolve its instant damage before boss-action
+        # accounting so Kingpin sees the full damage dealt by this one attack
+        # action (weapon + Double-Tap + pet + Shock). Other ammo procs remain
+        # in their original post-action position below.
+        effect = ammo_data["effect"]
+        chances = {"bleed": 0.25, "burn": 0.30, "freeze": 0.25, "poison": 0.40, "shock": 0.20}
+        if enemy.health > 0 and effect == "shock" and random.random() < chances["shock"]:
+            enemy.effects["shock"] = 1
+            shock_dmg = int(30 * ammo_modifier(player, "Shock"))
+            enemy.health = max(0, enemy.health - shock_dmg)
+            total_dmg += shock_dmg
+            messages.append(f"💥 {player.ammo_name} procs **shock**!")
+            messages.append(f"⚡ Shock deals {shock_dmg} dmg!")
+
         # PET ATTACK CHECK
         if enemy.health > 0 and player.pet_chance > 0 and random.random() < player.pet_chance:
             pet_dmg = player.pet_damage
@@ -1959,7 +1973,7 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
 
         effect = ammo_data["effect"]
         chances = {"bleed": 0.25, "burn": 0.30, "freeze": 0.25, "poison": 0.40, "shock": 0.20}
-        if enemy.health > 0 and effect and random.random() < chances[effect]:
+        if enemy.health > 0 and effect and effect != "shock" and random.random() < chances[effect]:
             durations = {"bleed": 3, "burn": 3, "freeze": 4, "poison": 5, "shock": 1}
             enemy.effects[effect] = durations[effect]
             if effect == "freeze":
@@ -1967,12 +1981,6 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
                 # bonus damage on the next 2 player actions.
                 enemy.effects["freeze_dot"] = 2
             messages.append(f"💥 {player.ammo_name} procs **{effect}**!")
-            # Shock also does instant 30 dmg, matching its shop description.
-            if effect == "shock":
-                shock_dmg = int(30 * ammo_modifier(player, "Shock"))
-                enemy.health = max(0, enemy.health - shock_dmg)
-                total_dmg += shock_dmg
-                messages.append(f"⚡ Shock deals {shock_dmg} dmg!")
     elif action == "reload":
         # A successful reload is a real combat turn: after loading ammo,
         # execution continues to the normal enemy-damage resolution below.
@@ -2110,7 +2118,7 @@ def change_zone(player: Survivor, zone_name: str) -> list[str]:
     if player.level < ZONES[zone_name]["min_level"]:
         return [f"{zone_name} unlocks at level {ZONES[zone_name]['min_level']}."]
     player.zone_name = zone_name
-    return [f"🗺️ Travelled to **{zone_name}**.", ammo_effectiveness_text(player)]
+    return [f"🗺️ Travelled to **{zone_name}**.", ammo_effectiveness_text(player), f"*{ZONES[zone_name]['desc']}*"]
 
 def weapon_upgrade_summary(player: Survivor, weapon_name: str | None = None) -> str:
     wn = weapon_name or player.weapon_name
@@ -4498,7 +4506,10 @@ class ZoneView(PlayerView):
             async def cb(interaction, zn=zone_name):
                 await interaction.response.defer()
                 p=self.store.get(self.user_id); msgs=change_zone(p,zn); await self.store.save_one_async(str(self.user_id))
-                await interaction.edit_original_response(content="\n".join(msgs)+"\n\n"+status(p, display_name=getattr(self, "display_name", "Survivor")), view=ZoneView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+                # Keep the zone picker focused on the zone-change result.  The old
+                # flow appended the full player status/inventory here, which made a
+                # simple zone tap suddenly replace the picker with the inventory screen.
+                await interaction.edit_original_response(content="\n".join(msgs), view=ZoneView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
             btn.callback = cb
             self.add_item(btn)
     @discord.ui.button(label="🏠 Main menu", style=discord.ButtonStyle.secondary, row=2)
