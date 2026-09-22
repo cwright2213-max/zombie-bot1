@@ -173,6 +173,11 @@ DOUBLE_TAP_WEAPON_MULT: dict[str, float] = {
     "SMG": 1.65, "Sawed-Off": 1.90, "Tactical Sniper": 2.25,
 }
 DOUBLE_TAP_MAX_LEVEL = 10
+WEAPON_DAMAGE_MAX_LEVEL = 200
+WEAPON_MAG_MAX_LEVEL = 200
+WEAPON_CRIT_MAX_CHANCE = 0.40
+# Crit progression is 2% at level 1, then +0.5% per level.
+WEAPON_CRIT_MAX_LEVEL = 77
 WEAPON_DAMAGE_PER_UPGRADE: dict[str, int] = {
     "Pistol": 3,
     "Shotgun": 3,
@@ -463,9 +468,9 @@ class Survivor:
             if not isinstance(current, dict):
                 current = {}
             self.weapon_upgrades[weapon_name] = {
-                "damage": max(0, int(current.get("damage", 0) or 0)),
-                "mag": max(0, int(current.get("mag", 0) or 0)),
-                "crit": max(0, int(current.get("crit", 0) or 0)),
+                "damage": max(0, min(WEAPON_DAMAGE_MAX_LEVEL, int(current.get("damage", 0) or 0))),
+                "mag": max(0, min(WEAPON_MAG_MAX_LEVEL, int(current.get("mag", 0) or 0))),
+                "crit": max(0, min(WEAPON_CRIT_MAX_LEVEL, int(current.get("crit", 0) or 0))),
                 "double_tap": max(0, min(DOUBLE_TAP_MAX_LEVEL, int(current.get("double_tap", 0) or 0))),
             }
 
@@ -2069,9 +2074,15 @@ def get_weapon_upgrade_cost(player: Survivor, weapon_name: str, stat: str) -> in
     if weapon_name not in WEAPONS or stat not in WEAPON_UPGRADE_BASE_COSTS:
         return 999999999
     level = player.weapon_upgrade_level(stat, weapon_name)
+    max_level = {
+        "damage": WEAPON_DAMAGE_MAX_LEVEL,
+        "mag": WEAPON_MAG_MAX_LEVEL,
+        "crit": WEAPON_CRIT_MAX_LEVEL,
+        "double_tap": DOUBLE_TAP_MAX_LEVEL,
+    }.get(stat)
+    if max_level is not None and level >= max_level:
+        return 0
     if stat == "double_tap":
-        if level >= DOUBLE_TAP_MAX_LEVEL:
-            return 999999999
         base_cost = DOUBLE_TAP_COSTS[level]
         return int(base_cost * DOUBLE_TAP_WEAPON_MULT.get(weapon_name, 1.0))
     rarity = WEAPON_UPGRADE_RARITY_MULT.get(weapon_name, 1.0)
@@ -2088,8 +2099,20 @@ def upgrade_weapon(player: Survivor, weapon_name: str, stat: str) -> list[str]:
     if stat not in WEAPON_UPGRADE_BASE_COSTS:
         return ["❌ Invalid weapon upgrade."]
     old = player.weapon_upgrade_level(stat, weapon_name)
-    if stat == "double_tap" and old >= DOUBLE_TAP_MAX_LEVEL:
-        return [f"🔥 **{weapon_name} Double-Tap is MAXED at 10%!**"]
+    max_levels = {
+        "damage": WEAPON_DAMAGE_MAX_LEVEL,
+        "mag": WEAPON_MAG_MAX_LEVEL,
+        "crit": WEAPON_CRIT_MAX_LEVEL,
+        "double_tap": DOUBLE_TAP_MAX_LEVEL,
+    }
+    if old >= max_levels[stat]:
+        max_text = {
+            "damage": f"Level {WEAPON_DAMAGE_MAX_LEVEL}",
+            "mag": f"Level {WEAPON_MAG_MAX_LEVEL}",
+            "crit": "40%",
+            "double_tap": "10%",
+        }[stat]
+        return [f"🔥 **{weapon_name} {stat.replace('_', ' ').title()} is MAXED at {max_text}!**"]
     cost = get_weapon_upgrade_cost(player, weapon_name, stat)
     if player.money < cost:
         return [f"❌ Need ${cost:,} for {weapon_name} {stat} upgrade, you have ${player.money:,}."]
@@ -2203,8 +2226,17 @@ def upgrade(player: Survivor, stat: str) -> list[str]:
     return [f"❓ Unknown universal upgrade '{stat}'. Try: health, armor, scavenger"]
 
 
+STAR_MAX_LEVELS = {
+    "dodge": 41,      # 10% + 0.5% per extra level = 30%
+    "magical": 31,    # 5% + 0.5% per extra level = 20%
+    "medic": 21,      # 2% + 0.25% per extra level = 7%
+    "pet": 6,         # 5% + 1% per extra level = 10%
+    "xp": 16,         # 10% + 1% per extra level = 25%
+}
+
+
 def get_star_upgrade_cost(player: Survivor, stat: str) -> int:
-    """Star upgrades: 5 to unlock, then pattern 3,3,4,4,5,5,6,6..."""
+    """Star upgrades: 5 to unlock, then pattern 3,3,4,4,5,5,6,6...; 0 means maxed."""
     stat = stat.lower().strip()
     alias = {
         "dodge": "dodge", "dodge_chance": "dodge", "evade": "dodge",
@@ -2225,6 +2257,8 @@ def get_star_upgrade_cost(player: Survivor, stat: str) -> int:
         lvl = player.star_pet_upgrades
     elif canonical == "xp":
         lvl = player.star_xp_upgrades
+    if canonical in STAR_MAX_LEVELS and lvl >= STAR_MAX_LEVELS[canonical]:
+        return 0
     # Lvl 0 = unlock cost 5
     if lvl == 0:
         return 5
@@ -2253,6 +2287,9 @@ def upgrade_star(player: Survivor, stat: str) -> list[str]:
         return [f"Unknown star upgrade '{stat}'. Options: dodge(⭐{get_star_upgrade_cost(player,'dodge')}) / magical(⭐{get_star_upgrade_cost(player,'magical')}) / medic(⭐{get_star_upgrade_cost(player,'medic')}) / pet(⭐{get_star_upgrade_cost(player,'pet')}) | ⭐ {player.stars} stars"]
 
     cost = get_star_upgrade_cost(player, canonical)
+    if canonical in STAR_MAX_LEVELS and lvl >= STAR_MAX_LEVELS[canonical]:
+        caps = {"dodge": "30%", "magical": "20%", "medic": "7%", "pet": "10%", "xp": "25%"}
+        return [f"❌ {canonical.title()} already maxed at {caps[canonical]}! (Lvl {lvl})"]
     if player.stars < cost:
         return [f"Need ⭐{cost} for {canonical}, you have ⭐{player.stars}. Keep grinding waves!"]
 
@@ -3586,9 +3623,19 @@ class WeaponUpgradeView(PlayerView):
         player = self.store.get(user_id)
         self.weapon_name = weapon_name if weapon_name in WEAPONS else player.weapon_name
         self.clear_items()
+        max_levels = {
+            "damage": WEAPON_DAMAGE_MAX_LEVEL,
+            "mag": WEAPON_MAG_MAX_LEVEL,
+            "crit": WEAPON_CRIT_MAX_LEVEL,
+            "double_tap": DOUBLE_TAP_MAX_LEVEL,
+        }
+        max_labels = {"damage": "Lv 200", "mag": "Lv 200", "crit": "40%", "double_tap": "10%"}
         for row, (stat, label, icon) in enumerate([("damage","Damage","⚔️"),("mag","Magazine","📦"),("crit","Crit","🎯"),("double_tap","Double-Tap","🔫")]):
-            lvl = player.weapon_upgrade_level(stat, self.weapon_name); cost = get_weapon_upgrade_cost(player, self.weapon_name, stat)
-            btn = discord.ui.Button(label=f"{icon} {label} L{lvl} • ${cost:,}", style=discord.ButtonStyle.success, row=row)
+            lvl = player.weapon_upgrade_level(stat, self.weapon_name)
+            is_max = lvl >= max_levels[stat]
+            cost = get_weapon_upgrade_cost(player, self.weapon_name, stat)
+            btn_label = f"{icon} {label} MAX {max_labels[stat]}" if is_max else f"{icon} {label} L{lvl} • ${cost:,}"
+            btn = discord.ui.Button(label=btn_label[:80], style=discord.ButtonStyle.secondary if is_max else discord.ButtonStyle.success, disabled=is_max, row=row)
             async def cb(interaction, st=stat):
                 await interaction.response.defer()
                 if self.user_id in _purchase_locks:
@@ -3624,8 +3671,10 @@ class WeaponUpgradeView(PlayerView):
             elif stat=="mag": detail=f"+{shots} capacity"
             elif stat=="crit": detail="+2% first, +0.5% after"
             else: detail=f"+1% proc chance (free second attack)"
-            if stat=="double_tap" and lv[stat] >= DOUBLE_TAP_MAX_LEVEL:
-                lines.append(f"{icon} **{label}** — **MAX 10%**")
+            max_levels = {"damage": WEAPON_DAMAGE_MAX_LEVEL, "mag": WEAPON_MAG_MAX_LEVEL, "crit": WEAPON_CRIT_MAX_LEVEL, "double_tap": DOUBLE_TAP_MAX_LEVEL}
+            max_values = {"damage": "Lv 200", "mag": "Lv 200", "crit": "40%", "double_tap": "10%"}
+            if lv[stat] >= max_levels[stat]:
+                lines.append(f"{icon} **{label}** — **MAX {max_values[stat]}**")
             else:
                 lines.append(f"{icon} **{label}** — Lv {lv[stat]} → {lv[stat]+1} | {detail} | **${cost:,}**")
         return "\n".join(lines)
@@ -4077,8 +4126,16 @@ class StarUpgradeView(PlayerView):
 
         # Single buy button for selected star - no bulk as requested
         cost = get_star_upgrade_cost(player, self.selected_star)
-        buy_label = f"Buy {self.selected_star.capitalize()} ⭐{cost}"
-        btn_buy = discord.ui.Button(label=buy_label[:80], style=discord.ButtonStyle.success, row=2)
+        star_level = {
+            "dodge": player.star_dodge_upgrades,
+            "magical": player.star_magical_upgrades,
+            "medic": player.star_medic_upgrades,
+            "pet": player.star_pet_upgrades,
+            "xp": player.star_xp_upgrades,
+        }[self.selected_star]
+        star_is_max = star_level >= STAR_MAX_LEVELS[self.selected_star]
+        buy_label = f"⭐ {self.selected_star.capitalize()} MAXED" if star_is_max else f"Buy {self.selected_star.capitalize()} ⭐{cost}"
+        btn_buy = discord.ui.Button(label=buy_label[:80], style=discord.ButtonStyle.secondary if star_is_max else discord.ButtonStyle.success, disabled=star_is_max, row=2)
         async def buy_cb(interaction):
             # FIX #1: Prevent double-click race for star upgrades
             if self.user_id in _purchase_locks:
@@ -4132,7 +4189,11 @@ class StarUpgradeView(PlayerView):
         lines.append("")
         lines.append(f"Your stars: **⭐{player.stars}** | Balance: **${player.money:,}** | Level **{player.level}**")
         emoji_map = {"dodge":"💨","magical":"✨","medic":"💊","pet":"🐺","xp":"✨"}
-        lines.append(f"Selected: {emoji_map.get(sel,'⭐')} **{sel.capitalize()}** → Next: ⭐{get_star_upgrade_cost(player, sel)}")
+        selected_level = {"dodge": player.star_dodge_upgrades, "magical": player.star_magical_upgrades, "medic": player.star_medic_upgrades, "pet": player.star_pet_upgrades, "xp": player.star_xp_upgrades}[sel]
+        if selected_level >= STAR_MAX_LEVELS[sel]:
+            lines.append(f"Selected: {emoji_map.get(sel,'⭐')} **{sel.capitalize()}** → **MAXED**")
+        else:
+            lines.append(f"Selected: {emoji_map.get(sel,'⭐')} **{sel.capitalize()}** → Next: ⭐{get_star_upgrade_cost(player, sel)}")
         lines.append("---")
         descs = {
             "dodge": "Dodge enemy attacks completely. 10% base +0.5% per lvl, cap 30%. Makes you untouchable late game.",
@@ -4161,9 +4222,15 @@ class StarUpgradeView(PlayerView):
             cost = get_star_upgrade_cost(player, sid)
             lines.append(f"{sname} (Lvl {lvl}) - **{cur:.1f}%**{sel_mark}")
             lines.append(f"{descs[sid]}")
-            lines.append(f"Cap {cap} | {per} | Cost ⭐{cost} | Next Lvl {lvl+1}")
+            if lvl >= STAR_MAX_LEVELS[sid]:
+                lines.append(f"Cap {cap} | {per} | **MAXED**")
+            else:
+                lines.append(f"Cap {cap} | {per} | Cost ⭐{cost} | Next Lvl {lvl+1}")
             lines.append("")
-        lines.append(f"Selected: **{sel.capitalize()}** → Buy for ⭐{get_star_upgrade_cost(player, sel)}")
+        if selected_level >= STAR_MAX_LEVELS[sel]:
+            lines.append(f"Selected: **{sel.capitalize()}** → **MAXED — no further upgrades**")
+        else:
+            lines.append(f"Selected: **{sel.capitalize()}** → Buy for ⭐{get_star_upgrade_cost(player, sel)}")
         return "\n".join(lines)
 
 
