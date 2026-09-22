@@ -3935,13 +3935,13 @@ class UpgradeView(PlayerView):
         lines.append("---")
         if sel == "combat_medic":
             next_cost = get_combat_medic_cost(player)
-            lines.append(f"💉 **Combat Medic** — Level {player.combat_medic_level}/6")
-            lines.append(f"Run allowance: **{player.max_painkillers_per_run} 💊 Painkillers** + **{player.max_full_restores_per_run} ✨ Full Restores**")
-            lines.append("Heavy cash investment. Increases only the number of uses available per run; it does not change heal amount or cooldown.")
-            if player.combat_medic_level < COMBAT_MEDIC_MAX_LEVEL:
-                lines.append(f"Next level: **${next_cost:,}**")
+            lvl = player.combat_medic_level
+            lines.append(f"💉 **Combat Medic ({lvl})**")
+            lines.append(f"**{player.max_painkillers_per_run} 💊 Painkillers + {player.max_full_restores_per_run} ✨ Full Restore per run**")
+            if lvl < COMBAT_MEDIC_MAX_LEVEL:
+                lines.append(f"Cost **${next_cost:,}** — Lvl {lvl}")
             else:
-                lines.append("🔥 MAXED")
+                lines.append("🔥 **MAXED — Lvl 6**")
             lines.append("")
         for uid, uname, plus in [
             ("health", "❤️ Health", "+20 HP"),
@@ -3954,7 +3954,11 @@ class UpgradeView(PlayerView):
             sel_mark = " ← SELECTED" if uid == sel else ""
             lines.append(f"{uname} ({lvl}){sel_mark}")
             if uid == "combat_medic":
-                lines.append(f"{plus} | {player.max_painkillers_per_run}💊 + {player.max_full_restores_per_run}✨ per run | Cost ${cost:,}" if lvl < COMBAT_MEDIC_MAX_LEVEL else "MAXED")
+                lines.append(
+                    f"{player.max_painkillers_per_run} 💊 Painkillers + {player.max_full_restores_per_run} ✨ Full Restore per run - Cost ${cost:,} - Lvl {lvl}"
+                    if lvl < COMBAT_MEDIC_MAX_LEVEL else
+                    f"{player.max_painkillers_per_run} 💊 Painkillers + {player.max_full_restores_per_run} ✨ Full Restore per run - MAXED"
+                )
             else:
                 lines.append(f"{plus} per level - Cost ${cost:,} - Lvl {lvl}")
             lines.append("")
