@@ -85,7 +85,7 @@ def combat_embed(player, last_msgs=None):
         e_name = "No enemy"
         e_hp = "0/0"
         e_dmg = 0
-    embed = discord.Embed(
+    embed = make_embed(
         title=f"🧟 {player.zone_name} — WAVE {player.wave} | {player.zombies_remaining} zombies left",
         color=discord.Color.from_rgb(200, 50, 50) if p_pct < 30 else discord.Color.from_rgb(50, 180, 80)
     )
@@ -419,6 +419,14 @@ ZONE_ENEMY_NAMES: dict[str, dict[str, str]] = {
         "Mutant": "Tormented Soul",
     },
 }
+EMBED_FOOTER_TEXT = "Created by Freak - Royal Reapers"
+
+def make_embed(*args, **kwargs):
+    embed = discord.Embed(*args, **kwargs)
+    embed.set_footer(text=EMBED_FOOTER_TEXT)
+    return embed
+
+
 @dataclass
 class Enemy:
     name: str; health: int; max_health: int; damage: int; money_reward: int; xp_reward: int; effects: dict[str, int] = field(default_factory=dict)
@@ -1601,9 +1609,15 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
         return [noop_message]
 
     messages: list[str] = []
+    # Reload is a real combat action, but pending DoT resolves after the reload
+    # so a bleed/burn/poison tick can finish the enemy without cancelling the
+    # reload the player just performed. If the DoT does not kill the enemy,
+    # the normal enemy attack still happens below.
+    if action == "reload":
+        pass
     # Flee exits before the next enemy turn, so it does not take a pending DoT tick.
-    # Every other action begins with pending DoT damage, including healing.
-    if action != "flee":
+    # All other actions begin with pending DoT damage, including healing.
+    elif action != "flee":
         messages.extend(_apply_damage_over_time(player))
         if player.enemy is None or player.enemy.health <= 0:
             messages.extend(_finish_enemy(player))
@@ -2010,6 +2024,13 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
         player.magazine += amount
         player.spare_ammo[player.ammo_name] = spare - amount
         messages.append(f"🔄 Reloaded {amount} {player.ammo_name}. {player.spare_ammo[player.ammo_name]} spare left.")
+
+        # Resolve pending DoT after the reload has completed. If it kills the
+        # enemy, finish the enemy immediately and skip the enemy's attack.
+        messages.extend(_apply_damage_over_time(player))
+        if enemy.health <= 0:
+            messages.extend(_finish_enemy(player))
+            return messages
     elif action == "flee":
         # USER WANTS: flee still rewards players + full heal
         player.spare_ammo[player.ammo_name] = player.spare_ammo.get(player.ammo_name, 0) + player.magazine
@@ -3000,7 +3021,7 @@ class DailyCrateView(PlayerView):
     def build_embed(self, player: Survivor) -> discord.Embed:
         claimable, remaining = daily_crate_status(player)
         cash, ammo, xp = daily_crate_rewards(player)
-        embed = discord.Embed(
+        embed = make_embed(
             title="🎁 DAILY SURVIVOR CRATE",
             description="A free supply drop for survivors who keep coming back.\n\nYour reward scales gently with your level.",
             color=discord.Color.green() if claimable else discord.Color.blurple(),
@@ -3224,7 +3245,7 @@ class CombatView(PlayerView):
             player = self.store.get(self.user_id)
             msgs = take_action(player, "attack")
             if not player.run_active:
-                embed = discord.Embed(title="☠️ Run Ended", description="\n".join(msgs), color=discord.Color.red())
+                embed = make_embed(title="☠️ Run Ended", description="\n".join(msgs), color=discord.Color.red())
                 embed.add_field(name="🌊 Waves", value=f"{player.wave - 1 if player.run_zombies_killed>0 else 0} survived\nReached Wave {player.wave}", inline=True)
                 embed.add_field(name="🧟 Kills", value=f"{player.run_zombies_killed} zombies", inline=True)
                 embed.add_field(name="💰 Rewards", value=f"+${player.run_money_earned}\n+{player.run_xp_earned} XP", inline=True)
@@ -3246,7 +3267,7 @@ class CombatView(PlayerView):
             player=self.store.get(self.user_id)
             msgs=take_action(player, "void_bazooka")
             if not player.run_active:
-                embed=discord.Embed(title="☠️ Run Ended", description="\n".join(msgs), color=discord.Color.red())
+                embed=make_embed(title="☠️ Run Ended", description="\n".join(msgs), color=discord.Color.red())
                 embed.add_field(name="🌊 Waves", value=f"{player.wave - 1 if player.run_zombies_killed>0 else 0} survived\nReached Wave {player.wave}", inline=True)
                 embed.add_field(name="🧟 Kills", value=f"{player.run_zombies_killed} zombies", inline=True)
                 embed.add_field(name="💰 Rewards", value=f"+${player.run_money_earned}\n+{player.run_xp_earned} XP", inline=True)
@@ -3272,7 +3293,7 @@ class CombatView(PlayerView):
             player = self.store.get(self.user_id)
             msgs = take_action(player, "reload")
             if not player.run_active:
-                embed = discord.Embed(title="☠️ Run Ended", description="\n".join(msgs), color=discord.Color.red())
+                embed = make_embed(title="☠️ Run Ended", description="\n".join(msgs), color=discord.Color.red())
                 embed.add_field(name="🌊 Waves", value=f"{player.wave - 1 if player.run_zombies_killed>0 else 0} survived\nReached Wave {player.wave}", inline=True)
                 embed.add_field(name="🧟 Kills", value=f"{player.run_zombies_killed} zombies", inline=True)
                 embed.add_field(name="💰 Rewards", value=f"+${player.run_money_earned}\n+{player.run_xp_earned} XP", inline=True)
@@ -3301,7 +3322,7 @@ class CombatView(PlayerView):
             player = self.store.get(self.user_id)
             msgs = take_action(player, "flee")
             if not player.run_active:
-                embed = discord.Embed(title="🏃 Escaped!", description="\n".join(msgs), color=discord.Color.blue())
+                embed = make_embed(title="🏃 Escaped!", description="\n".join(msgs), color=discord.Color.blue())
                 embed.add_field(name="🌊 Waves", value=f"{player.wave - 1 if player.run_zombies_killed>0 else 0} survived\nReached Wave {player.wave}", inline=True)
                 embed.add_field(name="🧟 Kills", value=f"{player.run_zombies_killed} zombies", inline=True)
                 embed.add_field(name="💰 Rewards", value=f"+${player.run_money_earned}\n+{player.run_xp_earned} XP", inline=True)
@@ -3405,7 +3426,7 @@ class VoidPerkView(PlayerView):
         self.add_item(back)
 
     def get_embed(self, player, extra_msgs=None):
-        embed = discord.Embed(
+        embed = make_embed(
             title="◈ THE VOID — PERKS",
             description=(
                 f"**Essence:** ◈{player.void_essence:,}\n"
@@ -4453,7 +4474,7 @@ class VoidUpgradeView(PlayerView):
         lvl=max(0,min(VOID_UPGRADE_MAX,player.void_weapon_level))
         dmg=baz["damage"]+lvl*VOID_BAZOOKA_DAMAGE_PER_LEVEL
         boss_mult=baz["level_10_boss_mult"] if lvl>=VOID_UPGRADE_MAX else baz["boss_mult"]
-        embed=discord.Embed(title="🌑 The Void",description=f"◈ **Essence:** {player.void_essence:,}\n💰 **Balance:** ${player.money:,}\n🎚️ **Level:** {player.level}",color=discord.Color.dark_purple())
+        embed=make_embed(title="🌑 The Void",description=f"◈ **Essence:** {player.void_essence:,}\n💰 **Balance:** ${player.money:,}\n🎚️ **Level:** {player.level}",color=discord.Color.dark_purple())
         if extra_msgs:
             embed.add_field(name="Result",value="\n".join(extra_msgs)[:1024],inline=False)
         owned="Void Bazooka" in player.void_weapons_owned
@@ -4594,23 +4615,27 @@ async def on_guild_join(guild: discord.Guild):
 async def zombie_cmd(interaction: discord.Interaction):
     try:
         await interaction.response.defer()
-        player = game_store.get(interaction.user.id)
-        name = getattr(interaction.user, "display_name", None) or getattr(interaction.user, "global_name", None) or interaction.user.name
-        player.leaderboard_name = name[:32]
-        if interaction.guild and str(interaction.guild.id) not in player.leaderboard_guilds:
-            player.leaderboard_guilds.append(str(interaction.guild.id))
-        recovery_msgs = []
-        if player.run_active and player.enemy is None:
-            recovery_msgs = recover_stuck_run(player)
-            print(f"[RECOVERY] /zombie repaired player {interaction.user.id}: {recovery_msgs}")
-        await game_store.save_one_async(str(interaction.user.id))
-        print(f"[CMD] /zombie by {interaction.user.id} name={name} level={player.level}")
-        content = status(player, display_name=name)
-        if recovery_msgs:
-            content += "\n\n" + "\n".join(recovery_msgs)
-        view = ZombieMenuView(interaction.user.id, game_store, display_name=name)
+        user_id = interaction.user.id
+        lock = game_store.action_lock(user_id)
+        async with lock:
+            player = game_store.get(user_id)
+            name = getattr(interaction.user, "display_name", None) or getattr(interaction.user, "global_name", None) or interaction.user.name
+            player.leaderboard_name = name[:32]
+            if interaction.guild and str(interaction.guild.id) not in player.leaderboard_guilds:
+                player.leaderboard_guilds.append(str(interaction.guild.id))
+            recovery_msgs = []
+            if player.run_active and player.enemy is None:
+                recovery_msgs = recover_stuck_run(player)
+                print(f"[RECOVERY] /zombie repaired player {user_id}: {recovery_msgs}")
+            content = status(player, display_name=name)
+            if recovery_msgs:
+                content += "\n\n" + "\n".join(recovery_msgs)
+            view = ZombieMenuView(user_id, game_store, display_name=name)
+
+        await game_store.save_one_async(str(user_id))
+        print(f"[CMD] /zombie by {user_id} name={name} level={player.level}")
         await interaction.followup.send(content=content, view=view)
-        print(f"[CMD] /zombie sent OK for {interaction.user.id}")
+        print(f"[CMD] /zombie sent OK for {user_id}")
     except Exception as e:
         print(f"[CMD ERROR] /zombie failed: {e}")
         import traceback
