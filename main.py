@@ -188,11 +188,11 @@ WEAPONS: dict[str, dict[str, Any]] = {
         "desc": "Fast-firing weapon that unleashes 3 rounds per attack, trading per-shot damage for volume."
     },
     "Sawed-Off": {
-        "damage": 70, "mag": 2, "price": 6000, "unlock_level": 90, "shots": 1,
+        "damage": 110, "mag": 2, "price": 6000, "unlock_level": 90, "shots": 1,
         "desc": "Brutal short-range shotgun delivering massive single-shot damage from a 2-round magazine."
     },
     "Tactical Sniper": {
-        "damage": 180, "mag": 1, "price": 15000, "unlock_level": 125, "shots": 1,
+        "damage": 225, "mag": 1, "price": 15000, "unlock_level": 125, "shots": 1,
         "desc": "Heavy late-game single-shot sniper. Massive damage, but starts with a 1-round magazine and relies on Magazine upgrades for special ammo."
     },
 }
@@ -214,8 +214,8 @@ WEAPON_DAMAGE_PER_UPGRADE: dict[str, int] = {
     "Shotgun": 3,
     "Rifle": 4,
     "SMG": 4,
-    "Sawed-Off": 6,
-    "Tactical Sniper": 7,
+    "Sawed-Off": 15,
+    "Tactical Sniper": 19,
 }
 WEAPON_UPGRADE_RARITY_MULT: dict[str, float] = {
     "Pistol": 1.00, "Shotgun": 1.12, "Rifle": 1.25, "SMG": 1.38, "Sawed-Off": 1.52, "Tactical Sniper": 1.70,
@@ -4756,6 +4756,10 @@ async def on_ready():
             print(f"[SLASH] Failed guild sync for {guild.id} ({guild.name}): {e}")
 
     bot._guild_commands_synced = True
+    await bot.change_presence(
+        status=discord.Status.online,
+        activity=discord.Game(name="🧟 Zombie Survival"),
+    )
     print(f"[SLASH] Guild command sync complete: {total} commands across {len(bot.guilds)} guild(s)")
 
 
