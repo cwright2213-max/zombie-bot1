@@ -115,7 +115,7 @@ def combat_embed(player, last_msgs=None):
         clean = [m for m in last_msgs if m and "HP restored" not in m and "Waves survived" not in m][:3]
         if clean:
             embed.add_field(name="⚔️ Last action", value="\n".join(clean)[:1024], inline=False)
-    embed.set_footer(text=f"💰 ${player.money} | ⭐ {player.stars} | ✨ {player.xp} XP | {player.ammo_name} {player.magazine}/{effective_magazine_size(player)}")
+    set_embed_footer(embed, text=f"💰 ${player.money} | ⭐ {player.stars} | ✨ {player.xp} XP | {player.ammo_name} {player.magazine}/{effective_magazine_size(player)}")
     return embed
 
 
@@ -423,8 +423,15 @@ EMBED_FOOTER_TEXT = "Created by Freak - Royal Reapers"
 
 def make_embed(*args, **kwargs):
     embed = discord.Embed(*args, **kwargs)
-    embed.set_footer(text=EMBED_FOOTER_TEXT)
+    set_embed_footer(embed, text=EMBED_FOOTER_TEXT)
     return embed
+
+
+def set_embed_footer(embed, text: str | None = None):
+    if text:
+        embed.set_footer(text=f"{text} • {EMBED_FOOTER_TEXT}")
+    else:
+        embed.set_footer(text=EMBED_FOOTER_TEXT)
 
 
 @dataclass
@@ -3045,7 +3052,7 @@ class DailyCrateView(PlayerView):
             value=f"Level **{player.level}** • 💰 ${player.money:,} • 🌍 {player.zone_name}",
             inline=False,
         )
-        embed.set_footer(text="No Essence • No shop • No upgrades from this screen")
+        set_embed_footer(embed, text="No Essence • No shop • No upgrades from this screen")
         return embed
 
     def refresh_view(self):
@@ -3249,7 +3256,7 @@ class CombatView(PlayerView):
                 embed.add_field(name="🌊 Waves", value=f"{player.wave - 1 if player.run_zombies_killed>0 else 0} survived\nReached Wave {player.wave}", inline=True)
                 embed.add_field(name="🧟 Kills", value=f"{player.run_zombies_killed} zombies", inline=True)
                 embed.add_field(name="💰 Rewards", value=f"+${player.run_money_earned}\n+{player.run_xp_earned} XP", inline=True)
-                embed.set_footer(text=f"HP restored to {player.max_health}/{player.max_health} • Press any button to continue")
+                set_embed_footer(embed, text=f"HP restored to {player.max_health}/{player.max_health} • Press any button to continue")
                 next_view = RunEndedView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), end_embed=embed)
             else:
                 embed = combat_embed(player, msgs)
@@ -3271,7 +3278,7 @@ class CombatView(PlayerView):
                 embed.add_field(name="🌊 Waves", value=f"{player.wave - 1 if player.run_zombies_killed>0 else 0} survived\nReached Wave {player.wave}", inline=True)
                 embed.add_field(name="🧟 Kills", value=f"{player.run_zombies_killed} zombies", inline=True)
                 embed.add_field(name="💰 Rewards", value=f"+${player.run_money_earned}\n+{player.run_xp_earned} XP", inline=True)
-                embed.set_footer(text=f"HP restored to {player.max_health}/{player.max_health} • Press any button to continue")
+                set_embed_footer(embed, text=f"HP restored to {player.max_health}/{player.max_health} • Press any button to continue")
                 next_view = RunEndedView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), end_embed=embed)
             else:
                 embed=combat_embed(player,msgs)
@@ -3297,7 +3304,7 @@ class CombatView(PlayerView):
                 embed.add_field(name="🌊 Waves", value=f"{player.wave - 1 if player.run_zombies_killed>0 else 0} survived\nReached Wave {player.wave}", inline=True)
                 embed.add_field(name="🧟 Kills", value=f"{player.run_zombies_killed} zombies", inline=True)
                 embed.add_field(name="💰 Rewards", value=f"+${player.run_money_earned}\n+{player.run_xp_earned} XP", inline=True)
-                embed.set_footer(text=f"HP restored to {player.max_health}/{player.max_health} • Press any button to continue")
+                set_embed_footer(embed, text=f"HP restored to {player.max_health}/{player.max_health} • Press any button to continue")
                 next_view = RunEndedView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), end_embed=embed)
             else:
                 embed = combat_embed(player, msgs)
@@ -3326,7 +3333,7 @@ class CombatView(PlayerView):
                 embed.add_field(name="🌊 Waves", value=f"{player.wave - 1 if player.run_zombies_killed>0 else 0} survived\nReached Wave {player.wave}", inline=True)
                 embed.add_field(name="🧟 Kills", value=f"{player.run_zombies_killed} zombies", inline=True)
                 embed.add_field(name="💰 Rewards", value=f"+${player.run_money_earned}\n+{player.run_xp_earned} XP", inline=True)
-                embed.set_footer(text=f"HP restored to {player.max_health}/{player.max_health} • Press any button to continue")
+                set_embed_footer(embed, text=f"HP restored to {player.max_health}/{player.max_health} • Press any button to continue")
                 next_view = RunEndedView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), end_embed=embed)
             else:
                 embed = combat_embed(player, msgs)
@@ -3466,7 +3473,7 @@ class VoidPerkView(PlayerView):
 
         if extra_msgs:
             embed.add_field(name="⚔️ Result", value="\n".join(extra_msgs)[:1024], inline=False)
-        embed.set_footer(text="Activation costs Essence • Cooldowns reset after enough kills")
+        set_embed_footer(embed, text="Activation costs Essence • Cooldowns reset after enough kills")
         return embed
 
 
@@ -4492,7 +4499,7 @@ class VoidUpgradeView(PlayerView):
             cost="MAX" if plvl>=10 else f"◈{get_void_perk_cost(player,pn)}"
             perk_lines.append(f"{icon} **{pn.split()[-1]}** L{plvl}/10 • {effect} • Next {cost}")
         embed.add_field(name="⚡ Void Perks",value="\n".join(perk_lines),inline=False)
-        embed.set_footer(text="Perks work in The Void and can modify the Bazooka.")
+        set_embed_footer(embed, text="Perks work in The Void and can modify the Bazooka.")
         return embed
 
     def get_shop_text(self, player, extra_msgs=None):
@@ -4993,9 +5000,9 @@ def _resolve_xp_boost_target(interaction: discord.Interaction, target_text: str)
 @app_commands.describe(target="Player name/mention/ID, or type Global for everyone")
 async def xpbooster(interaction: discord.Interaction, target: str):
     """Owner-only temporary 1.5x XP grant. Personal/global boosts do not stack."""
-    await interaction.response.defer(ephemeral=True)
+    await interaction.response.defer(ephemeral=False)
     if not is_owner(interaction):
-        await interaction.followup.send("❌ Owner only.", ephemeral=True)
+        await interaction.followup.send("❌ Owner only.", ephemeral=False)
         return
 
     kind, value = _resolve_xp_boost_target(interaction, target)
@@ -5013,16 +5020,16 @@ async def xpbooster(interaction: discord.Interaction, target: str):
             f"🌍 **GLOBAL 1.5x XP ACTIVATED!**\n✨ Everyone earns **1.5× XP** for 24 hours.\n"
             f"⏰ Expires <t:{int(expiry.timestamp())}:F> (<t:{int(expiry.timestamp())}:R>)\n"
             f"⚠️ Personal + global boosts do **not** stack to 2.25×.",
-            ephemeral=True,
+            ephemeral=False,
         )
         return
 
     if kind == "ambiguous":
         names = ", ".join(m.mention for m in value[:10])
-        await interaction.followup.send(f"❌ That name matches multiple players: {names}\nUse a mention or Discord user ID instead.", ephemeral=True)
+        await interaction.followup.send(f"❌ That name matches multiple players: {names}\nUse a mention or Discord user ID instead.", ephemeral=False)
         return
     if kind != "player" or value is None:
-        await interaction.followup.send("❌ Player not found. Use a mention, Discord user ID, exact server name, or `Global`.", ephemeral=True)
+        await interaction.followup.send("❌ Player not found. Use a mention, Discord user ID, exact server name, or `Global`.", ephemeral=False)
         return
 
     async with game_store.action_lock(value):
@@ -5033,7 +5040,7 @@ async def xpbooster(interaction: discord.Interaction, target: str):
         f"✨ **1.5x XP ACTIVATED** for <@{value}>!\n"
         f"⏰ Expires <t:{int(expiry.timestamp())}:F> (<t:{int(expiry.timestamp())}:R>)\n"
         f"XP earned during the boost is increased by 50%. Personal + global boosts never stack to 2.25×.",
-        ephemeral=True,
+        ephemeral=False,
     )
 
 
@@ -5046,9 +5053,9 @@ def _resolve_cash_boost_target(interaction: discord.Interaction, target_text: st
 @app_commands.describe(target="Player name/mention/ID, or type Global for everyone")
 async def moneybooster(interaction: discord.Interaction, target: str):
     """Owner-only temporary 1.5x Cash grant. Personal/global boosts do not stack."""
-    await interaction.response.defer(ephemeral=True)
+    await interaction.response.defer(ephemeral=False)
     if not is_owner(interaction):
-        await interaction.followup.send("❌ Owner only.", ephemeral=True)
+        await interaction.followup.send("❌ Owner only.", ephemeral=False)
         return
 
     kind, value = _resolve_cash_boost_target(interaction, target)
@@ -5066,16 +5073,16 @@ async def moneybooster(interaction: discord.Interaction, target: str):
             f"🌍 **GLOBAL 1.5x CASH ACTIVATED!**\n💰 Everyone earns **1.5× Cash** for 24 hours.\n"
             f"⏰ Expires <t:{int(expiry.timestamp())}:F> (<t:{int(expiry.timestamp())}:R>)\n"
             f"⚠️ Personal + global cash boosts do **not** stack to 2.25×.",
-            ephemeral=True,
+            ephemeral=False,
         )
         return
 
     if kind == "ambiguous":
         names = ", ".join(m.mention for m in value[:10])
-        await interaction.followup.send(f"❌ That name matches multiple players: {names}\nUse a mention or Discord user ID instead.", ephemeral=True)
+        await interaction.followup.send(f"❌ That name matches multiple players: {names}\nUse a mention or Discord user ID instead.", ephemeral=False)
         return
     if kind != "player" or value is None:
-        await interaction.followup.send("❌ Player not found. Use a mention, Discord user ID, exact server name, or `Global`.", ephemeral=True)
+        await interaction.followup.send("❌ Player not found. Use a mention, Discord user ID, exact server name, or `Global`.", ephemeral=False)
         return
 
     async with game_store.action_lock(value):
@@ -5086,8 +5093,57 @@ async def moneybooster(interaction: discord.Interaction, target: str):
         f"💰 **1.5x CASH ACTIVATED** for <@{value}>!\n"
         f"⏰ Expires <t:{int(expiry.timestamp())}:F> (<t:{int(expiry.timestamp())}:R>)\n"
         f"Cash earned during the boost is increased by 50%. Personal + global boosts never stack to 2.25×.",
-        ephemeral=True,
+        ephemeral=False,
     )
+
+
+def _booster_status_line(label: str, expiry_iso: str | None) -> str:
+    if not expiry_iso:
+        return f"{label}: ❌ **Inactive**"
+    try:
+        expiry = datetime.fromisoformat(expiry_iso)
+        if expiry.tzinfo is None:
+            expiry = expiry.replace(tzinfo=timezone.utc)
+        expiry_ts = int(expiry.timestamp())
+    except (TypeError, ValueError, OverflowError):
+        return f"{label}: ❌ **Inactive**"
+    if expiry_ts <= int(datetime.now(timezone.utc).timestamp()):
+        return f"{label}: ❌ **Inactive**"
+    return f"{label}: ✅ **Active** — <t:{expiry_ts}:R> remaining"
+
+
+@bot.tree.command(name="xpboosterstatus", description="Check the remaining time on XP boosters")
+async def xpboosterstatus(interaction: discord.Interaction):
+    """Show personal and global XP booster status. Available to everyone."""
+    player = game_store.get(interaction.user.id)
+    embed = make_embed(
+        title="✨ XP BOOSTER STATUS",
+        description=(
+            f"{_booster_status_line('🌍 Global XP Booster', GLOBAL_XP_BOOST_UNTIL)}\n"
+            f"{_booster_status_line('👤 Your Personal XP Booster', getattr(player, 'xp_boost_until', None))}\n\n"
+            f"**Current XP Multiplier:** **{xp_boost_multiplier(player):.1f}×**\n"
+            "⚠️ Personal + global boosters do **not** stack."
+        ),
+        color=discord.Color.blue(),
+    )
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="moneyboosterstatus", description="Check the remaining time on money boosters")
+async def moneyboosterstatus(interaction: discord.Interaction):
+    """Show personal and global money booster status. Available to everyone."""
+    player = game_store.get(interaction.user.id)
+    embed = make_embed(
+        title="💰 MONEY BOOSTER STATUS",
+        description=(
+            f"{_booster_status_line('🌍 Global Money Booster', GLOBAL_CASH_BOOST_UNTIL)}\n"
+            f"{_booster_status_line('👤 Your Personal Money Booster', getattr(player, 'cash_boost_until', None))}\n\n"
+            f"**Current Cash Multiplier:** **{cash_boost_multiplier(player):.1f}×**\n"
+            "⚠️ Personal + global boosters do **not** stack."
+        ),
+        color=discord.Color.gold(),
+    )
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 @bot.tree.command(name="addmoney", description="[ADMIN] Add money to a player")
