@@ -489,6 +489,11 @@ class Survivor:
     greedy_soul_level: int = 0
     evil_soul_level: int = 0
     safe_soul_level: int = 0
+    # Wave 50 special-boss currencies/upgrades. These are Rebirth-scoped and
+    # are intentionally wiped by perform_rebirth().
+    special_tokens: dict[str, int] = field(default_factory=dict)
+    special_token_upgrades: dict[str, int] = field(default_factory=dict)
+    special_poison_turns: int = 0
     # --- STAR UPGRADES (prestige) - CUSTOM 4 ---
     star_dodge_upgrades: int = 0; star_magical_upgrades: int = 0
     star_medic_upgrades: int = 0; star_pet_upgrades: int = 0; star_xp_upgrades: int = 0
@@ -566,23 +571,25 @@ class Survivor:
             + self.weapon_upgrade_level("damage") * damage_per_upgrade
             + self.evil_soul_level * SOUL_EVIL_DAMAGE_PER_LEVEL
             + self.safe_soul_level * SOUL_SAFE_DAMAGE_PER_LEVEL
+            + int(special_token_bonus(self, "damage"))
         )
         shots = int(base.get("shots", 1))
         self.magazine_size = (
             base["mag"]
             + self.weapon_upgrade_level("mag") * shots
             + self.evil_soul_level * SOUL_EVIL_MAG_PER_LEVEL
+            + int(special_token_bonus(self, "mag"))
         )
-        self.max_health = 100 + self.health_upgrades * 20 + self.safe_soul_level * SOUL_SAFE_HP_PER_LEVEL
+        self.max_health = 100 + self.health_upgrades * 20 + self.safe_soul_level * SOUL_SAFE_HP_PER_LEVEL + int(special_token_bonus(self, "hp"))
 
     @property
     def crit_chance(self) -> float:
         level = self.weapon_upgrade_level("crit")
         weapon_bonus = 0.0 if level <= 0 else min(0.02 + (level - 1) * 0.005, 0.40)
-        return min(weapon_bonus + self.evil_soul_level * SOUL_EVIL_CRIT_PER_LEVEL, 1.0)
+        return min(weapon_bonus + self.evil_soul_level * SOUL_EVIL_CRIT_PER_LEVEL + special_token_bonus(self, "crit"), 1.0)
     @property
     def armor_reduction(self) -> int:
-        return self.armor_upgrades * 2
+        return self.armor_upgrades * 2 + int(special_token_bonus(self, "armor"))
     @property
     def scavenger_bonus(self) -> float:
         return 1.0 + self.scavenger_upgrades * 0.10
@@ -687,6 +694,16 @@ class Survivor:
                 data[field_name] = max(0, int(data[field_name] or 0))
             except (TypeError, ValueError):
                 data[field_name] = 0
+        if not isinstance(data.get("special_tokens"), dict):
+            data["special_tokens"] = {}
+        if not isinstance(data.get("special_token_upgrades"), dict):
+            data["special_token_upgrades"] = {}
+        data["special_tokens"] = {str(k): max(0, int(v or 0)) for k, v in data["special_tokens"].items() if str(k) in {cfg["token_field"] for cfg in SPECIAL_TOKEN_CONFIG.values()}}
+        data["special_token_upgrades"] = {str(k): max(0, min(SPECIAL_TOKEN_MAX_LEVEL, int(v or 0))) for k, v in data["special_token_upgrades"].items()}
+        try:
+            data["special_poison_turns"] = max(0, int(data.get("special_poison_turns", 0) or 0))
+        except (TypeError, ValueError):
+            data["special_poison_turns"] = 0
         enemy_data = data.get("enemy")
         if isinstance(enemy_data, dict):
             enemy_allowed = {k: v for k, v in enemy_data.items() if k in Enemy.__dataclass_fields__}
@@ -810,6 +827,151 @@ ZONE_BOSS_MILESTONE = 20
 ZONE_BOSS_HP_BASE = 900
 ZONE_BOSS_HP_WAVE_STEP = 25
 
+# --- WAVE 50 SPECIAL BOSS SYSTEM -------------------------------------------
+# Every Wave 50/100/150/... is a dedicated special boss instead of the normal
+# Zone Boss. Their HP and attack scaling are intentionally independent from the
+# normal Zone Boss HP formula: each additional 50 waves multiplies HP by 2.5
+# and attack damage by 2.0. Cash/XP scale by +50% per additional 50 waves.
+SPECIAL_BOSS_CONFIG: dict[str, dict[str, Any]] = {
+    "Graveyard": {
+        "key": "DeadReaper", "display": "The Dead Reaper",
+        "base_hp": 2500, "base_damage": 30, "cash": 25000, "xp": 5000,
+        "token_name": "Graveyard Token", "token_field": "graveyard",
+    },
+    "Mega Death City": {
+        "key": "CorpseKing", "display": "The Corpse King",
+        "base_hp": 3500, "base_damage": 40, "cash": 50000, "xp": 7500,
+        "token_name": "Mega Death City Token", "token_field": "mega_death_city",
+    },
+    "Frostbitten Outskirts": {
+        "key": "IceTitan", "display": "The Ice Titan",
+        "base_hp": 5000, "base_damage": 50, "cash": 75000, "xp": 10000,
+        "token_name": "Frostbitten Token", "token_field": "frostbitten",
+    },
+    "Toxic Wasteland": {
+        "key": "MutatedAbomination", "display": "The Mutated Abomination",
+        "base_hp": 7000, "base_damage": 60, "cash": 125000, "xp": 15000,
+        "token_name": "Toxic Wasteland Token", "token_field": "toxic_wasteland",
+    },
+    "The Void": {
+        "key": "TheEnd", "display": "The End",
+        "base_hp": 10000, "base_damage": 80, "cash": 200000, "xp": 25000,
+        "token_name": "Void Token", "token_field": "void",
+    },
+}
+SPECIAL_BOSS_MILESTONE = 50
+SPECIAL_BOSS_HP_MULT_PER_50 = 2.5
+SPECIAL_BOSS_DAMAGE_MULT_PER_50 = 2.0
+SPECIAL_BOSS_REWARD_MULT_PER_50 = 1.5
+
+# Token upgrades are finite (10 levels). Level n costs exactly n tokens, so
+# maxing one upgrade costs 55 tokens. These bonuses are intentionally modest
+# because they stack with the existing normal/Soul progression.
+SPECIAL_TOKEN_CONFIG: dict[str, dict[str, Any]] = {
+    "Graveyard": {
+        "token_name": "Graveyard Token",
+        "token_field": "graveyard",
+        "upgrades": [
+            ("reaper_vitality", "🩸 Reaper's Vitality", "hp", 10, "+10 Max HP"),
+            ("reaper_armour", "🛡️ Reaper's Armour", "armor", 1, "+1 Armour"),
+            ("reaper_precision", "🎯 Reaper's Precision", "crit", 0.0025, "+0.25% Crit"),
+        ],
+    },
+    "Mega Death City": {
+        "token_name": "Mega Death City Token",
+        "token_field": "mega_death_city",
+        "upgrades": [
+            ("kings_fortune", "💰 King's Fortune", "cash", 0.01, "+1% Cash"),
+            ("kings_experience", "✨ King's Experience", "xp", 0.01, "+1% XP"),
+            ("kings_essence", "◈ King's Essence", "essence", 0.01, "+1% Void Essence"),
+        ],
+    },
+    "Frostbitten Outskirts": {
+        "token_name": "Frostbitten Token",
+        "token_field": "frostbitten",
+        "upgrades": [
+            ("titan_strength", "⚔️ Titan's Strength", "damage", 2, "+2 Weapon Damage"),
+            ("titan_magazine", "📦 Titan's Magazine", "mag", 1, "+1 Magazine"),
+            ("titan_precision", "🎯 Titan's Precision", "crit", 0.0025, "+0.25% Crit"),
+        ],
+    },
+    "Toxic Wasteland": {
+        "token_name": "Toxic Wasteland Token",
+        "token_field": "toxic_wasteland",
+        "upgrades": [
+            ("abomination_strength", "⚔️ Abomination's Strength", "damage", 2, "+2 Weapon Damage"),
+            ("abomination_flesh", "❤️ Abomination's Flesh", "hp", 10, "+10 Max HP"),
+            ("abomination_arsenal", "📦 Abomination's Arsenal", "mag", 1, "+1 Magazine"),
+        ],
+    },
+    "The Void": {
+        "token_name": "Void Token",
+        "token_field": "void",
+        "upgrades": [
+            ("void_power", "⚔️ Void Power", "damage", 3, "+3 Weapon Damage"),
+            ("void_capacity", "📦 Void Capacity", "mag", 1, "+1 Magazine"),
+            ("void_sight", "🎯 Void Sight", "crit", 0.005, "+0.5% Crit"),
+            ("void_essence", "◈ Void Essence", "essence", 0.01, "+1% Void Essence"),
+        ],
+    },
+}
+SPECIAL_TOKEN_MAX_LEVEL = 10
+SPECIAL_TOKEN_LEVEL_COSTS = tuple(range(1, SPECIAL_TOKEN_MAX_LEVEL + 1))
+
+def is_special_boss_wave(wave: int) -> bool:
+    return int(wave) >= SPECIAL_BOSS_MILESTONE and int(wave) % SPECIAL_BOSS_MILESTONE == 0
+
+def special_boss_wave_index(wave: int) -> int:
+    return max(0, (int(wave) - SPECIAL_BOSS_MILESTONE) // SPECIAL_BOSS_MILESTONE)
+
+def _make_special_boss_enemy(player: Survivor) -> Enemy:
+    cfg = SPECIAL_BOSS_CONFIG[player.zone_name]
+    idx = special_boss_wave_index(player.wave)
+    health = int(round(cfg["base_hp"] * (SPECIAL_BOSS_HP_MULT_PER_50 ** idx)))
+    damage = max(1, int(round(cfg["base_damage"] * (SPECIAL_BOSS_DAMAGE_MULT_PER_50 ** idx))))
+    return Enemy(
+        name=cfg["display"], health=health, max_health=health, damage=damage,
+        money_reward=cfg["cash"], xp_reward=cfg["xp"],
+        is_zone_boss=True, boss_key=cfg["key"],
+        is_void_boss=(cfg["key"] == "TheEnd"),
+    )
+
+def special_boss_reward_multiplier(wave: int) -> float:
+    return SPECIAL_BOSS_REWARD_MULT_PER_50 ** special_boss_wave_index(wave)
+
+def special_token_level(player: Survivor, upgrade_key: str) -> int:
+    levels = getattr(player, "special_token_upgrades", {})
+    if not isinstance(levels, dict):
+        return 0
+    return max(0, min(SPECIAL_TOKEN_MAX_LEVEL, int(levels.get(upgrade_key, 0) or 0)))
+
+def special_token_balance(player: Survivor, token_field: str) -> int:
+    tokens = getattr(player, "special_tokens", {})
+    if not isinstance(tokens, dict):
+        return 0
+    return max(0, int(tokens.get(token_field, 0) or 0))
+
+def special_token_bonus(player: Survivor, stat: str) -> float:
+    total = 0.0
+    levels = getattr(player, "special_token_upgrades", {})
+    if not isinstance(levels, dict):
+        return 0.0
+    for cfg in SPECIAL_TOKEN_CONFIG.values():
+        for key, _label, kind, per_level, _desc in cfg["upgrades"]:
+            if kind == stat:
+                total += special_token_level(player, key) * float(per_level)
+    return total
+
+def special_token_cash_multiplier(player: Survivor) -> float:
+    return 1.0 + special_token_bonus(player, "cash")
+
+def special_token_xp_multiplier(player: Survivor) -> float:
+    return 1.0 + special_token_bonus(player, "xp")
+
+def special_token_essence_multiplier(player: Survivor) -> float:
+    return 1.0 + special_token_bonus(player, "essence")
+
+
 def is_zone_boss_wave(wave: int) -> bool:
     return int(wave) >= ZONE_BOSS_MILESTONE and int(wave) % ZONE_BOSS_MILESTONE == 0
 
@@ -851,6 +1013,17 @@ def _boss_status_text(enemy: Enemy) -> str:
         if enemy.health <= enemy.max_health * 0.20:
             count = enemy.boss_attacks_taken % 2
         return f"🌀 Erasure: **{count}/{2 if enemy.health <= enemy.max_health * 0.20 else 3}**"
+    if enemy.boss_key == "DeadReaper":
+        count = enemy.effects.get("special_attack_count", 0) % 3
+        return f"☠️ Reaper attacks: **{count}/3**"
+    if enemy.boss_key == "CorpseKing":
+        return f"👑 King attacks: **{enemy.effects.get('special_attack_count', 0) % 3}/3**"
+    if enemy.boss_key == "IceTitan":
+        return f"❄️ Titan attacks: **{enemy.effects.get('special_attack_count', 0) % 3}/3**" + (f" • 📦 Mag -1 for {enemy.effects.get('ice_titan_mag_reduction', 0)} attacks" if enemy.effects.get('ice_titan_mag_reduction', 0) else "")
+    if enemy.boss_key == "MutatedAbomination":
+        return f"☣️ Mutation attacks: **{enemy.effects.get('special_attack_count', 0) % 3}/3**"
+    if enemy.boss_key == "TheEnd":
+        return f"🕳️ End attacks: **{enemy.effects.get('special_attack_count', 0) % 3}/3**"
     return ""
 
 
@@ -859,6 +1032,8 @@ def effective_magazine_size(player: Survivor) -> int:
     size = int(player.magazine_size)
     enemy = player.enemy
     if enemy and enemy.is_zone_boss and enemy.boss_key == "Wendigo" and enemy.effects.get("boss_frost", 0) >= 4:
+        size = max(1, size - 1)
+    if enemy and enemy.is_zone_boss and enemy.boss_key == "IceTitan" and enemy.effects.get("ice_titan_mag_reduction", 0) > 0:
         size = max(1, size - 1)
     return size
 
@@ -936,6 +1111,11 @@ def spawn_enemy(player: Survivor, recovery: bool = False) -> Enemy:
     # Zone Boss milestones always take priority over every other encounter.
     # This makes boss waves deterministic and guarantees no Bloater/normal zombie
     # can coexist with the Zone Boss.
+    if is_special_boss_wave(player.wave):
+        boss = _make_special_boss_enemy(player)
+        player.zombies_remaining = 1
+        return boss
+
     if is_zone_boss_wave(player.wave):
         boss = _make_zone_boss_enemy(player)
         player.zombies_remaining = 1
@@ -1227,6 +1407,37 @@ def _apply_boss_player_attack_counter(player: Survivor, action_damage: int) -> l
             enemy.effects["erasure_effect"] = effect
             labels = {"weapon":"🔫 Weapon Erasure: next attack deals -25% damage.", "defence":"🛡️ Defence Erasure: next incoming attack ignores 10 Armour.", "medical":"💉 Medical Erasure: next healing restores 50% less HP.", "essence":"◈ Essence Erasure: next Void ability costs +1 Essence."}
             messages.append(f"🌀 **ERASURE:** {labels[effect]}")
+
+    # Wave 50 special bosses: player-side counters. Effects intentionally use
+    # existing combat concepts (damage, magazine, Freeze, poison, HP) rather
+    # than introducing new ammo-like mechanics.
+    if enemy.boss_key == "CorpseKing" and enemy.health > 0 and enemy.boss_attacks_taken % 5 == 0:
+        stolen = max(0, int(player.money * 0.02))
+        if stolen > 0:
+            player.money -= stolen
+            messages.append(f"👑 **BLOOD TAX!** The Corpse King steals **${stolen:,}** (2% of current Cash).")
+        else:
+            messages.append("👑 **BLOOD TAX!** The Corpse King tried to collect 2%, but you had no Cash to steal.")
+    elif enemy.boss_key == "IceTitan" and enemy.health > 0 and enemy.boss_attacks_taken % 5 == 0:
+        enemy.effects["ice_titan_frozen"] = 1
+        messages.append("🥶 **DEEP FREEZE!** Your next attack will be skipped.")
+
+    if enemy.boss_key == "IceTitan" and enemy.health > 0:
+        # A Frozen Impact debuff lasts for the next two successful player attack actions.
+        if enemy.effects.get("ice_titan_mag_reduction", 0) > 0:
+            enemy.effects["ice_titan_mag_reduction"] -= 1
+            if enemy.effects["ice_titan_mag_reduction"] <= 0:
+                enemy.effects.pop("ice_titan_mag_reduction", None)
+
+    if enemy.boss_key == "MutatedAbomination" and enemy.health > 0 and enemy.boss_attacks_taken % 5 == 0:
+        heal = max(1, int(enemy.max_health * 0.05))
+        enemy.health = min(enemy.max_health, enemy.health + heal)
+        messages.append(f"🧬 **MUTATION!** The Abomination heals **{heal} HP** (5% max HP).")
+
+    if enemy.boss_key == "TheEnd" and enemy.health > 0 and enemy.boss_attacks_taken % 5 == 0:
+        erasure = max(1, int(player.health * 0.10))
+        player.health = max(0, player.health - erasure)
+        messages.append(f"🕳️ **THE END!** Reality erases **{erasure} HP** — Armour cannot reduce it.")
     return messages
 
 
@@ -1248,6 +1459,27 @@ def _enemy_damage(player: Survivor, damage_multiplier: float = 1.0) -> list[str]
             enemy.effects["grave_marks"] = 0
             enemy.effects["grave_double_pending"] = 1
             base_dmg *= 2
+
+    special_double = False
+    special_double_hit = False
+    special_armour_penetration = 0.0
+    special_keys = {"DeadReaper", "CorpseKing", "IceTitan", "MutatedAbomination", "TheEnd"}
+    if enemy.is_zone_boss and enemy.boss_key in special_keys:
+        count = int(enemy.effects.get("special_attack_count", 0)) + 1
+        enemy.effects["special_attack_count"] = count
+        if enemy.boss_key == "DeadReaper":
+            special_armour_penetration = 0.25
+            if count % 3 == 0:
+                special_double_hit = True
+        elif count % 3 == 0:
+            special_double = True
+            if enemy.boss_key == "TheEnd":
+                special_armour_penetration = 0.25
+            elif enemy.boss_key == "IceTitan":
+                enemy.effects["ice_titan_mag_reduction"] = 2
+            elif enemy.boss_key == "MutatedAbomination":
+                player.special_poison_turns = 3
+
     # The Erased's Defence Erasure ignores 10 Armour for exactly one incoming hit.
     armour = player.armor_reduction
     erasure_defence = enemy.is_zone_boss and enemy.boss_key == "Erased" and enemy.effects.get("erasure_effect") == "defence"
@@ -1257,8 +1489,12 @@ def _enemy_damage(player: Survivor, damage_multiplier: float = 1.0) -> list[str]
     if enemy.is_zone_boss and enemy.boss_key == "Contaminant":
         contamination = enemy.effects.get("contamination", 0)
         base_dmg = int(base_dmg * (1.0 + 0.05 * contamination))
+    if special_double:
+        base_dmg *= 2
     if damage_multiplier != 1.0:
         base_dmg = int(base_dmg * damage_multiplier)
+    if special_armour_penetration > 0:
+        armour = int(armour * (1.0 - special_armour_penetration))
     damage = max(1, base_dmg - armour)
     shield_used = False
     if player.void_shield_active:
@@ -1273,6 +1509,23 @@ def _enemy_damage(player: Survivor, damage_multiplier: float = 1.0) -> list[str]
     if player.health > 0 and enemy.is_zone_boss:
         _, boss_msgs = _apply_boss_attack_effect(player, damage)
 
+    # Dead Reaper's every-third-attack double strike is a second normal hit.
+    # The 25% armour penetration applies to both hits; Void Shield is a one-hit
+    # defence, so it is consumed by the first hit as usual.
+    second_hit_damage = 0
+    if special_double_hit and player.health > 0:
+        second_armour = int(player.armor_reduction * 0.75)
+        second_base = enemy.damage
+        if enemy.effects.get("freeze", 0):
+            second_base = enemy.damage // 2
+        if damage_multiplier != 1.0:
+            second_base = int(second_base * damage_multiplier)
+        second_hit_damage = max(1, second_base - second_armour)
+        player.health = max(0, player.health - second_hit_damage)
+        if player.health > 0:
+            _, second_boss_msgs = _apply_boss_attack_effect(player, second_hit_damage)
+            boss_msgs.extend(second_boss_msgs)
+
     if enemy.effects.get("freeze", 0):
         enemy.effects["freeze"] -= 1
         if enemy.effects["freeze"] <= 0:
@@ -1282,6 +1535,13 @@ def _enemy_damage(player: Survivor, damage_multiplier: float = 1.0) -> list[str]
         result = [f"💥 {enemy.name} hits for {damage} dmg." + (f" 🛡️ Void Shield absorbed {int(shield_bonus*100)}%." if shield_used else "")]
     if undertaker_double:
         result.append("☠️ **THE UNDERTAKER CLAIMS YOU!** Double-damage attack!")
+    if special_double:
+        result.append(f"💥 **{enemy.name} special attack!** 2× damage!")
+    if special_double_hit:
+        result.append(f"☠️ **{enemy.name} double attack!** Second hit deals {second_hit_damage} damage (25% Armour penetration).")
+    if special_armour_penetration > 0:
+        armour_boss_name = "Dead Reaper" if enemy.boss_key == "DeadReaper" else "The End"
+        result.append(f"🛡️ **{armour_boss_name} ignores 25% of your Armour.**")
     result.extend(boss_msgs)
 
     if player.health == 0:
@@ -1332,6 +1592,12 @@ def _apply_damage_over_time(player: Survivor) -> list[str]:
         messages.append(f"☠️ {mod_name} {damage} dmg.")
         if enemy.effects[effect] <= 0:
             del enemy.effects[effect]
+
+    if player.special_poison_turns > 0 and player.run_active and player.health > 0:
+        poison_damage = min(10, player.health)
+        player.health = max(0, player.health - poison_damage)
+        player.special_poison_turns = max(0, player.special_poison_turns - 1)
+        messages.append(f"☣️ **Mutated Abomination poison:** -{poison_damage} HP ({player.special_poison_turns} turns remaining).")
     return messages
 
 def _finish_enemy(player: Survivor) -> list[str]:
@@ -1339,19 +1605,60 @@ def _finish_enemy(player: Survivor) -> list[str]:
     if enemy is None or enemy.health > 0:
         return []
 
+    # Wave 50 special bosses use their own reward table and +50% per-50-wave
+    # reward scaling. They also award exactly one zone-specific token.
+    if enemy.is_zone_boss and enemy.boss_key in {cfg["key"] for cfg in SPECIAL_BOSS_CONFIG.values()}:
+        mult = special_boss_reward_multiplier(player.wave)
+        xp_gain = int(enemy.xp_reward * mult * (1.0 + player.xp_bonus) * xp_boost_multiplier(player) * soul_xp_multiplier(player) * special_token_xp_multiplier(player))
+        cash_gain = int(enemy.money_reward * mult * player.scavenger_bonus * cash_boost_multiplier(player) * soul_cash_multiplier(player) * special_token_cash_multiplier(player))
+        player.money += cash_gain
+        old_level = player.level
+        player.xp += xp_gain
+        new_level = player.level
+        level_ups = max(0, new_level - old_level)
+        if level_ups:
+            player.stars += level_ups
+        player.run_money_earned += cash_gain
+        player.run_xp_earned += xp_gain
+        player.run_zombies_killed += 1
+        player.zombies_remaining = 0
+        player.void_infusion_cooldown = max(0, player.void_infusion_cooldown - 1)
+        player.void_shield_cooldown = max(0, player.void_shield_cooldown - 1)
+        player.void_execution_cooldown = max(0, player.void_execution_cooldown - 1)
+        cfg = next(v for v in SPECIAL_BOSS_CONFIG.values() if v["key"] == enemy.boss_key)
+        token_field = cfg["token_field"]
+        token_drop = random.randint(1, 3)
+        player.special_tokens[token_field] = special_token_balance(player, token_field) + token_drop
+        messages = [f"👑 **{enemy.name} defeated!** +${cash_gain:,} • +{xp_gain:,} XP (×{mult:.2f} special-boss reward)", f"🪙 **+{token_drop} {cfg['token_name']}!** Total: **{player.special_tokens[token_field]}**"]
+        if level_ups:
+            messages.append(f"🎉 **LEVEL UP!** Level {player.level}! +{level_ups} ⭐")
+        if not getattr(player, "admin_test_mode", False):
+            record_completed_wave(player, player.wave)
+        player.wave += 1
+        player.zombies_remaining = player.wave + 2
+        player.bloater_cooldown = 1
+        player.bloater_roll_wave = 0
+        player.bloater_wave_result = False
+        player.void_bazooka_boss_fired = False
+        player.special_poison_turns = 0
+        messages.append(f"🌊 **Special boss cleared!** Next wave: **{player.wave}**")
+        player.enemy = spawn_enemy(player)
+        messages.append(f"🧟 **{player.enemy.name}** appears! {player.enemy.health} HP")
+        return messages
+
     # Zone Bosses use their own milestone reward table and wave multiplier.
     # They deliberately bypass the normal kill XP/wave-clear reward pipeline so
     # they cannot accidentally inherit generic healing, ammo, or Bloater rewards.
     if enemy.is_zone_boss:
         mult = boss_reward_multiplier(player.wave)
-        xp_gain = int(enemy.xp_reward * mult * (1.0 + player.xp_bonus) * xp_boost_multiplier(player) * soul_xp_multiplier(player))
+        xp_gain = int(enemy.xp_reward * mult * (1.0 + player.xp_bonus) * xp_boost_multiplier(player) * soul_xp_multiplier(player) * special_token_xp_multiplier(player))
         cash_base = int(enemy.money_reward * mult)
-        cash_gain = int(cash_base * player.scavenger_bonus * cash_boost_multiplier(player) * soul_cash_multiplier(player))
+        cash_gain = int(cash_base * player.scavenger_bonus * cash_boost_multiplier(player) * soul_cash_multiplier(player) * special_token_cash_multiplier(player))
         bounty_cash = 0
         if enemy.boss_key == "Kingpin" and enemy.boss_bonus_cash:
             # Kingpin bounty is part of the cash reward, so active cash boosts
             # and Scavenger apply consistently to the entire boss payout.
-            bounty_cash = int(enemy.boss_bonus_cash * player.scavenger_bonus * cash_boost_multiplier(player) * soul_cash_multiplier(player))
+            bounty_cash = int(enemy.boss_bonus_cash * player.scavenger_bonus * cash_boost_multiplier(player) * soul_cash_multiplier(player) * special_token_cash_multiplier(player))
             cash_gain += bounty_cash
         player.money += cash_gain
         old_level = player.level
@@ -1375,7 +1682,7 @@ def _finish_enemy(player: Survivor) -> list[str]:
             player.spare_ammo[player.ammo_name] = player.spare_ammo.get(player.ammo_name, 0) + 36
             messages.append(f"☣️ **Contaminant reward:** +36 {player.ammo_name} ammo")
         elif enemy.boss_key == "Erased":
-            essence_gain = soul_essence_amount(player, 8)
+            essence_gain = int(soul_essence_amount(player, 8) * special_token_essence_multiplier(player))
             player.void_essence += essence_gain
             messages.append(f"🌀 **The Erased reward:** +{essence_gain} Void Essence")
         if enemy.boss_key == "Kingpin" and enemy.boss_bonus_cash:
@@ -1407,9 +1714,9 @@ def _finish_enemy(player: Survivor) -> list[str]:
     # Star XP bonus: +10% base +1% per level, max 25%
     xp_bonus_mult = 1.0 + player.xp_bonus
     # Final XP: base (already includes zone_mult) * wave_mult * xp_bonus
-    xp_gain = int(enemy.xp_reward * wave_mult * xp_bonus_mult * xp_boost_multiplier(player) * soul_xp_multiplier(player))
+    xp_gain = int(enemy.xp_reward * wave_mult * xp_bonus_mult * xp_boost_multiplier(player) * soul_xp_multiplier(player) * special_token_xp_multiplier(player))
     
-    money_gain = int(enemy.money_reward * player.scavenger_bonus * cash_boost_multiplier(player) * soul_cash_multiplier(player))
+    money_gain = int(enemy.money_reward * player.scavenger_bonus * cash_boost_multiplier(player) * soul_cash_multiplier(player) * special_token_cash_multiplier(player))
     player.money += money_gain
     old_level = player.level
     player.xp += xp_gain
@@ -1435,7 +1742,7 @@ def _finish_enemy(player: Survivor) -> list[str]:
         else:
             essence_gain = 0
         if essence_gain > 0:
-            essence_gain = soul_essence_amount(player, essence_gain)
+            essence_gain = int(soul_essence_amount(player, essence_gain) * special_token_essence_multiplier(player))
             player.void_essence += essence_gain
             messages_essence = f" • ◈ +{essence_gain} Void Essence"
         else:
@@ -1461,13 +1768,13 @@ def _finish_enemy(player: Survivor) -> list[str]:
         base_bonus = int(10 * player.wave * zone_for(player)["money_mult"])
         if was_bloater:
             base_bonus = int(base_bonus * 2.5)  # big reward for surviving bloater
-        bonus = int(base_bonus * player.scavenger_bonus * cash_boost_multiplier(player) * soul_cash_multiplier(player))
+        bonus = int(base_bonus * player.scavenger_bonus * cash_boost_multiplier(player) * soul_cash_multiplier(player) * special_token_cash_multiplier(player))
         player.money += bonus
         player.run_money_earned += bonus
         # Void waves 1-4 give no wave-clear Essence. From wave 5 onward,
         # every completed Void wave gives +1 Essence.
         if player.zone_name == "The Void" and player.wave >= VOID_ESSENCE_WAVE_START:
-            essence_gain = soul_essence_amount(player, VOID_ESSENCE_PER_VOID_WAVE)
+            essence_gain = int(soul_essence_amount(player, VOID_ESSENCE_PER_VOID_WAVE) * special_token_essence_multiplier(player))
             player.void_essence += essence_gain
             messages.append(f"◈ **Void Essence +{essence_gain}** for clearing Void wave {player.wave}!")
         # Low-probability bonus Star on wave clear. This is separate from
@@ -1687,6 +1994,14 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
     # All other actions begin with pending DoT damage, including healing.
     elif action != "flee":
         messages.extend(_apply_damage_over_time(player))
+        if player.health <= 0:
+            player.health = player.max_health
+            player.spare_ammo[player.ammo_name] = player.spare_ammo.get(player.ammo_name, 0) + player.magazine
+            player.magazine = 0
+            player.run_active = False
+            player.enemy = None
+            messages.extend(_apply_post_wave50_death_cash_penalty(player))
+            return messages + ["💀 **The poison killed you!**", f"💰 You kept ${player.run_money_earned} • {player.run_xp_earned} XP."] + _grant_end_of_run_rewards(player)
         if player.enemy is None or player.enemy.health <= 0:
             messages.extend(_finish_enemy(player))
             return messages
@@ -1786,10 +2101,26 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
         return messages
 
     enemy = player.enemy
+    if action in {"attack", "punch", "void_bazooka"} and enemy.is_zone_boss and enemy.boss_key == "IceTitan" and enemy.effects.pop("ice_titan_frozen", 0):
+        messages.append("🥶 **DEEP FREEZE!** Your attack is skipped!")
+        messages.extend(_enemy_damage(player))
+        return messages
     if action == "punch":
         punch_damage = player.punch_damage
         enemy.health = max(0, enemy.health - punch_damage)
         messages.append(f"👊 **PUNCH!** Hit **{enemy.name} for {punch_damage} dmg**! No ammo used.")
+        if enemy.is_zone_boss and punch_damage > 0:
+            messages.extend(_apply_boss_player_attack_counter(player, punch_damage))
+            if player.health <= 0:
+                player.health = player.max_health
+                player.spare_ammo[player.ammo_name] = player.spare_ammo.get(player.ammo_name, 0) + player.magazine
+                player.magazine = 0
+                player.run_active = False
+                player.enemy = None
+                messages.append(f"💀 **The {enemy.name} got you!**")
+                messages.extend(_apply_post_wave50_death_cash_penalty(player))
+                messages.extend(_grant_end_of_run_rewards(player))
+                return messages
         if enemy.health <= 0:
             messages.extend(_finish_enemy(player))
             return messages
@@ -1854,6 +2185,7 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
                 player.run_active = False
                 player.enemy = None
                 messages.append(f"💀 **The {enemy.name} got you!**")
+                messages.extend(_apply_post_wave50_death_cash_penalty(player))
                 messages.extend(_grant_end_of_run_rewards(player))
                 return messages
         # No standard crit, pet, ammo effect, or standard weapon upgrade applies.
@@ -2032,6 +2364,7 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
                 player.run_active = False
                 player.enemy = None
                 messages.append(f"💀 **The {enemy.name} got you!**")
+                messages.extend(_apply_post_wave50_death_cash_penalty(player))
                 messages.extend(_grant_end_of_run_rewards(player))
                 return messages
 
@@ -2067,6 +2400,7 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
                         f"⏰ You had {BLOATER_FUSE} attacks and failed. {explode_dmg} dmg explosion ended you.",
                         f"🌊 Waves: {player.wave} | 🧟 Kills: {player.run_zombies_killed} | 💰 ${player.run_money_earned} | ✨ {player.run_xp_earned} XP"
                     ]
+                    msgs.extend(_apply_post_wave50_death_cash_penalty(player))
                     msgs.extend(_grant_end_of_run_rewards(player))
                     return messages + msgs
 
@@ -2110,6 +2444,11 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
             messages.extend(_finish_enemy(player))
             return messages
     elif action == "flee":
+        # After Wave 50, Flee is only available on Waves 55, 60, 65, ...
+        # This server-side check also blocks stale/old combat buttons.
+        if player.wave > 50 and player.wave % 5 != 0:
+            next_checkpoint = player.wave + (5 - player.wave % 5)
+            return [f"🚫 **Flee is unavailable on Wave {player.wave}.** You can flee again at Wave {next_checkpoint}."]
         # USER WANTS: flee still rewards players + full heal
         player.spare_ammo[player.ammo_name] = player.spare_ammo.get(player.ammo_name, 0) + player.magazine
         player.magazine = 0
@@ -2325,6 +2664,46 @@ def upgrade_combat_medic(player: Survivor) -> list[str]:
     ]
 
 
+# --- WAVE 50 TOKEN SHOP -----------------------------------------------------
+def get_special_token_upgrade_cost(player: Survivor, upgrade_key: str) -> int:
+    level = special_token_level(player, upgrade_key)
+    if level >= SPECIAL_TOKEN_MAX_LEVEL:
+        return 0
+    return SPECIAL_TOKEN_LEVEL_COSTS[level]
+
+def _special_token_upgrade_info(upgrade_key: str):
+    for cfg in SPECIAL_TOKEN_CONFIG.values():
+        for item in cfg["upgrades"]:
+            if item[0] == upgrade_key:
+                return item, cfg
+    return None, None
+
+def upgrade_special_token(player: Survivor, upgrade_key: str) -> list[str]:
+    if player.run_active:
+        return ["⚠️ Can't buy Token Shop upgrades during a run! Flee or finish the run first."]
+    item, cfg = _special_token_upgrade_info(upgrade_key)
+    if item is None:
+        return ["❌ Invalid Token Shop upgrade."]
+    key, label, kind, per_level, desc = item
+    level = special_token_level(player, key)
+    if level >= SPECIAL_TOKEN_MAX_LEVEL:
+        return [f"🔥 **{label} is MAXED at Level {SPECIAL_TOKEN_MAX_LEVEL}.**"]
+    cost = get_special_token_upgrade_cost(player, key)
+    token_field = cfg["token_field"]
+    balance = special_token_balance(player, token_field)
+    if balance < cost:
+        return [f"❌ Need **{cost} {cfg['token_name']}** for Level {level + 1}; you have **{balance}**."]
+    player.special_tokens[token_field] = balance - cost
+    player.special_token_upgrades[key] = level + 1
+    player.recalc_stats()
+    new_level = level + 1
+    total = float(per_level) * new_level
+    if kind in {"crit", "cash", "xp", "essence"}:
+        total_text = f"{total * 100:.2f}".rstrip("0").rstrip(".") + "%"
+    else:
+        total_text = f"{int(total):,}"
+    return [f"🪙 **{label} → Level {new_level}/{SPECIAL_TOKEN_MAX_LEVEL}!**", f"Effect: **{total_text}** total • Paid **{cost} {cfg['token_name']}** • Remaining: **{player.special_tokens[token_field]}**"]
+
 # --- SOUL / REBIRTH SYSTEM --------------------------------------------------
 REBIRTH_MIN_LEVEL = 400
 REBIRTH_BASE_COST = 25_000_000
@@ -2405,6 +2784,7 @@ def perform_rebirth(player: Survivor) -> list[str]:
         "greedy_soul_level": int(player.greedy_soul_level),
         "evil_soul_level": int(player.evil_soul_level),
         "safe_soul_level": int(player.safe_soul_level),
+        # Special Wave 50 tokens/upgrades are intentionally NOT preserved.
     }
     # Global boosters are bot-wide state, not player progression. Preserve the
     # owner's stored expiry fields so Rebirth cannot accidentally disable them.
@@ -2426,6 +2806,7 @@ def perform_rebirth(player: Survivor) -> list[str]:
         "🧹 All normal progression has been reset.",
         f"👻 **+1 Soul Token** — Total: **{player.soul_tokens}**",
         f"🏆 Your highest-wave leaderboard records remain untouched.",
+        "🪙 All Wave 50 Tokens and Token Shop upgrades were wiped for the new Rebirth.",
     ]
 
 
@@ -2690,6 +3071,19 @@ def build_run_summary(player: Survivor, cause: str) -> list[str]:
     lines.append(f"❤️ HP restored: {player.max_health}/{player.max_health}")
     return lines
 
+def _apply_post_wave50_death_cash_penalty(player: Survivor) -> list[str]:
+    """After Wave 50, dying costs 50% of cash earned during the current run."""
+    if player.wave <= 50 or player.run_money_earned <= 0:
+        return []
+    loss = player.run_money_earned // 2
+    if loss <= 0:
+        return []
+    player.money = max(0, player.money - loss)
+    return [
+        f"💸 **DEATH PENALTY:** You lost **${loss:,}** (50% of your run's accumulated cash after Wave 50)."
+    ]
+
+
 def _grant_end_of_run_rewards(player: Survivor) -> list[str]:
     msgs = []
     msgs.extend(_grant_random_elemental_drop(player))
@@ -2714,9 +3108,9 @@ DAILY_COOLDOWN_SECONDS = 24 * 60 * 60
 
 def daily_crate_rewards(player: Survivor) -> tuple[int, int, int]:
     """Small level-scaled daily reward: cash, Standard ammo, XP."""
-    cash = int(min(100 + player.level * 5, 1100) * cash_boost_multiplier(player) * soul_cash_multiplier(player))
+    cash = int(min(100 + player.level * 5, 1100) * cash_boost_multiplier(player) * soul_cash_multiplier(player) * special_token_cash_multiplier(player))
     ammo = min(10 + player.level // 10, 30)
-    xp = int(min(50 + player.level * 2, 400) * xp_boost_multiplier(player) * soul_xp_multiplier(player))
+    xp = int(min(50 + player.level * 2, 400) * xp_boost_multiplier(player) * soul_xp_multiplier(player) * special_token_xp_multiplier(player))
     return cash, ammo, xp
 
 def daily_crate_status(player: Survivor) -> tuple[bool, int]:
@@ -2826,6 +3220,7 @@ def status_detailed(player: Survivor, display_name: str = "Survivor") -> str:
         f"🎯 Crit: {int(player.crit_chance*100)}% | 🛡️ Armor: -{player.armor_reduction} | 💰 Loot: +{int((player.scavenger_bonus-1)*100)}% | 👊 Punch: {player.punch_damage}",
         f"💰 ${player.money} | ⭐ {player.stars} | ✨ {player.xp} XP ({earned}/{needed})",
         f"👻 Soul Tokens: {player.soul_tokens} | Rebirths: {player.rebirth_count}",
+        f"🪙 Wave 50 Tokens: Graveyard {special_token_balance(player, 'graveyard')} • City {special_token_balance(player, 'mega_death_city')} • Frost {special_token_balance(player, 'frostbitten')} • Toxic {special_token_balance(player, 'toxic_wasteland')} • Void {special_token_balance(player, 'void')}",
         f"🔫 {player.weapon_name} [{player.ammo_name}] | 📦 Spare: {player.get_spare()}",
          f"◈ Void Essence: {player.void_essence} | Void Bazooka: {'Owned' if 'Void Bazooka' in player.void_weapons_owned else 'Locked'} | Void Lvl {player.void_weapon_level}/10",
         f"🎒 Ammo: {', '.join([f'{k}:{v}' for k,v in player.spare_ammo.items() if v>0]) or 'Empty'}",
@@ -3475,6 +3870,13 @@ class CombatView(PlayerView):
                 }:
                     self.remove_item(item)
 
+        # Flee is permanent through Wave 50. After that it appears only at
+        # 5-wave checkpoints: 55, 60, 65, 70, ...
+        if player.wave > 50 and player.wave % 5 != 0:
+            for item in list(self.children):
+                if getattr(item, "label", "") == "🏃 Flee":
+                    self.remove_item(item)
+
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if not await super().interaction_check(interaction):
             return False
@@ -3826,6 +4228,7 @@ class ShopHubView(PlayerView):
             f"⬆️ **/shop upgrades** - Purchase various permanent upgrades.",
             f"⭐ **/shop stars** - Shop for star prestige upgrades.",
             f"◈ **Void Upgrades** - Void weapon progression and the Void Bazooka.",
+            f"🪙 **Wave 50 Tokens** - Special-boss currencies and upgrades.",
             f"👻 **Soul Shop** - Rebirth and permanent Soul upgrades.",
             "",
             f"Balance: **${player.money}** | Stars: **{player.stars}**",
@@ -3947,7 +4350,8 @@ class RebirthConfirmView(PlayerView):
             f"You are about to pay **${cost:,}** and completely reset your normal progression.\n\n"
             "❌ Cash, XP, Level, Stars, weapons, ammo, meds, upgrades, Void progression and all other normal progression will be reset.\n"
             "🏆 Your existing highest-wave leaderboard records will remain.\n"
-            "👻 Your Soul Tokens and Soul upgrades will remain.\n\n"
+            "👻 Your Soul Tokens and Soul upgrades will remain.\n"
+            "🪙 All Wave 50 Tokens and Token Shop upgrades will be wiped.\n\n"
             "**This cannot be undone. Are you sure?**"
         )
 
@@ -4039,6 +4443,118 @@ class SoulShopView(PlayerView):
             lines.append(f"\n💸 You need **${rebirth_cost(player):,}** to Rebirth; you have **${player.money:,}**.")
         if self.extra_msgs:
             lines.extend(["", *self.extra_msgs])
+        return "\n".join(lines)
+
+
+class SpecialTokenShopView(PlayerView):
+    """Finite Wave 50 Token Shop. Token balances and upgrades reset on Rebirth."""
+    def __init__(self, user_id: int, store, display_name: str = "Survivor", zone_name: str | None = None, selected_up: str | None = None, extra_msgs: list[str] | None = None, timeout: float | None = None):
+        super().__init__(user_id, store, display_name, timeout)
+        player = self.store.get(user_id)
+        self.zone_name = zone_name if zone_name in SPECIAL_TOKEN_CONFIG else player.zone_name
+        self.selected_up = selected_up
+        self.extra_msgs = extra_msgs or []
+        self.clear_items()
+
+        for i, zn in enumerate(SPECIAL_TOKEN_CONFIG.keys()):
+            cfg = SPECIAL_TOKEN_CONFIG[zn]
+            balance = special_token_balance(player, cfg["token_field"])
+            label = cfg["token_name"].replace(" Token", "")
+            btn = discord.ui.Button(label=("📍 " if zn == self.zone_name else "") + label[:70], style=discord.ButtonStyle.success if zn == self.zone_name else discord.ButtonStyle.primary, row=0)
+            async def zone_cb(interaction, chosen_zone=zn):
+                p = self.store.get(self.user_id)
+                view = SpecialTokenShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), zone_name=chosen_zone)
+                await interaction.response.edit_message(content=view.get_shop_text(p), embed=None, view=view)
+            btn.callback = zone_cb
+            self.add_item(btn)
+
+        upgrades = SPECIAL_TOKEN_CONFIG[self.zone_name]["upgrades"]
+        for idx, (key, label, kind, per_level, desc) in enumerate(upgrades):
+            lvl = special_token_level(player, key)
+            cost = get_special_token_upgrade_cost(player, key)
+            maxed = lvl >= SPECIAL_TOKEN_MAX_LEVEL
+            selected = key == self.selected_up
+            text = f"{label} L{lvl}" if not maxed else f"{label} MAX"
+            btn = discord.ui.Button(label=text[:80], style=discord.ButtonStyle.success if selected else discord.ButtonStyle.secondary, disabled=maxed, row=1 + (idx // 2))
+            async def up_cb(interaction, chosen_key=key):
+                view = SpecialTokenShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), zone_name=self.zone_name, selected_up=chosen_key)
+                p = self.store.get(self.user_id)
+                await interaction.response.edit_message(content=view.get_shop_text(p), embed=None, view=view)
+            btn.callback = up_cb
+            self.add_item(btn)
+
+        buy_row = 3 if len(upgrades) <= 4 else 2
+        if self.selected_up is None:
+            buy = discord.ui.Button(label="🪙 Select an upgrade", style=discord.ButtonStyle.secondary, disabled=True, row=buy_row)
+        else:
+            lvl = special_token_level(player, self.selected_up)
+            cost = get_special_token_upgrade_cost(player, self.selected_up)
+            item, cfg = _special_token_upgrade_info(self.selected_up)
+            balance = special_token_balance(player, cfg["token_field"]) if cfg else 0
+            disabled = lvl >= SPECIAL_TOKEN_MAX_LEVEL or balance < cost
+            buy = discord.ui.Button(label=(f"🔥 MAXED" if lvl >= SPECIAL_TOKEN_MAX_LEVEL else f"🪙 Buy Level {lvl+1} — {cost} Token"), style=discord.ButtonStyle.success, disabled=disabled, row=buy_row)
+            async def buy_cb(interaction):
+                if self.user_id in _purchase_locks:
+                    await interaction.response.defer()
+                    return
+                await interaction.response.defer()
+                _purchase_locks.add(self.user_id)
+                try:
+                    async with self.store.action_lock(self.user_id):
+                        p = self.store.get(self.user_id)
+                        msgs = upgrade_special_token(p, self.selected_up)
+                    schedule_shop_save(self.store, self.user_id)
+                    view = SpecialTokenShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), zone_name=self.zone_name, selected_up=self.selected_up, extra_msgs=msgs)
+                    await interaction.edit_original_response(content=view.get_shop_text(p), embed=None, view=view)
+                finally:
+                    _purchase_locks.discard(self.user_id)
+            buy.callback = buy_cb
+        self.add_item(buy)
+
+        back = discord.ui.Button(label="⬅️ Back to Shop", style=discord.ButtonStyle.secondary, row=4)
+        async def back_cb(interaction):
+            p = self.store.get(self.user_id)
+            hub = ShopHubView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"))
+            await interaction.response.edit_message(content=hub.get_shop_text(p), embed=None, view=hub)
+        back.callback = back_cb
+        self.add_item(back)
+
+        main = discord.ui.Button(label="🏠 Main Menu", style=discord.ButtonStyle.secondary, row=4)
+        async def main_cb(interaction):
+            p = self.store.get(self.user_id)
+            name = getattr(interaction.user, "display_name", None) or getattr(interaction.user, "global_name", None) or interaction.user.name
+            await interaction.response.edit_message(content=status(p, display_name=name), embed=None, view=ZombieMenuView(self.user_id, self.store, display_name=name))
+        main.callback = main_cb
+        self.add_item(main)
+
+    def get_shop_text(self, player: Survivor) -> str:
+        cfg = SPECIAL_TOKEN_CONFIG[self.zone_name]
+        balance = special_token_balance(player, cfg["token_field"])
+        lines = [
+            "**🪙 Wave 50 Token Shop**",
+            "",
+            f"{cfg['token_name']}: **{balance}**",
+            "Upgrades are Level 1–10. Cost per level: **1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 → 9 → 10 tokens**.",
+            "Token balances and Token Shop levels reset on Rebirth.",
+            "---",
+        ]
+        for key, label, kind, per_level, desc in cfg["upgrades"]:
+            lvl = special_token_level(player, key)
+            cost = get_special_token_upgrade_cost(player, key)
+            total = float(per_level) * lvl
+            if kind in {"crit", "cash", "xp", "essence"}:
+                total_text = f"{total * 100:.2f}".rstrip("0").rstrip(".") + "%"
+            else:
+                total_text = f"{int(total):,}"
+            next_text = "MAXED" if lvl >= SPECIAL_TOKEN_MAX_LEVEL else f"Level {lvl+1} costs {cost} token(s)"
+            selected = " ← SELECTED" if key == self.selected_up else ""
+            lines.append(f"{label} — **Lv {lvl}/{SPECIAL_TOKEN_MAX_LEVEL}**{selected}")
+            lines.append(f"{desc} • Current total: **{total_text}** • {next_text}")
+            lines.append("")
+        if self.extra_msgs:
+            lines.extend(self.extra_msgs)
+            lines.append("")
+        lines.append("Beat the Wave 50 boss in this zone to earn another token.")
         return "\n".join(lines)
 
 
