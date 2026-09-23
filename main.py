@@ -148,6 +148,11 @@ WAVE_STAR_CHANCE = {"Graveyard": 0.05, "Mega Death City": 0.07, "Frostbitten Out
 # Bloater config - run ender
 BLOATER_BASE = {"health": 280, "damage": 4, "money": 350, "xp": 120}
 BLOATER_MIN_WAVE = 5
+MAX_ZOMBIES_PER_WAVE = 100
+
+def zombies_for_wave(wave: int) -> int:
+    """Return the normal zombie count for a wave, capped at 100."""
+    return min(MAX_ZOMBIES_PER_WAVE, max(3, int(wave) + 2))
 # Chance resets after every Bloater, then ramps upward on later eligible waves.
 # Different zones start higher and ramp faster, while the 35% cap always leaves
 # normal zombies in the pool.
@@ -1309,7 +1314,7 @@ def recover_stuck_run(player: Survivor) -> list[str]:
     if player.wave < 1:
         player.wave = 1
     if player.zombies_remaining <= 0:
-        player.zombies_remaining = max(3, player.wave + 2)
+        player.zombies_remaining = zombies_for_wave(player.wave)
     player.enemy = spawn_enemy(player, recovery=True)
 
     # Recovery must restore the persistent consequences of an already-decided
@@ -1635,7 +1640,7 @@ def _finish_enemy(player: Survivor) -> list[str]:
         if not getattr(player, "admin_test_mode", False):
             record_completed_wave(player, player.wave)
         player.wave += 1
-        player.zombies_remaining = player.wave + 2
+        player.zombies_remaining = zombies_for_wave(player.wave)
         player.bloater_cooldown = 1
         player.bloater_roll_wave = 0
         player.bloater_wave_result = False
@@ -1695,7 +1700,7 @@ def _finish_enemy(player: Survivor) -> list[str]:
         if not getattr(player, "admin_test_mode", False):
             record_completed_wave(player, player.wave)
         player.wave += 1
-        player.zombies_remaining = player.wave + 2
+        player.zombies_remaining = zombies_for_wave(player.wave)
         # Guarantee a normal breathing-room wave after every Zone Boss.
         player.bloater_cooldown = 1
         player.bloater_roll_wave = 0
@@ -1793,7 +1798,7 @@ def _finish_enemy(player: Survivor) -> list[str]:
             player.leaderboard_name = "Survivor"
         player.spare_ammo[player.ammo_name] = player.spare_ammo.get(player.ammo_name, 0) + (10 if was_bloater else 5)
         player.wave += 1
-        player.zombies_remaining = player.wave + 2
+        player.zombies_remaining = zombies_for_wave(player.wave)
         # New enemy/boss encounter: the once-per-boss Bazooka restriction resets.
         player.void_bazooka_boss_fired = False
         player.health = min(player.max_health, player.health + (15 if was_bloater else 5))
@@ -1978,6 +1983,13 @@ def _combat_action_noop(player: Survivor, action: str, heal_item: str | None = N
 def take_action(player: Survivor, action: str, heal_item: str | None = None) -> list[str]:
     if not player.run_active or player.enemy is None:
         return ["Not in a run. Use Start run."]
+
+    # Older runs may have saved wave + 2 zombies (e.g. Wave 256 = 258).
+    # Cap existing normal waves immediately so the new 100-zombie limit applies
+    # without requiring the player to start a fresh run. Bosses/Bloaters remain
+    # special encounters and are handled separately by spawn_enemy().
+    if not player.enemy.is_zone_boss and not player.enemy.is_bloater and player.zombies_remaining > MAX_ZOMBIES_PER_WAVE:
+        player.zombies_remaining = MAX_ZOMBIES_PER_WAVE
 
     noop_message = _combat_action_noop(player, action, heal_item)
     if noop_message is not None:
