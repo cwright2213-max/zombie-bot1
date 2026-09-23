@@ -468,6 +468,8 @@ class Survivor:
     bloater_wave_result: bool = False
     # --- UNIVERSAL MONEY UPGRADES ---
     health_upgrades: int = 0; armor_upgrades: int = 0; scavenger_upgrades: int = 0
+    # Universal Punch: every survivor has this regardless of weapon.
+    punch_upgrades: int = 0
     # --- INDIVIDUAL WEAPON UPGRADES (cash, per weapon) ---
     weapon_upgrades: dict[str, dict[str, int]] = field(default_factory=dict)
     combat_medic_level: int = 0
@@ -557,6 +559,9 @@ class Survivor:
     @property
     def scavenger_bonus(self) -> float:
         return 1.0 + self.scavenger_upgrades * 0.10
+    @property
+    def punch_damage(self) -> int:
+        return min(5 + self.punch_upgrades, 15)
     # --- STAR UPGRADE PROPERTIES ---
     @property
     def dodge_chance(self) -> float:
@@ -646,6 +651,8 @@ class Survivor:
             data["armor_upgrades"] = 0
         if "scavenger_upgrades" not in data:
             data["scavenger_upgrades"] = 0
+        if "punch_upgrades" not in data:
+            data["punch_upgrades"] = 0
         enemy_data = data.get("enemy")
         if isinstance(enemy_data, dict):
             enemy_allowed = {k: v for k, v in enemy_data.items() if k in Enemy.__dataclass_fields__}
@@ -1112,7 +1119,7 @@ def action_help(player: Survivor) -> str:
     if player.enemy.is_bloater:
         return f"💣 BLOATER {player.enemy.bloater_timer} attacks left! {player.enemy.health} HP | 🔫 {player.ammo_name} {player.magazine}/{player.magazine_size} | 🧟 {player.enemy.name} 4 dmg"
     boss_text = f" • {_boss_status_text(player.enemy)}" if player.enemy.is_zone_boss else ""
-    return f"🔫 {player.ammo_name} {player.magazine}/{player.magazine_size} ({cost}/shot) | spare: {player.get_spare()} | 🧟 {player.enemy.name} {player.enemy.health} HP{boss_text}"
+    return f"🔫 {player.ammo_name} {player.magazine}/{player.magazine_size} ({cost}/shot) | 👊 Punch {player.punch_damage} dmg | spare: {player.get_spare()} | 🧟 {player.enemy.name} {player.enemy.health} HP{boss_text}"
 
 def _apply_boss_attack_effect(player: Survivor, damage_dealt: int) -> tuple[int, list[str]]:
     """Apply a successful Zone Boss attack's mechanic and return adjusted damage/messages."""
@@ -1188,7 +1195,7 @@ def _apply_boss_player_attack_counter(player: Survivor, action_damage: int) -> l
     return messages
 
 
-def _enemy_damage(player: Survivor) -> list[str]:
+def _enemy_damage(player: Survivor, damage_multiplier: float = 1.0) -> list[str]:
     enemy = player.enemy
     if enemy is None:
         return []
@@ -1215,6 +1222,8 @@ def _enemy_damage(player: Survivor) -> list[str]:
     if enemy.is_zone_boss and enemy.boss_key == "Contaminant":
         contamination = enemy.effects.get("contamination", 0)
         base_dmg = int(base_dmg * (1.0 + 0.05 * contamination))
+    if damage_multiplier != 1.0:
+        base_dmg = int(base_dmg * damage_multiplier)
     damage = max(1, base_dmg - armour)
     shield_used = False
     if player.void_shield_active:
@@ -1725,6 +1734,16 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
         return messages
 
     enemy = player.enemy
+    if action == "punch":
+        punch_damage = player.punch_damage
+        enemy.health = max(0, enemy.health - punch_damage)
+        messages.append(f"👊 **PUNCH!** Hit **{enemy.name} for {punch_damage} dmg**! No ammo used.")
+        if enemy.health <= 0:
+            messages.extend(_finish_enemy(player))
+            return messages
+        messages.append("😂 **You chose to punch a zombie instead of shooting it.** Incoming damage is **2×** this turn!")
+        messages.extend(_enemy_damage(player, damage_multiplier=2.0))
+        return messages
     if action in {"void_infusion", "void_shield", "void_execution"}:
         perk_name = {"void_infusion":"Void Infusion", "void_shield":"Void Shield", "void_execution":"Void Execution"}[action]
         return activate_void_perk(player, perk_name)
@@ -2049,7 +2068,7 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
         messages.extend(_grant_end_of_run_rewards(player))
         return messages
     else:
-        return ["Attack, reload, heal, or flee."]
+        return ["Attack, punch, reload, heal, or flee."]
     if enemy.health <= 0:
         messages.extend(_finish_enemy(player))
     else:
@@ -2254,6 +2273,19 @@ def upgrade_combat_medic(player: Survivor) -> list[str]:
     ]
 
 
+PUNCH_MAX_LEVEL = 10
+PUNCH_BASE_COST = 500
+PUNCH_COST_MULTIPLIER = 1.75
+
+
+def get_punch_upgrade_cost(player: Survivor) -> int:
+    """Universal Punch upgrade: $500, then each level costs 1.75x more."""
+    level = max(0, min(PUNCH_MAX_LEVEL, int(player.punch_upgrades)))
+    if level >= PUNCH_MAX_LEVEL:
+        return 0
+    return int(PUNCH_BASE_COST * (PUNCH_COST_MULTIPLIER ** level))
+
+
 def get_upgrade_cost(player: Survivor, stat: str) -> int:
     """Balanced exponential scaling costs"""
     stat = stat.lower()
@@ -2298,12 +2330,17 @@ def upgrade(player: Survivor, stat: str) -> list[str]:
     """Universal cash upgrades only. Weapon damage/mag/crit are per-weapon."""
     if player.run_active:
         return ["⚠️ Can't upgrade during a run! Flee first."]
-    alias = {"health":"health", "hp":"health", "max_health":"health", "armor":"armor", "armour":"armor", "defense":"armor", "scavenger":"scavenger", "loot":"scavenger", "money":"scavenger"}
+    alias = {"health":"health", "hp":"health", "max_health":"health", "armor":"armor", "armour":"armor", "defense":"armor", "scavenger":"scavenger", "loot":"scavenger", "money":"scavenger", "punch":"punch", "punch_damage":"punch"}
     canonical = alias.get(stat.lower().strip(), stat.lower().strip())
-    cost = get_upgrade_cost(player, canonical)
+    cost = get_punch_upgrade_cost(player) if canonical == "punch" else get_upgrade_cost(player, canonical)
+    if canonical == "punch" and player.punch_upgrades >= PUNCH_MAX_LEVEL:
+        return ["👊 **Punch is already MAXED at 15 damage.**"]
     if player.money < cost:
-        return [f"❌ Need ${cost} for {canonical}, you have ${player.money}"]
+        return [f"❌ Need ${cost:,} for {canonical}, you have ${player.money:,}"]
     player.money -= cost
+    if canonical == "punch":
+        player.punch_upgrades += 1
+        return [f"👊 Punch damage → **{player.punch_damage}** (+1). Paid **${cost:,}** • 💰 ${player.money:,} left. Lvl {player.punch_upgrades}/{PUNCH_MAX_LEVEL}"]
     if canonical == "health":
         player.max_health += 20; player.health_upgrades += 1; player.health = player.max_health
         return [f"❤️ Max HP → **{player.max_health}** (+20). ${player.money} left. Lvl {player.health_upgrades}"]
@@ -2314,7 +2351,7 @@ def upgrade(player: Survivor, stat: str) -> list[str]:
         player.scavenger_upgrades += 1
         return [f"💰 Loot bonus → **+{int((player.scavenger_bonus-1)*100)}%** (+10% per lvl). ${player.money} left. Lvl {player.scavenger_upgrades}"]
     player.money += cost
-    return [f"❓ Unknown universal upgrade '{stat}'. Try: health, armor, scavenger"]
+    return [f"❓ Unknown universal upgrade '{stat}'. Try: health, armor, scavenger, punch"]
 
 
 STAR_MAX_LEVELS = {
@@ -2630,7 +2667,7 @@ def status_detailed(player: Survivor, display_name: str = "Survivor") -> str:
         f"**📊 {display_name} — Lvl {player.level}**",
         f"❤️ HP: {player.health}/{player.max_health} (+{player.health_upgrades*20})",
         f"💥 Dmg: {player.weapon_damage} | 📦 Mag: {player.magazine_size} | 🎯 Crit: {player.crit_chance*100:.1f}% | {weapon_upgrade_summary(player)}",
-        f"🎯 Crit: {int(player.crit_chance*100)}% | 🛡️ Armor: -{player.armor_reduction} | 💰 Loot: +{int((player.scavenger_bonus-1)*100)}%",
+        f"🎯 Crit: {int(player.crit_chance*100)}% | 🛡️ Armor: -{player.armor_reduction} | 💰 Loot: +{int((player.scavenger_bonus-1)*100)}% | 👊 Punch: {player.punch_damage}",
         f"💰 ${player.money} | ⭐ {player.stars} | ✨ {player.xp} XP ({earned}/{needed})",
         f"🔫 {player.weapon_name} [{player.ammo_name}] | 📦 Spare: {player.get_spare()}",
          f"◈ Void Essence: {player.void_essence} | Void Bazooka: {'Owned' if 'Void Bazooka' in player.void_weapons_owned else 'Locked'} | Void Lvl {player.void_weapon_level}/10",
@@ -3206,6 +3243,61 @@ class ZombieMenuView(PlayerView):
         self.add_item(btn_refresh)
 
 
+class FleeConfirmView(PlayerView):
+    def __init__(self, user_id: int, store, display_name: str = "Survivor", timeout: float | None = None, run_id: str | None = None):
+        super().__init__(user_id, store, display_name, timeout)
+        current_player = self.store.get(user_id)
+        self.run_id = run_id if run_id is not None else current_player.run_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if not await super().interaction_check(interaction):
+            return False
+        player = self.store.get(self.user_id)
+        if player.run_id != self.run_id:
+            await interaction.response.send_message(
+                "⚠️ This flee confirmation is from an older run. Open **Continue Run** from the main menu to use the current run.",
+                ephemeral=True,
+            )
+            return False
+        if not player.run_active:
+            await interaction.response.send_message(
+                "ℹ️ This run has already ended. Return to the main menu to start another run.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    @discord.ui.button(label="🐔 YES, BAWK BAWK! FLEE!", style=discord.ButtonStyle.danger, row=0)
+    async def confirm_flee(self, interaction: discord.Interaction, _b):
+        await interaction.response.defer()
+        lock = self.store.action_lock(self.user_id)
+        async with lock:
+            player = self.store.get(self.user_id)
+            msgs = take_action(player, "flee")
+            if not player.run_active:
+                embed = make_embed(title="🏃 Escaped!", description="\n".join(msgs), color=discord.Color.blue())
+                embed.add_field(name="🌊 Waves", value=f"{player.wave - 1 if player.run_zombies_killed>0 else 0} survived\nReached Wave {player.wave}", inline=True)
+                embed.add_field(name="🧟 Kills", value=f"{player.run_zombies_killed} zombies", inline=True)
+                embed.add_field(name="💰 Rewards", value=f"+${player.run_money_earned}\n+{player.run_xp_earned} XP", inline=True)
+                set_embed_footer(embed, text=f"HP restored to {player.max_health}/{player.max_health} • Press any button to continue")
+                next_view = RunEndedView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), end_embed=embed)
+            else:
+                embed = combat_embed(player, msgs)
+                next_view = CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"))
+            await interaction.edit_original_response(content=None, embed=embed, view=next_view)
+        await self.store.save_one_async(str(self.user_id))
+
+    @discord.ui.button(label="😇 NOPE, I'M BRAVE", style=discord.ButtonStyle.success, row=0)
+    async def cancel_flee(self, interaction: discord.Interaction, _b):
+        player = self.store.get(self.user_id)
+        embed = combat_embed(player, ["😤 **Cowardice rejected!** Back to fighting. The zombies are waiting..."])
+        await interaction.response.edit_message(
+            content=None,
+            embed=embed,
+            view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), run_id=self.run_id),
+        )
+
+
 class CombatView(PlayerView):
     def __init__(self, user_id: int, store, display_name: str = "Survivor", timeout: float | None = None, run_id: str | None = None):
         # Combat must not expire after 180 seconds. Deep runs can last much longer,
@@ -3266,6 +3358,26 @@ class CombatView(PlayerView):
             await interaction.edit_original_response(content=None, embed=embed, view=next_view)
         await self.store.save_one_async(str(self.user_id))
 
+    @discord.ui.button(label="👊 Punch", style=discord.ButtonStyle.danger, row=1)
+    async def punch(self, interaction: discord.Interaction, _b):
+        await interaction.response.defer()
+        lock = self.store.action_lock(self.user_id)
+        async with lock:
+            player = self.store.get(self.user_id)
+            msgs = take_action(player, "punch")
+            if not player.run_active:
+                embed = make_embed(title="☠️ Run Ended", description="\n".join(msgs), color=discord.Color.red())
+                embed.add_field(name="🌊 Waves", value=f"{player.wave - 1 if player.run_zombies_killed>0 else 0} survived\nReached Wave {player.wave}", inline=True)
+                embed.add_field(name="🧟 Kills", value=f"{player.run_zombies_killed} zombies", inline=True)
+                embed.add_field(name="💰 Rewards", value=f"+${player.run_money_earned}\n+{player.run_xp_earned} XP", inline=True)
+                set_embed_footer(embed, text=f"HP restored to {player.max_health}/{player.max_health} • Press any button to continue")
+                next_view = RunEndedView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), end_embed=embed)
+            else:
+                embed = combat_embed(player, msgs)
+                next_view = CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"))
+            await interaction.edit_original_response(content=None, embed=embed, view=next_view)
+        await self.store.save_one_async(str(self.user_id))
+
     @discord.ui.button(label="💥 Void Bazooka", style=discord.ButtonStyle.secondary, row=1)
     async def void_bazooka(self, interaction: discord.Interaction, _b):
         await interaction.response.defer()
@@ -3323,27 +3435,31 @@ class CombatView(PlayerView):
 
     @discord.ui.button(label="🏃 Flee", style=discord.ButtonStyle.secondary, row=0)
     async def flee(self, interaction: discord.Interaction, _b):
-        await interaction.response.defer()
-        lock = self.store.action_lock(self.user_id)
-        async with lock:
-            player = self.store.get(self.user_id)
-            msgs = take_action(player, "flee")
-            if not player.run_active:
-                embed = make_embed(title="🏃 Escaped!", description="\n".join(msgs), color=discord.Color.blue())
-                embed.add_field(name="🌊 Waves", value=f"{player.wave - 1 if player.run_zombies_killed>0 else 0} survived\nReached Wave {player.wave}", inline=True)
-                embed.add_field(name="🧟 Kills", value=f"{player.run_zombies_killed} zombies", inline=True)
-                embed.add_field(name="💰 Rewards", value=f"+${player.run_money_earned}\n+{player.run_xp_earned} XP", inline=True)
-                set_embed_footer(embed, text=f"HP restored to {player.max_health}/{player.max_health} • Press any button to continue")
-                next_view = RunEndedView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), end_embed=embed)
-            else:
-                embed = combat_embed(player, msgs)
-                next_view = CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"))
-            # Keep the Discord message update inside the same per-player lock so
-            # a rapid second click cannot overwrite the message with stale state.
-            await interaction.edit_original_response(content=None, embed=embed, view=next_view)
-        await self.store.save_one_async(str(self.user_id))
+        # Flee is destructive to the active run, so require a confirmation first
+        # to prevent accidental clicks from ending a run.
+        player = self.store.get(self.user_id)
+        embed = make_embed(
+            title="🏃 FLEE?!",
+            description=(
+                "**ARE YOU SURE YOU WANT TO RUN, CHICKEN?!**\n\n"
+                "🐔 **BAWK BAWK BAWK!** 🐔\n\n"
+                "You will end the current run and keep the rewards you've earned.\n"
+                "There is no shame in running... probably. 😅"
+            ),
+            color=discord.Color.orange(),
+        )
+        await interaction.response.edit_message(
+            content=None,
+            embed=embed,
+            view=FleeConfirmView(
+                self.user_id,
+                self.store,
+                display_name=getattr(self, "display_name", "Survivor"),
+                run_id=self.run_id,
+            ),
+        )
 
-    @discord.ui.button(label="🏠 Main Menu", style=discord.ButtonStyle.secondary, row=3)
+    @discord.ui.button(label="🏠 Main Menu", style=discord.ButtonStyle.secondary, row=0)
     async def main_menu(self, interaction: discord.Interaction, _b):
         # Always provide a safe exit from combat. This does not abandon the run;
         # it simply returns to the menu so the player can resume it later.
@@ -3362,19 +3478,6 @@ class CombatView(PlayerView):
         if msgs:
             await self.store.save_one_async(str(self.user_id))
         await interaction.edit_original_response(content=content, embed=None, view=ZombieMenuView(self.user_id, self.store, display_name=name))
-
-    @discord.ui.button(label="🛠️ Recover Run", style=discord.ButtonStyle.secondary, row=3)
-    async def recover_run(self, interaction: discord.Interaction, _b):
-        await interaction.response.defer()
-        lock = self.store.action_lock(self.user_id)
-        async with lock:
-            player = self.store.get(self.user_id)
-            msgs = recover_stuck_run(player)
-            if not msgs:
-                msgs = ["✅ Your run is already healthy — an enemy is active."]
-            embed = combat_embed(player, msgs)
-        await self.store.save_one_async(str(self.user_id))
-        await interaction.edit_original_response(content=None, embed=embed, view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
 
 
 
@@ -4098,12 +4201,21 @@ class UpgradeView(PlayerView):
             ("health", "❤️ Health", "+20 HP"),
             ("armor", "🛡️ Armor", "-2 Dmg"),
             ("scavenger", "💰 Loot", "+10%"),
+            ("punch", "👊 Punch", "+1 Damage"),
             ("combat_medic", "💉 Combat Medic", "More meds/run"),
         ]
         for i, (uid, uname, plus) in enumerate(upgrades):
             is_sel = uid == self.selected_up
-            cost = get_combat_medic_cost(player) if uid == "combat_medic" else get_upgrade_cost(player, uid)
-            lvl = player.combat_medic_level if uid == "combat_medic" else (getattr(player, f"{uid}_upgrades", 0) if uid != "scavenger" else player.scavenger_upgrades)
+            cost = (
+                get_combat_medic_cost(player) if uid == "combat_medic"
+                else get_punch_upgrade_cost(player) if uid == "punch"
+                else get_upgrade_cost(player, uid)
+            )
+            lvl = (
+                player.combat_medic_level if uid == "combat_medic"
+                else player.punch_upgrades if uid == "punch"
+                else (player.scavenger_upgrades if uid == "scavenger" else getattr(player, f"{uid}_upgrades", 0))
+            )
             label = f"{uname.split()[1]} ({lvl}) {'✅' if is_sel else ''}"
             style = discord.ButtonStyle.success if is_sel else discord.ButtonStyle.primary
             btn = discord.ui.Button(label=label[:80], style=style, row=0 if i < 3 else 1)
@@ -4127,12 +4239,17 @@ class UpgradeView(PlayerView):
             self.add_item(btn)
 
         # Single buy button for selected upgrade - no bulk as requested
-        cost = get_combat_medic_cost(player) if self.selected_up == "combat_medic" else get_upgrade_cost(player, self.selected_up)
+        cost = (
+            get_combat_medic_cost(player) if self.selected_up == "combat_medic"
+            else get_punch_upgrade_cost(player) if self.selected_up == "punch"
+            else get_upgrade_cost(player, self.selected_up)
+        )
         selected_max = (
             (self.selected_up == "combat_medic" and player.combat_medic_level >= COMBAT_MEDIC_MAX_LEVEL)
+            or (self.selected_up == "punch" and player.punch_upgrades >= PUNCH_MAX_LEVEL)
         )
         if selected_max:
-            max_label = "Combat Medic MAXED"
+            max_label = "Combat Medic MAXED" if self.selected_up == "combat_medic" else "Punch MAXED"
             btn_buy = discord.ui.Button(label=f"🔥 {max_label}", style=discord.ButtonStyle.secondary, disabled=True, row=2)
         else:
             buy_label = f"Buy {self.selected_up.replace('_', ' ').title()} ${cost:,}"
@@ -4191,6 +4308,15 @@ class UpgradeView(PlayerView):
         lines.append(f"Your balance: **${player.money:,}** | Stars: **{player.stars}**")
         lines.append(f"Selected: **{sel.replace('_', ' ').title()}**")
         lines.append("---")
+        if sel == "punch":
+            lvl = player.punch_upgrades
+            lines.append(f"👊 **Punch ({lvl}/{PUNCH_MAX_LEVEL})**")
+            lines.append(f"**{player.punch_damage} damage** — no ammo required.")
+            if lvl < PUNCH_MAX_LEVEL:
+                lines.append(f"Next upgrade: +1 damage for **${get_punch_upgrade_cost(player):,}**")
+            else:
+                lines.append("🔥 **MAXED — 15 damage**")
+            lines.append("")
         if sel == "combat_medic":
             next_cost = get_combat_medic_cost(player)
             lvl = player.combat_medic_level
@@ -4207,8 +4333,16 @@ class UpgradeView(PlayerView):
             ("scavenger", "💰 Loot", "+10% Money"),
             ("combat_medic", "💉 Combat Medic", "More meds/run"),
         ]:
-            cost = get_combat_medic_cost(player) if uid == "combat_medic" else get_upgrade_cost(player, uid)
-            lvl = player.combat_medic_level if uid == "combat_medic" else (getattr(player, f"{uid}_upgrades", 0) if uid != "scavenger" else player.scavenger_upgrades)
+            cost = (
+                get_combat_medic_cost(player) if uid == "combat_medic"
+                else get_punch_upgrade_cost(player) if uid == "punch"
+                else get_upgrade_cost(player, uid)
+            )
+            lvl = (
+                player.combat_medic_level if uid == "combat_medic"
+                else player.punch_upgrades if uid == "punch"
+                else (player.scavenger_upgrades if uid == "scavenger" else getattr(player, f"{uid}_upgrades", 0))
+            )
             sel_mark = " ← SELECTED" if uid == sel else ""
             lines.append(f"{uname} ({lvl}){sel_mark}")
             if uid == "combat_medic":
@@ -4217,15 +4351,26 @@ class UpgradeView(PlayerView):
                     if lvl < COMBAT_MEDIC_MAX_LEVEL else
                     f"{player.max_painkillers_per_run} 💊 Painkillers + {player.max_full_restores_per_run} ✨ Full Restore per run - MAXED"
                 )
+            elif uid == "punch":
+                lines.append(
+                    f"👊 {player.punch_damage} damage - Cost ${cost:,} - Lvl {lvl}"
+                    if lvl < PUNCH_MAX_LEVEL else
+                    f"👊 {player.punch_damage} damage - MAXED"
+                )
             else:
                 lines.append(f"{plus} per level - Cost ${cost:,} - Lvl {lvl}")
             lines.append("")
         if sel == "combat_medic" and player.combat_medic_level >= COMBAT_MEDIC_MAX_LEVEL:
             lines.append("Next: **Combat Medic MAXED — Lvl 6**")
+        elif sel == "punch" and player.punch_upgrades >= PUNCH_MAX_LEVEL:
+            lines.append("Next: **Punch MAXED — 15 damage**")
         else:
             if sel == "combat_medic":
                 next_lvl = player.combat_medic_level + 1
                 next_cost = get_combat_medic_cost(player)
+            elif sel == "punch":
+                next_lvl = player.punch_upgrades + 1
+                next_cost = get_punch_upgrade_cost(player)
             else:
                 next_lvl = (getattr(player, f"{sel}_upgrades", 0) + 1) if sel != "scavenger" else player.scavenger_upgrades + 1
                 next_cost = get_upgrade_cost(player, sel)
