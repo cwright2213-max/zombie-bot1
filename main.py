@@ -501,6 +501,9 @@ class Survivor:
     global_cash_boost_until: str | None = None
     # Persistent flag so admin test runs stay excluded from leaderboards even across restarts.
     admin_test_mode: bool = False
+    # Last time this player interacted with the bot (UTC ISO timestamp).
+    # Used for admin/player activity statistics.
+    last_activity_at: str | None = None
     @property
     def level(self) -> int: return level_for_xp(self.xp)
     def get_spare(self, ammo_type: str | None = None) -> int: return self.spare_ammo.get(ammo_type or self.ammo_name, 0)
@@ -690,6 +693,7 @@ class Survivor:
         allowed.setdefault("xp_boost_until", None)
         allowed.setdefault("global_xp_boost_until", None)
         allowed.setdefault("admin_test_mode", False)
+        allowed.setdefault("last_activity_at", None)
         if "Pistol" not in allowed["owned_weapons"]: allowed["owned_weapons"].append("Pistol")
         allowed["equipped_weapon"] = allowed.get("weapon_name", "Pistol")
         if "stars" not in data: allowed["stars"] = max(0, level_for_xp(int(data.get("xp", 0))) - 1)
@@ -2760,6 +2764,9 @@ class GameStore:
             # persists state through save_one_async(), and background autosave
             # covers idle/newly-created survivors as well.
             self.players[key] = Survivor()
+        # Touch activity whenever a player object is accessed by a command/view.
+        # The normal command/callback save paths persist this timestamp.
+        self.players[key].last_activity_at = datetime.now(timezone.utc).isoformat()
         return self.players[key]
 
     def save_one(self, key: str):
@@ -5031,6 +5038,61 @@ async def launch_reset(interaction: discord.Interaction, confirm: bool = False):
 @app_commands.describe(confirm="Set this to True to confirm the full reset")
 async def reset_everything(interaction: discord.Interaction, confirm: bool = False):
     await _run_launch_reset(interaction, confirm)
+
+
+@bot.tree.command(name="playerstats", description="[ADMIN] View Zombie Survival player activity statistics")
+async def playerstats_cmd(interaction: discord.Interaction):
+    if not has_admin_commands(interaction):
+        await interaction.response.send_message(admin_denied_message(), ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+
+    now = datetime.now(timezone.utc)
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    week_start = now - timedelta(days=7)
+
+    total_players = len(game_store.players)
+    active_runs = 0
+    today_players = 0
+    week_players = 0
+
+    for player in game_store.players.values():
+        if player.run_active and player.enemy is not None:
+            active_runs += 1
+
+        raw_activity = getattr(player, "last_activity_at", None)
+        if not raw_activity:
+            continue
+        try:
+            activity = datetime.fromisoformat(raw_activity)
+            if activity.tzinfo is None:
+                activity = activity.replace(tzinfo=timezone.utc)
+            if activity >= today_start:
+                today_players += 1
+            if activity >= week_start:
+                week_players += 1
+        except (TypeError, ValueError):
+            # Legacy/corrupt activity timestamps should not break admin stats.
+            continue
+
+    embed = discord.Embed(
+        title="📊 Zombie Survival — Player Stats",
+        description="Current player and activity overview.",
+        color=discord.Color.from_rgb(50, 180, 80),
+    )
+    embed.add_field(name="👥 Total Players", value=f"**{total_players:,}**", inline=True)
+    embed.add_field(name="🟢 Currently Surviving", value=f"**{active_runs:,}**", inline=True)
+    embed.add_field(name="📅 Players Today", value=f"**{today_players:,}**", inline=True)
+    embed.add_field(name="📈 Players This Week", value=f"**{week_players:,}**", inline=True)
+    embed.add_field(
+        name="ℹ️ Tracking",
+        value="Today/Week counts use each player's last recorded bot activity.\n"
+              "Currently Surviving counts players with an active run and live enemy.",
+        inline=False,
+    )
+    set_embed_footer(embed, text="Admin / Owner statistics")
+    await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 @bot.tree.command(name="setwave", description="[ADMIN] Set a player's current test wave")
