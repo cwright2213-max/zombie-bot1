@@ -5300,7 +5300,6 @@ async def give_soul_token(interaction: discord.Interaction, user: discord.User, 
         ephemeral=True,
     )
 
-give_group.add_command(give_soul_group)
 bot.tree.add_command(give_group)
 
 
