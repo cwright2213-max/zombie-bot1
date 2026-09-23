@@ -4622,6 +4622,7 @@ class UpgradeView(PlayerView):
             ("health", "❤️ Health", "+20 HP"),
             ("armor", "🛡️ Armor", "-2 Dmg taken"),
             ("scavenger", "💰 Loot", "+10% Money"),
+            ("punch", "👊 Punch", "+1 Damage"),
             ("combat_medic", "💉 Combat Medic", "More meds/run"),
         ]:
             cost = (
