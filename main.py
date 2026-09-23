@@ -429,7 +429,7 @@ def make_embed(*args, **kwargs):
 
 def set_embed_footer(embed, text: str | None = None):
     if text:
-        embed.set_footer(text=f"{text} • {EMBED_FOOTER_TEXT}")
+        embed.set_footer(text=f"{text}\n{EMBED_FOOTER_TEXT}")
     else:
         embed.set_footer(text=EMBED_FOOTER_TEXT)
 
