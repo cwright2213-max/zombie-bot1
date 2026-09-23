@@ -1541,16 +1541,30 @@ def leaderboard_rank(store: "GameStore", player: Survivor, zone_name: str, guild
             return i
     return None
 
-def leaderboard_text(store: "GameStore", zone_name: str, guild_id: int | None = None, limit: int = 10) -> str:
+def leaderboard_text(store: "GameStore", zone_name: str, guild_id: int | None = None, limit: int = 10, player: Survivor | None = None) -> str:
     scope = "Server" if guild_id is not None else "Global"
-    rows = _leaderboard_rows(store, zone_name, guild_id)[:limit]
-    if not rows:
-        return f"No completed-wave records yet for **{zone_name}**."
-    lines = [f"**{scope} • {zone_name}**", ""]
+    all_rows = _leaderboard_rows(store, zone_name, guild_id)
+    rows = all_rows[:limit]
+    if not all_rows:
+        return f"**{scope} • {zone_name}**\n\nNo completed-wave records yet for **{zone_name}**."
+
+    lines = [f"**🏆 {scope} • {zone_name}**", ""]
     medals = ["🥇", "🥈", "🥉"]
+    current_rank = leaderboard_rank(store, player, zone_name, guild_id) if player is not None else None
+    current_wave = int(player.highest_waves.get(zone_name, 0)) if player is not None else 0
+    current_date = player.highest_wave_dates.get(zone_name, "—") if player is not None else "—"
+
     for i, (name, wave, date) in enumerate(rows, 1):
         icon = medals[i-1] if i <= 3 else f"**{i}.**"
-        lines.append(f"{icon} **{name}** — Wave **{wave}** · {date}")
+        you = "  👤 **YOU**" if player is not None and current_rank == i and wave == current_wave and date == current_date else ""
+        lines.append(f"{icon} **{name}** — Wave **{wave}** · {date}{you}")
+
+    if player is not None and current_rank is not None and current_rank > limit:
+        name = player.leaderboard_name or "Survivor"
+        lines.extend(["", "**👤 YOUR RECORD**", f"**{name}** — Wave **{current_wave}** · 🌎 Rank **#{current_rank}**"])
+    elif player is not None and current_rank is None:
+        lines.extend(["", "**👤 YOUR RECORD**", "No completed-wave record yet. Finish a wave to appear on the leaderboard!"])
+
     return "\n".join(lines)
 
 def personal_records_text(player: Survivor) -> str:
@@ -3193,13 +3207,13 @@ class LeaderboardView(PlayerView):
 
     def render_global(self, player=None, zone_name=None):
         p=player or self.store.get(self.user_id); zn=zone_name or self.zone_name
-        return leaderboard_text(self.store, zn, None)
+        return leaderboard_text(self.store, zn, None, player=p)
 
     def render_server(self, player=None):
         p=player or self.store.get(self.user_id)
         if self.guild_id is None:
             return "**🏠 Server Leaderboard**\n\nUse this inside a Discord server."
-        return leaderboard_text(self.store, self.zone_name, self.guild_id)
+        return leaderboard_text(self.store, self.zone_name, self.guild_id, player=p)
 
 
 class DailyCrateView(PlayerView):
@@ -3357,7 +3371,7 @@ class ZombieMenuView(PlayerView):
             if gid is not None and str(gid) not in p.leaderboard_guilds:
                 p.leaderboard_guilds.append(str(gid))
             await self.store.save_one_async(str(self.user_id))
-            await interaction.edit_original_response(content=leaderboard_text(self.store, p.zone_name, None), embed=None, view=LeaderboardView(self.user_id,self.store,display_name=name,guild_id=gid,zone_name=p.zone_name))
+            await interaction.edit_original_response(content=leaderboard_text(self.store, p.zone_name, None, player=p), embed=None, view=LeaderboardView(self.user_id,self.store,display_name=name,guild_id=gid,zone_name=p.zone_name))
         lb_cb.__name__ = "leaderboards_cb"
         self.add_item(btn_lb)
         btn_lb.callback = lb_cb
@@ -5121,9 +5135,9 @@ async def leaderboard_cmd(interaction: discord.Interaction, scope: str = "global
     if scope == "personal":
         content=personal_records_text(p)
     elif scope == "server":
-        content=leaderboard_text(game_store,zone,gid) if gid is not None else "**🏠 Server Leaderboard**\n\nUse this command inside a server."
+        content=leaderboard_text(game_store,zone,gid, player=p) if gid is not None else "**🏠 Server Leaderboard**\n\nUse this command inside a server."
     else:
-        content=leaderboard_text(game_store,zone,None)
+        content=leaderboard_text(game_store,zone,None, player=p)
     await interaction.followup.send(content=content,view=LeaderboardView(interaction.user.id,game_store,display_name=name,guild_id=gid,zone_name=zone))
 
 @bot.tree.command(name="zombie_start", description="Start a zombie run")
