@@ -4285,6 +4285,15 @@ class ShopHubView(PlayerView):
         view = VoidUpgradeView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"))
         await interaction.response.edit_message(content=None, embed=view.get_shop_embed(p), view=view)
 
+    @discord.ui.button(label="🪙", style=discord.ButtonStyle.primary, row=1)
+    async def token_btn(self, interaction: discord.Interaction, _b):
+        p=self.store.get(self.user_id)
+        if p.run_active:
+            await interaction.response.edit_message(content=None, embed=combat_embed(p, ["🚫 **Wave 50 Token Shop is locked during a run.** Flee or finish the run first."]), view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+            return
+        view = SpecialTokenShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), zone_name=p.zone_name)
+        await interaction.response.edit_message(content=view.get_shop_text(p), embed=None, view=view)
+
     @discord.ui.button(label="👻", style=discord.ButtonStyle.primary, row=1)
     async def soul_btn(self, interaction: discord.Interaction, _b):
         p=self.store.get(self.user_id)
