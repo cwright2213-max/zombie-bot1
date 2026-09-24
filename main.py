@@ -1567,6 +1567,10 @@ def _enemy_damage(player: Survivor, damage_multiplier: float = 1.0) -> list[str]
         player.enemy = None
         player.spare_ammo[player.ammo_name] = player.spare_ammo.get(player.ammo_name, 0) + player.magazine
         player.magazine = 0
+        # Normal enemy/boss counterattack deaths must also apply the post-Wave-50
+        # cash penalty. Several other death paths call this helper directly; this
+        # path is the shared resolver for ordinary enemy damage deaths.
+        msgs.extend(_apply_post_wave50_death_cash_penalty(player))
         msgs.extend(_grant_end_of_run_rewards(player))
         return msgs
     return result
@@ -5989,7 +5993,7 @@ async def setwave(interaction: discord.Interaction, wave: int, user: discord.Use
             player.run_active = True
             player.run_id = uuid.uuid4().hex
             player.wave = int(wave)
-            player.zombies_remaining = 3
+            player.zombies_remaining = zombies_for_wave(player.wave)
             player.enemy = None
             player.bloater_cooldown = 0
             player.bloaters_spawned_this_run = 0
