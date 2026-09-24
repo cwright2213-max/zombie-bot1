@@ -3930,9 +3930,15 @@ class CombatView(PlayerView):
                 next_view = RunEndedView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), end_embed=embed)
             else:
                 embed = combat_embed(player, msgs)
-                # Keep this View alive for the entire run instead of letting its
-                # 180-second timeout kill the controls.
-                next_view = self
+                # Rebuild the combat view after every action so wave-dependent
+                # controls (especially Flee checkpoints) immediately match the
+                # new wave. Reusing `self` would leave the old button set in place
+                # after a wave advances (e.g. Wave 54 -> 55).
+                next_view = CombatView(
+                    self.user_id, self.store,
+                    display_name=getattr(self, "display_name", "Survivor"),
+                    run_id=player.run_id,
+                )
             await interaction.edit_original_response(content=None, embed=embed, view=next_view)
         await self.store.save_one_async(str(self.user_id))
 
