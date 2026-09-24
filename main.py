@@ -207,13 +207,17 @@ WEAPONS: dict[str, dict[str, Any]] = {
         "damage": 225, "mag": 1, "price": 15000, "unlock_level": 125, "shots": 1,
         "desc": "Heavy late-game single-shot sniper. Massive damage, but starts with a 1-round magazine and relies on Magazine upgrades for special ammo."
     },
+    "Mutator Rifle": {
+        "damage": 75, "mag": 8, "price": 75000, "unlock_level": 200, "shots": 4, "mag_per_upgrade": 4,
+        "desc": "Experimental endgame rifle that fires 4 rounds per attack. High sustained damage with an 8-round magazine."
+    },
 }
 
 WEAPON_UPGRADE_BASE_COSTS: dict[str, int] = {"damage": 250, "mag": 350, "crit": 400, "double_tap": 5000}
 DOUBLE_TAP_COSTS = (5000, 10000, 20000, 35000, 55000, 85000, 125000, 180000, 260000, 375000)
 DOUBLE_TAP_WEAPON_MULT: dict[str, float] = {
     "Pistol": 1.00, "Shotgun": 1.20, "Rifle": 1.45,
-    "SMG": 1.65, "Sawed-Off": 1.90, "Tactical Sniper": 2.25,
+    "SMG": 1.65, "Sawed-Off": 1.90, "Tactical Sniper": 2.25, "Mutator Rifle": 2.50,
 }
 DOUBLE_TAP_MAX_LEVEL = 10
 WEAPON_DAMAGE_MAX_LEVEL = 200
@@ -228,12 +232,18 @@ WEAPON_DAMAGE_PER_UPGRADE: dict[str, int] = {
     "SMG": 4,
     "Sawed-Off": 15,
     "Tactical Sniper": 19,
+    "Mutator Rifle": 6,
 }
 WEAPON_UPGRADE_RARITY_MULT: dict[str, float] = {
-    "Pistol": 1.00, "Shotgun": 1.12, "Rifle": 1.25, "SMG": 1.38, "Sawed-Off": 1.52, "Tactical Sniper": 1.70,
+    "Pistol": 1.00, "Shotgun": 1.12, "Rifle": 1.25, "SMG": 1.38, "Sawed-Off": 1.52, "Tactical Sniper": 1.70, "Mutator Rifle": 1.90,
 }
+# Weapon upgrades use a gentler long-term curve after level 20 for Damage
+# and Magazine to avoid the endgame becoming prohibitively expensive.
+# Crit retains its existing level-10 breakpoint and scaling.
 WEAPON_UPGRADE_EARLY_MULT: dict[str, float] = {"damage": 1.50, "mag": 1.50, "crit": 1.60}
-WEAPON_UPGRADE_LATE_MULT: dict[str, float] = {"damage": 1.28, "mag": 1.28, "crit": 1.28}
+WEAPON_UPGRADE_LATE_MULT: dict[str, float] = {"damage": 1.17, "mag": 1.17, "crit": 1.28}
+WEAPON_UPGRADE_DAMAGE_BREAKPOINT = 20
+WEAPON_UPGRADE_STANDARD_BREAKPOINT = 10
 
 # --- VOID WEAPON SYSTEM ---
 # Void weapons are deliberately separate from the normal WEAPONS system.
@@ -579,6 +589,7 @@ class Survivor:
             + int(special_token_bonus(self, "damage"))
         )
         shots = int(base.get("shots", 1))
+        mag_per_upgrade = int(base.get("mag_per_upgrade", shots))
         self.magazine_size = (
             base["mag"]
             + self.weapon_upgrade_level("mag") * shots
@@ -2604,7 +2615,8 @@ def get_weapon_upgrade_cost(player: Survivor, weapon_name: str, stat: str) -> in
         base_cost = DOUBLE_TAP_COSTS[level]
         return int(base_cost * DOUBLE_TAP_WEAPON_MULT.get(weapon_name, 1.0))
     rarity = WEAPON_UPGRADE_RARITY_MULT.get(weapon_name, 1.0)
-    return int(WEAPON_UPGRADE_BASE_COSTS[stat] * rarity * (WEAPON_UPGRADE_EARLY_MULT[stat] ** min(level, 10)) * (WEAPON_UPGRADE_LATE_MULT[stat] ** max(level - 10, 0)))
+    breakpoint = WEAPON_UPGRADE_DAMAGE_BREAKPOINT if stat in {"damage", "mag"} else WEAPON_UPGRADE_STANDARD_BREAKPOINT
+    return int(WEAPON_UPGRADE_BASE_COSTS[stat] * rarity * (WEAPON_UPGRADE_EARLY_MULT[stat] ** min(level, breakpoint)) * (WEAPON_UPGRADE_LATE_MULT[stat] ** max(level - breakpoint, 0)))
 
 def upgrade_weapon(player: Survivor, weapon_name: str, stat: str) -> list[str]:
     if player.run_active:
@@ -2646,9 +2658,9 @@ def upgrade_weapon(player: Survivor, weapon_name: str, stat: str) -> list[str]:
         value = player.weapon_damage
         detail = f"+{damage_per_upgrade} damage → **{value}** (including Soul bonuses)"
     elif stat == "mag":
-        shots = int(WEAPONS[weapon_name].get("shots", 1))
+        mag_per_upgrade = int(WEAPONS[weapon_name].get("mag_per_upgrade", WEAPONS[weapon_name].get("shots", 1)))
         value = player.magazine_size
-        detail = f"+{shots} magazine → **{value}** (including Soul bonuses)"
+        detail = f"+{mag_per_upgrade} magazine → **{value}** (including Soul bonuses)"
     else:
         value = player.crit_chance
         detail = f"Crit → **{value*100:.1f}%** (including Soul bonuses)"
@@ -4597,7 +4609,7 @@ class WeaponShopView(PlayerView):
         self.selected_weapon = selected_weapon or player.weapon_name
         self.clear_items()
 
-        for i, wname in enumerate(["Pistol", "Shotgun", "Rifle", "SMG", "Sawed-Off", "Tactical Sniper"]):
+        for i, wname in enumerate(["Pistol", "Shotgun", "Rifle", "SMG", "Sawed-Off", "Tactical Sniper", "Mutator Rifle"]):
             if wname not in WEAPONS:
                 continue
             owned = wname in player.owned_weapons
@@ -4692,7 +4704,7 @@ class WeaponShopView(PlayerView):
             lv=player.weapon_upgrades.get(sel,{"damage":0,"mag":0,"crit":0})
             lines.append(f"🔧 Upgrades: ⚔️ Lv {lv['damage']} • 📦 Lv {lv['mag']} • 🎯 Lv {lv['crit']} • 🔫 Double-Tap Lv {lv.get('double_tap',0)}")
         lines.append("---")
-        for wname in ["Pistol", "Shotgun", "Rifle", "SMG", "Sawed-Off", "Tactical Sniper"]:
+        for wname in ["Pistol", "Shotgun", "Rifle", "SMG", "Sawed-Off", "Tactical Sniper", "Mutator Rifle"]:
             if wname not in WEAPONS:
                 continue
             w = WEAPONS[wname]
@@ -4767,11 +4779,11 @@ class WeaponUpgradeView(PlayerView):
         if messages: lines.extend(messages); lines.append("")
         dt_level = lv.get("double_tap", 0)
         dt_chance = min(dt_level, 10)
-        lines += [f"🔧 **{self.weapon_name} Upgrades**","",f"💰 Cash: **${player.money:,}**",f"⚔️ Damage: **{w['damage']+lv['damage']*WEAPON_DAMAGE_PER_UPGRADE.get(self.weapon_name,3)}**",f"📦 Magazine: **{w['mag']+lv['mag']*shots}** ({shots} shot(s) per attack)",f"🎯 Crit: **{crit*100:.1f}%**",f"🔫 Double-Tap: **{dt_chance}%**", "","Each upgrade uses cash and affects **only this weapon**.","Double-Tap gives a chance to immediately repeat the attack for free; the bonus attack cannot chain.",""]
+        lines += [f"🔧 **{self.weapon_name} Upgrades**","",f"💰 Cash: **${player.money:,}**",f"⚔️ Damage: **{w['damage']+lv['damage']*WEAPON_DAMAGE_PER_UPGRADE.get(self.weapon_name,3)}**",f"📦 Magazine: **{w['mag']+lv['mag']*int(w.get('mag_per_upgrade', shots))}** ({shots} shot(s) per attack)",f"🎯 Crit: **{crit*100:.1f}%**",f"🔫 Double-Tap: **{dt_chance}%**", "","Each upgrade uses cash and affects **only this weapon**.","Double-Tap gives a chance to immediately repeat the attack for free; the bonus attack cannot chain.",""]
         for stat,label,icon in [("damage","Damage","⚔️"),("mag","Magazine","📦"),("crit","Crit","🎯"),("double_tap","Double-Tap","🔫")]:
             cost=get_weapon_upgrade_cost(player,self.weapon_name,stat)
             if stat=="damage": detail=f"+{WEAPON_DAMAGE_PER_UPGRADE.get(self.weapon_name, 3)} damage"
-            elif stat=="mag": detail=f"+{shots} capacity"
+            elif stat=="mag": detail=f"+{int(w.get('mag_per_upgrade', shots))} capacity"
             elif stat=="crit": detail="+2% first, +0.5% after"
             else: detail=f"+1% proc chance (free second attack)"
             max_levels = {"damage": WEAPON_DAMAGE_MAX_LEVEL, "mag": WEAPON_MAG_MAX_LEVEL, "crit": WEAPON_CRIT_MAX_LEVEL, "double_tap": DOUBLE_TAP_MAX_LEVEL}
