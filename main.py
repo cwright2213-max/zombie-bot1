@@ -540,6 +540,10 @@ class Survivor:
     # Last time this player interacted with the bot (UTC ISO timestamp).
     # Used for admin/player activity statistics.
     last_activity_at: str | None = None
+    # Persistent total time spent in active runs, in seconds.
+    total_play_time_seconds: float = 0.0
+    # UTC ISO timestamp for the currently active run timer, if any.
+    run_started_at: str | None = None
     @property
     def level(self) -> int: return level_for_xp(self.xp)
     def get_spare(self, ammo_type: str | None = None) -> int: return self.spare_ammo.get(ammo_type or self.ammo_name, 0)
@@ -758,6 +762,11 @@ class Survivor:
         allowed.setdefault("global_xp_boost_until", None)
         allowed.setdefault("admin_test_mode", False)
         allowed.setdefault("last_activity_at", None)
+        try:
+            allowed["total_play_time_seconds"] = max(0.0, float(allowed.get("total_play_time_seconds", 0.0) or 0.0))
+        except (TypeError, ValueError):
+            allowed["total_play_time_seconds"] = 0.0
+        allowed.setdefault("run_started_at", None)
         if "Pistol" not in allowed["owned_weapons"]: allowed["owned_weapons"].append("Pistol")
         allowed["equipped_weapon"] = allowed.get("weapon_name", "Pistol")
         if "stars" not in data: allowed["stars"] = max(0, level_for_xp(int(data.get("xp", 0))) - 1)
@@ -1245,6 +1254,54 @@ def _void_perk_status(player: Survivor) -> str:
         parts.append(f"{name} L{lvl}" if lvl else f"{name} 🔒")
     return " • ".join(parts)
 
+def _start_run_timer(player: Survivor):
+    """Start the persistent play-time timer for an active run if not already running."""
+    if not getattr(player, "run_started_at", None):
+        player.run_started_at = datetime.now(timezone.utc).isoformat()
+
+def _stop_run_timer(player: Survivor):
+    """Accumulate elapsed active-run time exactly once and clear the run timer."""
+    started = getattr(player, "run_started_at", None)
+    if not started:
+        return
+    try:
+        start_dt = datetime.fromisoformat(started)
+        if start_dt.tzinfo is None:
+            start_dt = start_dt.replace(tzinfo=timezone.utc)
+        elapsed = max(0.0, (datetime.now(timezone.utc) - start_dt).total_seconds())
+        player.total_play_time_seconds = max(0.0, float(getattr(player, "total_play_time_seconds", 0.0) or 0.0)) + elapsed
+    except (TypeError, ValueError, OverflowError):
+        pass
+    finally:
+        player.run_started_at = None
+
+def _current_play_time_seconds(player: Survivor) -> float:
+    """Return stored play time plus the current active-run elapsed time."""
+    total = max(0.0, float(getattr(player, "total_play_time_seconds", 0.0) or 0.0))
+    started = getattr(player, "run_started_at", None)
+    if not getattr(player, "run_active", False) or not started:
+        return total
+    try:
+        start_dt = datetime.fromisoformat(started)
+        if start_dt.tzinfo is None:
+            start_dt = start_dt.replace(tzinfo=timezone.utc)
+        return total + max(0.0, (datetime.now(timezone.utc) - start_dt).total_seconds())
+    except (TypeError, ValueError, OverflowError):
+        return total
+
+def _format_play_time(seconds: float) -> str:
+    total = max(0, int(seconds))
+    days, rem = divmod(total, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, secs = divmod(rem, 60)
+    if days:
+        return f"{days}d {hours}h {minutes}m {secs}s"
+    if hours:
+        return f"{hours}h {minutes}m {secs}s"
+    if minutes:
+        return f"{minutes}m {secs}s"
+    return f"{secs}s"
+
 def start_run(player: Survivor) -> list[str]:
     if player.run_active:
         return ["⚠️ Already in a run!"]
@@ -1291,6 +1348,7 @@ def start_run(player: Survivor) -> list[str]:
     player.wave = 1
     player.zombies_remaining = 3
     player.run_active = True
+    _start_run_timer(player)
     player.enemy = spawn_enemy(player)
 
     # A free Void Bazooka shot is a valid way to start a run even when the
@@ -1574,6 +1632,7 @@ def _enemy_damage(player: Survivor, damage_multiplier: float = 1.0) -> list[str]
             ]
         else:
             msgs = data
+        _stop_run_timer(player)
         player.run_active = False
         player.enemy = None
         player.spare_ammo[player.ammo_name] = player.spare_ammo.get(player.ammo_name, 0) + player.magazine
@@ -2025,6 +2084,7 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
             player.health = player.max_health
             player.spare_ammo[player.ammo_name] = player.spare_ammo.get(player.ammo_name, 0) + player.magazine
             player.magazine = 0
+            _stop_run_timer(player)
             player.run_active = False
             player.enemy = None
             messages.extend(_apply_post_wave50_death_cash_penalty(player))
@@ -2142,6 +2202,7 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
                 player.health = player.max_health
                 player.spare_ammo[player.ammo_name] = player.spare_ammo.get(player.ammo_name, 0) + player.magazine
                 player.magazine = 0
+                _stop_run_timer(player)
                 player.run_active = False
                 player.enemy = None
                 messages.append(f"💀 **The {enemy.name} got you!**")
@@ -2209,6 +2270,7 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
                 player.health = player.max_health
                 player.spare_ammo[player.ammo_name] = player.spare_ammo.get(player.ammo_name, 0) + player.magazine
                 player.magazine = 0
+                _stop_run_timer(player)
                 player.run_active = False
                 player.enemy = None
                 messages.append(f"💀 **The {enemy.name} got you!**")
@@ -2245,6 +2307,7 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
                 # OVERWHELMED - no ammo at all
                 player.spare_ammo[player.ammo_name] = player.spare_ammo.get(player.ammo_name, 0) + player.magazine
                 player.magazine = 0
+                _stop_run_timer(player)
                 player.run_active = False
                 player.enemy = None
                 player.health = player.max_health
@@ -2388,6 +2451,7 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
                 player.health = player.max_health
                 player.spare_ammo[player.ammo_name] = player.spare_ammo.get(player.ammo_name, 0) + player.magazine
                 player.magazine = 0
+                _stop_run_timer(player)
                 player.run_active = False
                 player.enemy = None
                 messages.append(f"💀 **The {enemy.name} got you!**")
@@ -2420,6 +2484,7 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
                     player.health = player.max_health
                     player.spare_ammo[player.ammo_name] = player.spare_ammo.get(player.ammo_name, 0) + player.magazine
                     player.magazine = 0
+                    _stop_run_timer(player)
                     player.run_active = False
                     player.enemy = None
                     msgs = [
@@ -2451,6 +2516,7 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
             # OVERWHELMED on reload attempt with no spare
             player.spare_ammo[player.ammo_name] = player.spare_ammo.get(player.ammo_name, 0) + player.magazine
             player.magazine = 0
+            _stop_run_timer(player)
             player.run_active = False
             player.enemy = None
             player.health = player.max_health
@@ -2479,6 +2545,7 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
         # USER WANTS: flee still rewards players + full heal
         player.spare_ammo[player.ammo_name] = player.spare_ammo.get(player.ammo_name, 0) + player.magazine
         player.magazine = 0
+        _stop_run_timer(player)
         player.run_active = False
         player.enemy = None
         player.health = player.max_health
@@ -5938,8 +6005,98 @@ async def reset_everything(interaction: discord.Interaction, confirm: bool = Fal
     await _run_launch_reset(interaction, confirm)
 
 
-@bot.tree.command(name="playerstats", description="[ADMIN] View Zombie Survival player activity statistics")
-async def playerstats_cmd(interaction: discord.Interaction):
+@bot.tree.command(name="ownerstats", description="[OWNER] View the Owner player profile and current game stats")
+async def ownerstats_cmd(interaction: discord.Interaction):
+    if not is_owner(interaction):
+        await interaction.response.send_message(owner_denied_message(), ephemeral=True)
+        return
+
+    player = game_store.get(OWNER_ID)
+    player.recalc_stats()
+
+    # Highest recorded wave across all zones. Current wave is shown separately
+    # because an active run may be ahead of the saved leaderboard records.
+    highest_wave = max((int(v) for v in player.highest_waves.values()), default=0)
+    highest_zone = "—"
+    if highest_wave > 0:
+        matching_zones = [
+            zone for zone, value in player.highest_waves.items()
+            if int(value) == highest_wave
+        ]
+        highest_zone = ", ".join(matching_zones) if matching_zones else "—"
+
+    discord_name = interaction.user.display_name or interaction.user.name
+    run_status = "🟢 Active" if player.run_active else "⚪ Not in a run"
+    current_wave = str(player.wave) if player.run_active else "—"
+    current_kills = str(player.run_zombies_killed) if player.run_active else "0"
+    play_time = _format_play_time(_current_play_time_seconds(player))
+
+    embed = discord.Embed(
+        title="👑 Owner Player Stats",
+        description=f"**{discord_name}** • <@{OWNER_ID}>",
+        color=discord.Color.gold(),
+    )
+    embed.add_field(
+        name="👤 Player",
+        value=f"**Name:** {player.leaderboard_name}\n**Level:** {player.level:,}\n**Rebirths:** {player.rebirth_count:,}",
+        inline=True,
+    )
+    embed.add_field(
+        name="💰 Progression",
+        value=f"**Cash:** ${player.money:,}\n**XP:** {player.xp:,}\n**Stars:** {player.stars:,}",
+        inline=True,
+    )
+    embed.add_field(
+        name="🔫 Weapon",
+        value=f"**Current:** {player.weapon_name}\n**Damage:** {player.weapon_damage:,}\n**Magazine:** {player.magazine_size:,}\n**Crit:** {player.crit_chance * 100:.1f}%",
+        inline=True,
+    )
+    embed.add_field(
+        name="🧟 Current Run",
+        value=f"**Status:** {run_status}\n**Zone:** {player.zone_name}\n**Wave:** {current_wave}\n**Kills:** {current_kills}",
+        inline=True,
+    )
+    embed.add_field(
+        name="⏱️ Time Played",
+        value=f"**Total:** {play_time}",
+        inline=True,
+    )
+    embed.add_field(
+        name="🏆 Records",
+        value=f"**Highest Wave:** {highest_wave:,}\n**Zone(s):** {highest_zone}",
+        inline=True,
+    )
+    embed.add_field(
+        name="👻 Soul",
+        value=(
+            f"**Tokens:** {player.soul_tokens:,}\n"
+            f"**Greedy:** Lv {player.greedy_soul_level:,}\n"
+            f"**Evil:** Lv {player.evil_soul_level:,}\n"
+            f"**Safe:** Lv {player.safe_soul_level:,}"
+        ),
+        inline=True,
+    )
+    embed.add_field(
+        name="🛡️ Survivor",
+        value=f"**HP:** {player.health:,}/{player.max_health:,}\n**Armour:** {player.armor_reduction:,}\n**Punch:** {player.punch_damage:,}",
+        inline=True,
+    )
+    embed.add_field(
+        name="📍 Current Zone",
+        value=f"**{player.zone_name}**\nAmmo: **{player.ammo_name}**",
+        inline=True,
+    )
+    embed.add_field(
+        name="ℹ️ Note",
+        value="Kills shown here are the kills in the current run; the game does not currently store a lifetime kill counter.",
+        inline=False,
+    )
+    set_embed_footer(embed, text="Owner-only player profile")
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="activitystats", description="[ADMIN] View Zombie Survival player activity overview")
+async def activitystats_cmd(interaction: discord.Interaction):
     if not has_admin_commands(interaction):
         await interaction.response.send_message(admin_denied_message(), ephemeral=True)
         return
@@ -5991,6 +6148,124 @@ async def playerstats_cmd(interaction: discord.Interaction):
     )
     set_embed_footer(embed, text="Admin / Owner statistics")
     await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="playerstats", description="[OWNER] View a specific player's Zombie Survival stats")
+@app_commands.describe(user="Player whose saved stats you want to inspect")
+async def playerstats_cmd(interaction: discord.Interaction, user: discord.User):
+    if not is_owner(interaction):
+        await interaction.response.send_message(owner_denied_message(), ephemeral=True)
+        return
+
+    target_id = str(user.id)
+    if target_id not in game_store.players:
+        await interaction.response.send_message(
+            f"❌ **{user.display_name or user.name}** does not have a saved Zombie Survival profile yet.",
+            ephemeral=True,
+        )
+        return
+
+    player = game_store.players[target_id]
+    player.recalc_stats()
+
+    highest_wave = max((int(v) for v in player.highest_waves.values()), default=0)
+    highest_zone = "—"
+    if highest_wave > 0:
+        matching_zones = [
+            zone for zone, value in player.highest_waves.items()
+            if int(value) == highest_wave
+        ]
+        highest_zone = ", ".join(matching_zones) if matching_zones else "—"
+
+    run_status = "🟢 Active" if player.run_active else "⚪ Not in a run"
+    current_wave = str(player.wave) if player.run_active else "—"
+    current_kills = str(player.run_zombies_killed) if player.run_active else "0"
+    play_time = _format_play_time(_current_play_time_seconds(player))
+
+    embed = discord.Embed(
+        title="🧟 Player Stats",
+        description=(
+            f"**{player.leaderboard_name}** • {user.mention}\n"
+            f"Discord ID: `{user.id}`"
+        ),
+        color=discord.Color.blurple(),
+    )
+    embed.add_field(
+        name="👤 Player",
+        value=f"**Name:** {player.leaderboard_name}\n**Level:** {player.level:,}\n**Rebirths:** {player.rebirth_count:,}",
+        inline=True,
+    )
+    embed.add_field(
+        name="💰 Progression",
+        value=f"**Cash:** ${player.money:,}\n**XP:** {player.xp:,}\n**Stars:** {player.stars:,}",
+        inline=True,
+    )
+    embed.add_field(
+        name="🔫 Weapon",
+        value=(
+            f"**Current:** {player.weapon_name}\n"
+            f"**Damage:** {player.weapon_damage:,}\n"
+            f"**Magazine:** {player.magazine_size:,}\n"
+            f"**Crit:** {player.crit_chance * 100:.1f}%\n"
+            f"**Double-Tap:** {player.double_tap_chance * 100:.1f}%"
+        ),
+        inline=True,
+    )
+    embed.add_field(
+        name="🧟 Current Run",
+        value=(
+            f"**Status:** {run_status}\n"
+            f"**Zone:** {player.zone_name}\n"
+            f"**Wave:** {current_wave}\n"
+            f"**Kills:** {current_kills}"
+        ),
+        inline=True,
+    )
+    embed.add_field(
+        name="⏱️ Time Played",
+        value=f"**Total:** {play_time}",
+        inline=True,
+    )
+    embed.add_field(
+        name="🏆 Records",
+        value=f"**Highest Wave:** {highest_wave:,}\n**Zone(s):** {highest_zone}",
+        inline=True,
+    )
+    embed.add_field(
+        name="👻 Soul",
+        value=(
+            f"**Tokens:** {player.soul_tokens:,}\n"
+            f"**Greedy:** Lv {player.greedy_soul_level:,}\n"
+            f"**Evil:** Lv {player.evil_soul_level:,}\n"
+            f"**Safe:** Lv {player.safe_soul_level:,}"
+        ),
+        inline=True,
+    )
+    embed.add_field(
+        name="🛡️ Survivor",
+        value=(
+            f"**HP:** {player.health:,}/{player.max_health:,}\n"
+            f"**Armour:** {player.armor_reduction:,}\n"
+            f"**Punch:** {player.punch_damage:,}\n"
+            f"**Ammo:** {player.ammo_name}"
+        ),
+        inline=True,
+    )
+    embed.add_field(
+        name="📊 Run Earnings",
+        value=(
+            f"**Cash Earned:** ${player.run_money_earned:,}\n"
+            f"**XP Earned:** {player.run_xp_earned:,}"
+        ),
+        inline=True,
+    )
+    embed.add_field(
+        name="ℹ️ Note",
+        value="Kills shown here are current-run kills; the game does not currently store a lifetime kill counter.",
+        inline=False,
+    )
+    set_embed_footer(embed, text="Owner-only player profile")
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 @bot.tree.command(name="setwave", description="[ADMIN] Set a player's current test wave")
