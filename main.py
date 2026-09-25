@@ -237,14 +237,12 @@ WEAPON_DAMAGE_PER_UPGRADE: dict[str, int] = {
 WEAPON_UPGRADE_RARITY_MULT: dict[str, float] = {
     "Pistol": 1.00, "Shotgun": 1.12, "Rifle": 1.25, "SMG": 1.38, "Sawed-Off": 1.52, "Tactical Sniper": 1.70, "Mutator Rifle": 1.90,
 }
-# Weapon upgrade curve:
-# Damage/Magazine: x1.50 through Lv10, x1.28 through Lv20, then x1.17 from Lv21+.
-# Crit: x1.60 through Lv10, then x1.28 from Lv11+.
+# Weapon upgrades use a gentler long-term curve after level 20 for Damage
+# and Magazine to avoid the endgame becoming prohibitively expensive.
+# Crit retains its existing level-10 breakpoint and scaling.
 WEAPON_UPGRADE_EARLY_MULT: dict[str, float] = {"damage": 1.50, "mag": 1.50, "crit": 1.60}
-WEAPON_UPGRADE_MID_MULT: dict[str, float] = {"damage": 1.28, "mag": 1.28, "crit": 1.28}
 WEAPON_UPGRADE_LATE_MULT: dict[str, float] = {"damage": 1.17, "mag": 1.17, "crit": 1.28}
-WEAPON_UPGRADE_EARLY_BREAKPOINT = 10
-WEAPON_UPGRADE_LATE_BREAKPOINT = 20
+WEAPON_UPGRADE_DAMAGE_BREAKPOINT = 20
 WEAPON_UPGRADE_STANDARD_BREAKPOINT = 10
 
 # --- VOID WEAPON SYSTEM ---
@@ -594,7 +592,7 @@ class Survivor:
         mag_per_upgrade = int(base.get("mag_per_upgrade", shots))
         self.magazine_size = (
             base["mag"]
-            + self.weapon_upgrade_level("mag") * mag_per_upgrade
+            + self.weapon_upgrade_level("mag") * shots
             + self.evil_soul_level * SOUL_EVIL_MAG_PER_LEVEL
             + int(special_token_bonus(self, "mag"))
         )
@@ -2617,21 +2615,20 @@ def get_weapon_upgrade_cost(player: Survivor, weapon_name: str, stat: str) -> in
         base_cost = DOUBLE_TAP_COSTS[level]
         return int(base_cost * DOUBLE_TAP_WEAPON_MULT.get(weapon_name, 1.0))
     rarity = WEAPON_UPGRADE_RARITY_MULT.get(weapon_name, 1.0)
-    # Damage and Magazine: Lv 1-10 use x1.50, Lv 11-20 retain the old x1.28,
-    # and only Lv 21+ switches to the new gentler x1.17 curve.
-    # Crit keeps its existing x1.60 through Lv 10, then x1.28 thereafter.
-    early_levels = min(level, WEAPON_UPGRADE_EARLY_BREAKPOINT)
-    mid_levels = min(max(level - WEAPON_UPGRADE_EARLY_BREAKPOINT, 0), WEAPON_UPGRADE_LATE_BREAKPOINT - WEAPON_UPGRADE_EARLY_BREAKPOINT)
-    late_levels = max(level - WEAPON_UPGRADE_LATE_BREAKPOINT, 0)
-    mid_mult = WEAPON_UPGRADE_MID_MULT[stat] if stat in {"damage", "mag"} else 1.0
-    late_mult = WEAPON_UPGRADE_LATE_MULT[stat]
-    return int(
-        WEAPON_UPGRADE_BASE_COSTS[stat]
-        * rarity
-        * (WEAPON_UPGRADE_EARLY_MULT[stat] ** early_levels)
-        * (mid_mult ** mid_levels)
-        * (late_mult ** late_levels)
-    )
+    # Damage/Magazine: Lv 1-10 x1.50, Lv 11-20 x1.28, Lv 21+ x1.17.
+    # Crit remains unchanged: Lv 1-10 x1.60, Lv 11+ x1.28.
+    if stat in {"damage", "mag"}:
+        early_levels = min(level, 10)
+        mid_levels = min(max(level - 10, 0), 10)
+        late_levels = max(level - 20, 0)
+        return int(
+            WEAPON_UPGRADE_BASE_COSTS[stat] * rarity
+            * (WEAPON_UPGRADE_EARLY_MULT[stat] ** early_levels)
+            * (1.28 ** mid_levels)
+            * (1.17 ** late_levels)
+        )
+    breakpoint = WEAPON_UPGRADE_STANDARD_BREAKPOINT
+    return int(WEAPON_UPGRADE_BASE_COSTS[stat] * rarity * (WEAPON_UPGRADE_EARLY_MULT[stat] ** min(level, breakpoint)) * (WEAPON_UPGRADE_LATE_MULT[stat] ** max(level - breakpoint, 0)))
 
 def upgrade_weapon(player: Survivor, weapon_name: str, stat: str) -> list[str]:
     if player.run_active:
