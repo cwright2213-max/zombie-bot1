@@ -602,11 +602,17 @@ class Survivor:
         self._ensure_weapon_upgrades()
         base = WEAPONS.get(self.weapon_name, WEAPONS["Pistol"])
         damage_per_upgrade = WEAPON_DAMAGE_PER_UPGRADE.get(self.weapon_name, 3)
-        self.weapon_damage = (
+        # Soul damage scales ONLY from the weapon's original base damage.
+        # Each Soul path compounds multiplicatively by its own percentage;
+        # normal weapon upgrades and special-token bonuses remain separate.
+        soul_base_damage = round(
             base["damage"]
+            * (SOUL_EVIL_BASE_DAMAGE_MULTIPLIER ** max(0, int(self.evil_soul_level or 0)))
+            * (SOUL_SAFE_BASE_DAMAGE_MULTIPLIER ** max(0, int(self.safe_soul_level or 0)))
+        )
+        self.weapon_damage = (
+            soul_base_damage
             + self.weapon_upgrade_level("damage") * damage_per_upgrade
-            + self.evil_soul_level * SOUL_EVIL_DAMAGE_PER_LEVEL
-            + self.safe_soul_level * SOUL_SAFE_DAMAGE_PER_LEVEL
             + int(special_token_bonus(self, "damage"))
         )
         shots = int(base.get("shots", 1))
@@ -2953,11 +2959,11 @@ REBIRTH_MIN_LEVEL = 400
 REBIRTH_BASE_COST = 25_000_000
 SOUL_TOKEN_UPGRADE_COST = 1
 SOUL_GREEDY_BONUS_PER_LEVEL = 0.15
-SOUL_EVIL_DAMAGE_PER_LEVEL = 5
+SOUL_EVIL_BASE_DAMAGE_MULTIPLIER = 1.15
 SOUL_EVIL_MAG_PER_LEVEL = 2
 SOUL_EVIL_CRIT_PER_LEVEL = 0.01
 SOUL_SAFE_HP_PER_LEVEL = 35
-SOUL_SAFE_DAMAGE_PER_LEVEL = 3
+SOUL_SAFE_BASE_DAMAGE_MULTIPLIER = 1.10
 
 def rebirth_cost(player: Survivor) -> int:
     """Return the next Rebirth cost. Rebirth 1 costs $25M; each later one is x1.5."""
@@ -3001,9 +3007,11 @@ def upgrade_soul(player: Survivor, upgrade: str) -> list[str]:
     if upgrade == "greedy":
         detail = f"+{int(player.greedy_soul_level * SOUL_GREEDY_BONUS_PER_LEVEL * 100)}% Cash / XP / Void Essence"
     elif upgrade == "evil":
-        detail = f"+{player.evil_soul_level * SOUL_EVIL_DAMAGE_PER_LEVEL} Weapon Damage / +{player.evil_soul_level * SOUL_EVIL_MAG_PER_LEVEL} Mag / +{player.evil_soul_level}% Crit"
+        pct = (SOUL_EVIL_BASE_DAMAGE_MULTIPLIER ** player.evil_soul_level - 1.0) * 100
+        detail = f"+{pct:.0f}% Base Damage / +{player.evil_soul_level * SOUL_EVIL_MAG_PER_LEVEL} Mag / +{player.evil_soul_level}% Crit"
     else:
-        detail = f"+{player.safe_soul_level * SOUL_SAFE_HP_PER_LEVEL} Starting HP / +{player.safe_soul_level * SOUL_SAFE_DAMAGE_PER_LEVEL} Weapon Damage"
+        pct = (SOUL_SAFE_BASE_DAMAGE_MULTIPLIER ** player.safe_soul_level - 1.0) * 100
+        detail = f"+{player.safe_soul_level * SOUL_SAFE_HP_PER_LEVEL} Starting HP / +{pct:.0f}% Base Damage"
     return [f"👻 **{upgrade.title()} Soul → Level {getattr(player, field)}!** {detail}", f"👻 Soul Tokens left: **{player.soul_tokens}**"]
 
 def perform_rebirth(player: Survivor) -> list[str]:
@@ -3788,8 +3796,11 @@ class PlayerView(discord.ui.View):
                     pass
                 return False
             try:
+                # If the player taps a stale combat button after the challenge
+                # replaced the original combat panel, show the actual code here
+                # instead of a useless instruction with no code to copy.
                 await interaction.response.send_message(
-                    "🛡️ **Verification required.** Use `/verify <6-digit-code>` to unlock your run.",
+                    embed=_anti_cheat_challenge_embed(player),
                     ephemeral=True,
                 )
             except Exception:
