@@ -12,6 +12,11 @@ from discord import app_commands
 OWNER_ID = 572053060969299977
 XP_BOOST_DURATION_SECONDS = 24 * 60 * 60
 CASH_BOOST_DURATION_SECONDS = 24 * 60 * 60
+
+# --- ANTI-CHEAT VERIFICATION ---
+ANTI_CHEAT_MIN_PRESSES = 75
+ANTI_CHEAT_MAX_PRESSES = 150
+ANTI_CHEAT_DEADLINE_SECONDS = 200
 GLOBAL_XP_BOOST_UNTIL: str | None = None
 GLOBAL_CASH_BOOST_UNTIL: str | None = None
 
@@ -544,6 +549,18 @@ class Survivor:
     total_play_time_seconds: float = 0.0
     # UTC ISO timestamp for the currently active run timer, if any.
     run_started_at: str | None = None
+    # --- ANTI-CHEAT VERIFICATION ---
+    # Only combat-interface presses are counted. Navigation/shop controls are not.
+    anti_cheat_press_count: int = 0
+    anti_cheat_press_threshold: int = 0
+    anti_cheat_verification_pending: bool = False
+    anti_cheat_verification_code: str = ""
+    anti_cheat_verification_deadline: str | None = None
+    anti_cheat_verification_failures: int = 0
+    anti_cheat_challenges: int = 0
+    anti_cheat_banned: bool = False
+    anti_cheat_ban_reason: str = ""
+    anti_cheat_banned_at: str | None = None
     @property
     def level(self) -> int: return level_for_xp(self.xp)
     def get_spare(self, ammo_type: str | None = None) -> int: return self.spare_ammo.get(ammo_type or self.ammo_name, 0)
@@ -767,6 +784,28 @@ class Survivor:
         except (TypeError, ValueError):
             allowed["total_play_time_seconds"] = 0.0
         allowed.setdefault("run_started_at", None)
+        allowed.setdefault("anti_cheat_press_count", 0)
+        allowed.setdefault("anti_cheat_press_threshold", 0)
+        allowed.setdefault("anti_cheat_verification_pending", False)
+        allowed.setdefault("anti_cheat_verification_code", "")
+        allowed.setdefault("anti_cheat_verification_deadline", None)
+        allowed.setdefault("anti_cheat_verification_failures", 0)
+        allowed.setdefault("anti_cheat_challenges", 0)
+        allowed.setdefault("anti_cheat_banned", False)
+        allowed.setdefault("anti_cheat_ban_reason", "")
+        allowed.setdefault("anti_cheat_banned_at", None)
+        try:
+            allowed["anti_cheat_press_count"] = max(0, int(allowed.get("anti_cheat_press_count", 0) or 0))
+            allowed["anti_cheat_press_threshold"] = max(0, int(allowed.get("anti_cheat_press_threshold", 0) or 0))
+            allowed["anti_cheat_verification_failures"] = max(0, int(allowed.get("anti_cheat_verification_failures", 0) or 0))
+            allowed["anti_cheat_challenges"] = max(0, int(allowed.get("anti_cheat_challenges", 0) or 0))
+        except (TypeError, ValueError):
+            allowed["anti_cheat_press_count"] = 0
+            allowed["anti_cheat_press_threshold"] = 0
+            allowed["anti_cheat_verification_failures"] = 0
+            allowed["anti_cheat_challenges"] = 0
+        if allowed["anti_cheat_press_threshold"] == 0 and not allowed["anti_cheat_banned"]:
+            allowed["anti_cheat_press_threshold"] = random.randint(ANTI_CHEAT_MIN_PRESSES, ANTI_CHEAT_MAX_PRESSES)
         if "Pistol" not in allowed["owned_weapons"]: allowed["owned_weapons"].append("Pistol")
         allowed["equipped_weapon"] = allowed.get("weapon_name", "Pistol")
         if "stars" not in data: allowed["stars"] = max(0, level_for_xp(int(data.get("xp", 0))) - 1)
@@ -1302,12 +1341,110 @@ def _format_play_time(seconds: float) -> str:
         return f"{minutes}m {secs}s"
     return f"{secs}s"
 
+def _anti_cheat_reset_for_new_run(player: Survivor):
+    """Reset the combat-press challenge state for a new run."""
+    player.anti_cheat_press_count = 0
+    player.anti_cheat_press_threshold = random.randint(ANTI_CHEAT_MIN_PRESSES, ANTI_CHEAT_MAX_PRESSES)
+    player.anti_cheat_verification_pending = False
+    player.anti_cheat_verification_code = ""
+    player.anti_cheat_verification_deadline = None
+    player.anti_cheat_verification_failures = 0
+
+def _anti_cheat_begin_challenge(player: Survivor) -> str:
+    """Freeze combat and create a fresh six-digit verification challenge."""
+    player.anti_cheat_verification_pending = True
+    player.anti_cheat_verification_code = f"{random.randint(0, 999999):06d}"
+    player.anti_cheat_verification_deadline = (
+        datetime.now(timezone.utc) + timedelta(seconds=ANTI_CHEAT_DEADLINE_SECONDS)
+    ).isoformat()
+    player.anti_cheat_challenges = int(getattr(player, "anti_cheat_challenges", 0) or 0) + 1
+    # Verification time is not active gameplay time. Pause the run timer while frozen.
+    _stop_run_timer(player)
+    return player.anti_cheat_verification_code
+
+def _anti_cheat_deadline_expired(player: Survivor) -> bool:
+    if not getattr(player, "anti_cheat_verification_pending", False):
+        return False
+    deadline = getattr(player, "anti_cheat_verification_deadline", None)
+    if not deadline:
+        return True
+    try:
+        dt = datetime.fromisoformat(deadline)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return datetime.now(timezone.utc) >= dt
+    except (TypeError, ValueError, OverflowError):
+        return True
+
+def _anti_cheat_remaining_seconds(player: Survivor) -> int:
+    deadline = getattr(player, "anti_cheat_verification_deadline", None)
+    if not deadline:
+        return 0
+    try:
+        dt = datetime.fromisoformat(deadline)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return max(0, int((dt - datetime.now(timezone.utc)).total_seconds()))
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+def _anti_cheat_ban(player: Survivor, reason: str = "Verification timeout"):
+    """Ban the player pending Owner review without deleting their saved progress."""
+    player.anti_cheat_banned = True
+    player.anti_cheat_ban_reason = reason
+    player.anti_cheat_banned_at = datetime.now(timezone.utc).isoformat()
+    player.anti_cheat_verification_pending = False
+    player.anti_cheat_verification_code = ""
+    player.anti_cheat_verification_deadline = None
+    _stop_run_timer(player)
+
+def _anti_cheat_register_press(player: Survivor) -> bool:
+    """Count one combat-interface press; return True when it triggers verification."""
+    if getattr(player, "anti_cheat_banned", False) or getattr(player, "anti_cheat_verification_pending", False):
+        return False
+    threshold = int(getattr(player, "anti_cheat_press_threshold", 0) or 0)
+    if threshold <= 0:
+        threshold = random.randint(ANTI_CHEAT_MIN_PRESSES, ANTI_CHEAT_MAX_PRESSES)
+        player.anti_cheat_press_threshold = threshold
+    player.anti_cheat_press_count = max(0, int(getattr(player, "anti_cheat_press_count", 0) or 0)) + 1
+    if player.anti_cheat_press_count >= threshold:
+        _anti_cheat_begin_challenge(player)
+        return True
+    return False
+
+def _anti_cheat_challenge_embed(player: Survivor):
+    remaining = _anti_cheat_remaining_seconds(player)
+    embed = make_embed(
+        title="🛡️ HUMAN VERIFICATION REQUIRED",
+        description=(
+            "**Your run is temporarily frozen.**\n\n"
+            "To continue, use **`/verify <6-digit-code>`** with the code below.\n\n"
+            f"🔐 **Verification Code:** `{player.anti_cheat_verification_code}`\n\n"
+            f"⏳ **Time remaining:** {remaining}s\n\n"
+            "If the timer expires, the account is **banned pending Owner review**."
+        ),
+        color=discord.Color.orange(),
+    )
+    embed.add_field(
+        name="🤖 Why?",
+        value="This challenge helps stop unattended autoclickers from farming extremely deep runs.",
+        inline=False,
+    )
+    set_embed_footer(embed, text="Combat is frozen until verification succeeds")
+    return embed
+
+
 def start_run(player: Survivor) -> list[str]:
+    if getattr(player, "anti_cheat_banned", False):
+        return ["🚫 **You are banned from Zombie Survival pending Owner review.**"]
+    if getattr(player, "anti_cheat_verification_pending", False):
+        return ["🛡️ **Verification required.** Use `/verify <6-digit-code>` before starting or continuing the run."]
     if player.run_active:
         return ["⚠️ Already in a run!"]
 
     player.health = player.max_health
     player.run_id = uuid.uuid4().hex
+    _anti_cheat_reset_for_new_run(player)
     player.painkillers_used_this_run = 0
     player.full_restores_used_this_run = 0
     player.run_money_earned = 0
@@ -3566,6 +3703,31 @@ class GameStore:
 
 game_store = GameStore()
 
+async def anti_cheat_watchdog():
+    """Automatically convert an expired verification challenge into an Owner-review ban."""
+    await asyncio.sleep(2)
+    while True:
+        try:
+            for key, player in list(game_store.players.items()):
+                if getattr(player, "anti_cheat_verification_pending", False) and _anti_cheat_deadline_expired(player):
+                    async with game_store.action_lock(int(key)):
+                        # Re-check after acquiring the lock so a simultaneous /verify cannot race the ban.
+                        player = game_store.players.get(str(key))
+                        if not player or not player.anti_cheat_verification_pending:
+                            continue
+                        if not _anti_cheat_deadline_expired(player):
+                            continue
+                        _anti_cheat_ban(player, "Verification timeout")
+                    try:
+                        await game_store.save_one_async(str(key))
+                    except Exception as e:
+                        print(f"[ANTI-CHEAT] Failed persisting timeout ban for {key}: {e}")
+                    print(f"[ANTI-CHEAT] BANNED {key}: verification timeout")
+        except Exception as e:
+            print(f"[ANTI-CHEAT WATCHDOG ERROR] {e}")
+        await asyncio.sleep(2)
+
+
 async def background_autosave():
     import asyncio
     await asyncio.sleep(60)
@@ -3598,6 +3760,39 @@ class PlayerView(discord.ui.View):
             try:
                 await interaction.response.send_message("Not your game! Use /zombie", ephemeral=True)
             except:
+                pass
+            return False
+        player = self.store.get(self.user_id)
+        if getattr(player, "anti_cheat_banned", False):
+            try:
+                await interaction.response.send_message(
+                    "🚫 **You are banned from Zombie Survival pending Owner review.**",
+                    ephemeral=True,
+                )
+            except Exception:
+                pass
+            return False
+        if getattr(player, "anti_cheat_verification_pending", False):
+            if _anti_cheat_deadline_expired(player):
+                _anti_cheat_ban(player, "Verification timeout")
+                try:
+                    await self.store.save_one_async(str(self.user_id))
+                except Exception as e:
+                    print(f"[ANTI-CHEAT] Failed saving timeout ban for {self.user_id}: {e}")
+                try:
+                    await interaction.response.send_message(
+                        "🚫 **Verification expired. You are now banned pending Owner review.**",
+                        ephemeral=True,
+                    )
+                except Exception:
+                    pass
+                return False
+            try:
+                await interaction.response.send_message(
+                    "🛡️ **Verification required.** Use `/verify <6-digit-code>` to unlock your run.",
+                    ephemeral=True,
+                )
+            except Exception:
                 pass
             return False
         return True
@@ -4004,33 +4199,25 @@ class CombatView(PlayerView):
 
     @discord.ui.button(label="🔫 Attack", style=discord.ButtonStyle.danger, row=0)
     async def attack(self, interaction: discord.Interaction, _b):
-        # ACK immediately. Then serialise the state mutation AND the Discord
-        # message update so rapid interactions cannot overwrite the UI out of order.
-        # PostgreSQL I/O stays outside the combat lock.
         await interaction.response.defer()
         lock = self.store.action_lock(self.user_id)
         async with lock:
             player = self.store.get(self.user_id)
-            msgs = take_action(player, "attack")
-            if not player.run_active:
-                embed = make_embed(title="☠️ Run Ended", description="\n".join(msgs), color=discord.Color.red())
-                embed.add_field(name="🌊 Waves", value=f"{player.wave - 1 if player.run_zombies_killed>0 else 0} survived\nReached Wave {player.wave}", inline=True)
-                embed.add_field(name="🧟 Kills", value=f"{player.run_zombies_killed} zombies", inline=True)
-                embed.add_field(name="💰 Rewards", value=f"+${player.run_money_earned}\n+{player.run_xp_earned} XP", inline=True)
-                set_embed_footer(embed, text=f"HP restored to {player.max_health}/{player.max_health} • Press any button to continue")
-                next_view = RunEndedView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), end_embed=embed)
+            if _anti_cheat_register_press(player):
+                await interaction.edit_original_response(content=None, embed=_anti_cheat_challenge_embed(player), view=None)
             else:
-                embed = combat_embed(player, msgs)
-                # Rebuild the combat view after every action so wave-dependent
-                # controls (especially Flee checkpoints) immediately match the
-                # new wave. Reusing `self` would leave the old button set in place
-                # after a wave advances (e.g. Wave 54 -> 55).
-                next_view = CombatView(
-                    self.user_id, self.store,
-                    display_name=getattr(self, "display_name", "Survivor"),
-                    run_id=player.run_id,
-                )
-            await interaction.edit_original_response(content=None, embed=embed, view=next_view)
+                msgs = take_action(player, "attack")
+                if not player.run_active:
+                    embed = make_embed(title="☠️ Run Ended", description="\n".join(msgs), color=discord.Color.red())
+                    embed.add_field(name="🌊 Waves", value=f"{player.wave - 1 if player.run_zombies_killed>0 else 0} survived\nReached Wave {player.wave}", inline=True)
+                    embed.add_field(name="🧟 Kills", value=f"{player.run_zombies_killed} zombies", inline=True)
+                    embed.add_field(name="💰 Rewards", value=f"+${player.run_money_earned}\n+{player.run_xp_earned} XP", inline=True)
+                    set_embed_footer(embed, text=f"HP restored to {player.max_health}/{player.max_health} • Press any button to continue")
+                    next_view = RunEndedView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), end_embed=embed)
+                else:
+                    embed = combat_embed(player, msgs)
+                    next_view = CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), run_id=player.run_id)
+                await interaction.edit_original_response(content=None, embed=embed, view=next_view)
         await self.store.save_one_async(str(self.user_id))
 
     @discord.ui.button(label="👊 Punch", style=discord.ButtonStyle.danger, row=1)
@@ -4039,18 +4226,21 @@ class CombatView(PlayerView):
         lock = self.store.action_lock(self.user_id)
         async with lock:
             player = self.store.get(self.user_id)
-            msgs = take_action(player, "punch")
-            if not player.run_active:
-                embed = make_embed(title="☠️ Run Ended", description="\n".join(msgs), color=discord.Color.red())
-                embed.add_field(name="🌊 Waves", value=f"{player.wave - 1 if player.run_zombies_killed>0 else 0} survived\nReached Wave {player.wave}", inline=True)
-                embed.add_field(name="🧟 Kills", value=f"{player.run_zombies_killed} zombies", inline=True)
-                embed.add_field(name="💰 Rewards", value=f"+${player.run_money_earned}\n+{player.run_xp_earned} XP", inline=True)
-                set_embed_footer(embed, text=f"HP restored to {player.max_health}/{player.max_health} • Press any button to continue")
-                next_view = RunEndedView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), end_embed=embed)
+            if _anti_cheat_register_press(player):
+                await interaction.edit_original_response(content=None, embed=_anti_cheat_challenge_embed(player), view=None)
             else:
-                embed = combat_embed(player, msgs)
-                next_view = CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"))
-            await interaction.edit_original_response(content=None, embed=embed, view=next_view)
+                msgs = take_action(player, "punch")
+                if not player.run_active:
+                    embed = make_embed(title="☠️ Run Ended", description="\n".join(msgs), color=discord.Color.red())
+                    embed.add_field(name="🌊 Waves", value=f"{player.wave - 1 if player.run_zombies_killed>0 else 0} survived\nReached Wave {player.wave}", inline=True)
+                    embed.add_field(name="🧟 Kills", value=f"{player.run_zombies_killed} zombies", inline=True)
+                    embed.add_field(name="💰 Rewards", value=f"+${player.run_money_earned}\n+{player.run_xp_earned} XP", inline=True)
+                    set_embed_footer(embed, text=f"HP restored to {player.max_health}/{player.max_health} • Press any button to continue")
+                    next_view = RunEndedView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), end_embed=embed)
+                else:
+                    embed = combat_embed(player, msgs)
+                    next_view = CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), run_id=player.run_id)
+                await interaction.edit_original_response(content=None, embed=embed, view=next_view)
         await self.store.save_one_async(str(self.user_id))
 
     @discord.ui.button(label="💥 Void Bazooka", style=discord.ButtonStyle.secondary, row=1)
@@ -4058,19 +4248,22 @@ class CombatView(PlayerView):
         await interaction.response.defer()
         lock = self.store.action_lock(self.user_id)
         async with lock:
-            player=self.store.get(self.user_id)
-            msgs=take_action(player, "void_bazooka")
-            if not player.run_active:
-                embed=make_embed(title="☠️ Run Ended", description="\n".join(msgs), color=discord.Color.red())
-                embed.add_field(name="🌊 Waves", value=f"{player.wave - 1 if player.run_zombies_killed>0 else 0} survived\nReached Wave {player.wave}", inline=True)
-                embed.add_field(name="🧟 Kills", value=f"{player.run_zombies_killed} zombies", inline=True)
-                embed.add_field(name="💰 Rewards", value=f"+${player.run_money_earned}\n+{player.run_xp_earned} XP", inline=True)
-                set_embed_footer(embed, text=f"HP restored to {player.max_health}/{player.max_health} • Press any button to continue")
-                next_view = RunEndedView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), end_embed=embed)
+            player = self.store.get(self.user_id)
+            if _anti_cheat_register_press(player):
+                await interaction.edit_original_response(content=None, embed=_anti_cheat_challenge_embed(player), view=None)
             else:
-                embed=combat_embed(player,msgs)
-                next_view = CombatView(self.user_id,self.store,display_name=getattr(self,"display_name","Survivor"))
-            await interaction.edit_original_response(content=None, embed=embed, view=next_view)
+                msgs = take_action(player, "void_bazooka")
+                if not player.run_active:
+                    embed = make_embed(title="☠️ Run Ended", description="\n".join(msgs), color=discord.Color.red())
+                    embed.add_field(name="🌊 Waves", value=f"{player.wave - 1 if player.run_zombies_killed>0 else 0} survived\nReached Wave {player.wave}", inline=True)
+                    embed.add_field(name="🧟 Kills", value=f"{player.run_zombies_killed} zombies", inline=True)
+                    embed.add_field(name="💰 Rewards", value=f"+${player.run_money_earned}\n+{player.run_xp_earned} XP", inline=True)
+                    set_embed_footer(embed, text=f"HP restored to {player.max_health}/{player.max_health} • Press any button to continue")
+                    next_view = RunEndedView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), end_embed=embed)
+                else:
+                    embed = combat_embed(player, msgs)
+                    next_view = CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), run_id=player.run_id)
+                await interaction.edit_original_response(content=None, embed=embed, view=next_view)
         await self.store.save_one_async(str(self.user_id))
 
     @discord.ui.button(label="◈ Void Perks", style=discord.ButtonStyle.secondary, row=1)
@@ -4085,34 +4278,40 @@ class CombatView(PlayerView):
         lock = self.store.action_lock(self.user_id)
         async with lock:
             player = self.store.get(self.user_id)
-            msgs = take_action(player, "reload")
-            if not player.run_active:
-                embed = make_embed(title="☠️ Run Ended", description="\n".join(msgs), color=discord.Color.red())
-                embed.add_field(name="🌊 Waves", value=f"{player.wave - 1 if player.run_zombies_killed>0 else 0} survived\nReached Wave {player.wave}", inline=True)
-                embed.add_field(name="🧟 Kills", value=f"{player.run_zombies_killed} zombies", inline=True)
-                embed.add_field(name="💰 Rewards", value=f"+${player.run_money_earned}\n+{player.run_xp_earned} XP", inline=True)
-                set_embed_footer(embed, text=f"HP restored to {player.max_health}/{player.max_health} • Press any button to continue")
-                next_view = RunEndedView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), end_embed=embed)
+            if _anti_cheat_register_press(player):
+                await interaction.edit_original_response(content=None, embed=_anti_cheat_challenge_embed(player), view=None)
             else:
-                embed = combat_embed(player, msgs)
-                next_view = CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"))
-            # Keep the Discord message update inside the same per-player lock as the
-            # state mutation. Otherwise rapid clicks can finish out of order and an
-            # older interaction can overwrite the message with stale combat state.
-            await interaction.edit_original_response(content=None, embed=embed, view=next_view)
+                msgs = take_action(player, "reload")
+                if not player.run_active:
+                    embed = make_embed(title="☠️ Run Ended", description="\n".join(msgs), color=discord.Color.red())
+                    embed.add_field(name="🌊 Waves", value=f"{player.wave - 1 if player.run_zombies_killed>0 else 0} survived\nReached Wave {player.wave}", inline=True)
+                    embed.add_field(name="🧟 Kills", value=f"{player.run_zombies_killed} zombies", inline=True)
+                    embed.add_field(name="💰 Rewards", value=f"+${player.run_money_earned}\n+{player.run_xp_earned} XP", inline=True)
+                    set_embed_footer(embed, text=f"HP restored to {player.max_health}/{player.max_health} • Press any button to continue")
+                    next_view = RunEndedView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), end_embed=embed)
+                else:
+                    embed = combat_embed(player, msgs)
+                    next_view = CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), run_id=player.run_id)
+                await interaction.edit_original_response(content=None, embed=embed, view=next_view)
         await self.store.save_one_async(str(self.user_id))
 
     @discord.ui.button(label="💊 Heal", style=discord.ButtonStyle.success, row=0)
     async def heal(self, interaction: discord.Interaction, _b):
         player = self.store.get(self.user_id)
+        if _anti_cheat_register_press(player):
+            await interaction.response.edit_message(content=None, embed=_anti_cheat_challenge_embed(player), view=None)
+            await self.store.save_one_async(str(self.user_id))
+            return
         embed = combat_embed(player, ["Choose heal item"])
         await interaction.response.edit_message(content=None, embed=embed, view=HealView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
 
     @discord.ui.button(label="🏃 Flee", style=discord.ButtonStyle.secondary, row=0)
     async def flee(self, interaction: discord.Interaction, _b):
-        # Flee is destructive to the active run, so require a confirmation first
-        # to prevent accidental clicks from ending a run.
         player = self.store.get(self.user_id)
+        if _anti_cheat_register_press(player):
+            await interaction.response.edit_message(content=None, embed=_anti_cheat_challenge_embed(player), view=None)
+            await self.store.save_one_async(str(self.user_id))
+            return
         embed = make_embed(
             title="🏃 FLEE?!",
             description=(
@@ -5667,7 +5866,9 @@ class StarterBot(discord.Client):
         print(f"Synced {len(synced)} global commands")
         try:
             self.loop.create_task(background_autosave())
+            self.loop.create_task(anti_cheat_watchdog())
             print("[AUTOSAVE] Background autosave every 60s STARTED - double protection")
+            print("[ANTI-CHEAT] Verification watchdog STARTED - 75-150 presses / 200s deadline")
         except Exception as e:
             print(f"[AUTOSAVE] Failed start: {e}")
 
@@ -6297,6 +6498,7 @@ async def setwave(interaction: discord.Interaction, wave: int, user: discord.Use
 
             player.run_active = True
             player.run_id = uuid.uuid4().hex
+            _anti_cheat_reset_for_new_run(player)
             player.wave = int(wave)
             player.zombies_remaining = zombies_for_wave(player.wave)
             player.enemy = None
@@ -6586,6 +6788,104 @@ async def addxp(interaction: discord.Interaction, amount: int, user: discord.Use
     await game_store.save_one_async(str(target.id))
     await interaction.followup.send(f"✨ **+{amount} XP** to {target.mention} → Level {player.level} | XP: {player.xp}" + (f" | +{level_ups} ⭐" if level_ups else ""), ephemeral=True)
 
+
+@bot.tree.command(name="verify", description="Complete the Zombie Survival human verification challenge")
+@app_commands.describe(code="The six-digit verification code shown on your frozen run")
+async def verify_cmd(interaction: discord.Interaction, code: str):
+    await interaction.response.defer(ephemeral=True)
+    user_id = interaction.user.id
+    result_message = None
+    result_embed = None
+    run_id = None
+    async with game_store.action_lock(user_id):
+        player = game_store.get(user_id)
+        if player.anti_cheat_banned:
+            result_message = "🚫 You are **banned pending Owner review**."
+        elif not player.anti_cheat_verification_pending:
+            result_message = "ℹ️ You do not currently have a verification challenge."
+        elif _anti_cheat_deadline_expired(player):
+            _anti_cheat_ban(player, "Verification timeout")
+            result_message = "🚫 **Verification expired.** You are now banned pending Owner review."
+        else:
+            code = str(code).strip()
+            if not code.isdigit() or len(code) != 6:
+                player.anti_cheat_verification_failures += 1
+                result_message = "❌ Enter the **exact 6-digit code** shown on your verification screen."
+            elif code != player.anti_cheat_verification_code:
+                player.anti_cheat_verification_failures += 1
+                result_message = "❌ **Incorrect code.** Your run remains frozen; try again before the 200-second deadline."
+            else:
+                player.anti_cheat_verification_pending = False
+                player.anti_cheat_verification_code = ""
+                player.anti_cheat_verification_deadline = None
+                player.anti_cheat_press_count = 0
+                player.anti_cheat_press_threshold = random.randint(ANTI_CHEAT_MIN_PRESSES, ANTI_CHEAT_MAX_PRESSES)
+                player.anti_cheat_verification_failures = 0
+                _start_run_timer(player)
+                run_id = player.run_id
+                result_embed = combat_embed(player, ["✅ **Verification passed!** Back to the fight. Next check will occur after another random 75–150 combat-interface presses."])
+                result_message = "✅ **Verification successful!** Your run is unlocked."
+    await game_store.save_one_async(str(user_id))
+    await interaction.followup.send(result_message, ephemeral=True)
+    if result_embed is not None:
+        try:
+            await interaction.followup.send(embed=result_embed, view=CombatView(user_id, game_store, run_id=run_id), ephemeral=False)
+        except Exception as e:
+            print(f"[ANTI-CHEAT] Could not send fresh combat panel for {user_id}: {e}")
+
+
+@bot.tree.command(name="bannedplayers", description="[OWNER] View Zombie Survival anti-cheat bans")
+async def bannedplayers_cmd(interaction: discord.Interaction):
+    if not is_owner(interaction):
+        await interaction.response.send_message(owner_denied_message(), ephemeral=True)
+        return
+    banned = [(uid, p) for uid, p in game_store.players.items() if getattr(p, "anti_cheat_banned", False)]
+    if not banned:
+        await interaction.response.send_message("🛡️ **No anti-cheat banned players.**", ephemeral=True)
+        return
+    lines = []
+    for uid, p in banned:
+        name = p.leaderboard_name or "Survivor"
+        lines.append(
+            f"• **{name}** (`{uid}`) — {p.anti_cheat_ban_reason or 'Unknown reason'}\n"
+            f"  Wave: **{p.wave if p.run_active else 0}** • Challenges: **{p.anti_cheat_challenges}** • Failed codes: **{p.anti_cheat_verification_failures}**\n"
+            f"  Banned: `{p.anti_cheat_banned_at or 'unknown'}`"
+        )
+    embed = discord.Embed(title="🛡️ Anti-Cheat Banned Players", description="\n\n".join(lines)[:3900], color=discord.Color.red())
+    set_embed_footer(embed, text="Owner-only moderation view")
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="unban", description="[OWNER] Remove a Zombie Survival anti-cheat ban")
+@app_commands.describe(user="Banned player to unban")
+async def unban_cmd(interaction: discord.Interaction, user: discord.User):
+    if not is_owner(interaction):
+        await interaction.response.send_message(owner_denied_message(), ephemeral=True)
+        return
+    changed = False
+    async with game_store.action_lock(user.id):
+        player = game_store.get(user.id)
+        if player.anti_cheat_banned:
+            player.anti_cheat_banned = False
+            player.anti_cheat_ban_reason = ""
+            player.anti_cheat_banned_at = None
+            player.anti_cheat_verification_pending = False
+            player.anti_cheat_verification_code = ""
+            player.anti_cheat_verification_deadline = None
+            player.anti_cheat_press_count = 0
+            player.anti_cheat_press_threshold = random.randint(ANTI_CHEAT_MIN_PRESSES, ANTI_CHEAT_MAX_PRESSES)
+            if player.run_active:
+                _start_run_timer(player)
+            changed = True
+    await game_store.save_one_async(str(user.id))
+    if not changed:
+        await interaction.response.send_message(f"ℹ️ {user.mention} is not currently anti-cheat banned.", ephemeral=True)
+        return
+    await interaction.response.send_message(
+        f"🔓 {user.mention} has been **unbanned**. Their saved progress was not wiped.\n"
+        "If their run was frozen, it can continue; use the existing reset controls if a full reset is needed.",
+        ephemeral=True,
+    )
 
 @bot.tree.command(name="resetplayer", description="[ADMIN] Reset a player's progress")
 @app_commands.describe(user="Player to reset")
