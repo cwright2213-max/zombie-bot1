@@ -14,8 +14,8 @@ XP_BOOST_DURATION_SECONDS = 24 * 60 * 60
 CASH_BOOST_DURATION_SECONDS = 24 * 60 * 60
 
 # --- ANTI-CHEAT VERIFICATION ---
-ANTI_CHEAT_MIN_PRESSES = 75
-ANTI_CHEAT_MAX_PRESSES = 150
+ANTI_CHEAT_MIN_PRESSES = 1250
+ANTI_CHEAT_MAX_PRESSES = 1500
 ANTI_CHEAT_DEADLINE_SECONDS = 200
 GLOBAL_XP_BOOST_UNTIL: str | None = None
 GLOBAL_CASH_BOOST_UNTIL: str | None = None
@@ -5882,7 +5882,7 @@ class StarterBot(discord.Client):
             self.loop.create_task(background_autosave())
             self.loop.create_task(anti_cheat_watchdog())
             print("[AUTOSAVE] Background autosave every 60s STARTED - double protection")
-            print("[ANTI-CHEAT] Verification watchdog STARTED - 75-150 presses / 200s deadline")
+            print("[ANTI-CHEAT] Verification watchdog STARTED - 1250-1500 presses / 200s deadline")
         except Exception as e:
             print(f"[AUTOSAVE] Failed start: {e}")
 
