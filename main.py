@@ -501,7 +501,7 @@ class Survivor:
     weapon_upgrades: dict[str, dict[str, int]] = field(default_factory=dict)
     combat_medic_level: int = 0
     # --- SOUL / REBIRTH PRESTIGE ---
-    # These are the only progression fields that survive a Rebirth, aside from
+    # Soul progression and Wave 50 token balances survive a Rebirth, alongside
     # the existing highest-wave leaderboard records. All three Soul paths are
     # intentionally uncapped and cost exactly 1 Soul Token per upgrade.
     rebirth_count: int = 0
@@ -509,8 +509,8 @@ class Survivor:
     greedy_soul_level: int = 0
     evil_soul_level: int = 0
     safe_soul_level: int = 0
-    # Wave 50 special-boss currencies/upgrades. These are Rebirth-scoped and
-    # are intentionally wiped by perform_rebirth().
+    # Wave 50 special-boss currencies carry through Rebirths. Token Shop
+    # upgrade levels remain Rebirth-scoped and are reset by perform_rebirth().
     special_tokens: dict[str, int] = field(default_factory=dict)
     special_token_upgrades: dict[str, int] = field(default_factory=dict)
     special_poison_turns: int = 0
@@ -3023,9 +3023,10 @@ def perform_rebirth(player: Survivor) -> list[str]:
     if player.money < cost:
         return [f"❌ Your next Rebirth costs **${cost:,}**. You have **${player.money:,}**."]
 
-    # Only Soul progression and the existing highest-wave leaderboard records
-    # survive. The leaderboard identity/guild metadata is retained alongside
-    # those records so the preserved scores continue to display correctly.
+    # Soul progression, Wave 50 token balances, and the existing highest-wave
+    # leaderboard records survive. Token Shop upgrade levels reset on Rebirth.
+    # The leaderboard identity/guild metadata is retained alongside those
+    # records so the preserved scores continue to display correctly.
     preserved = {
         "highest_waves": dict(player.highest_waves),
         "highest_wave_dates": dict(player.highest_wave_dates),
@@ -3036,7 +3037,9 @@ def perform_rebirth(player: Survivor) -> list[str]:
         "greedy_soul_level": int(player.greedy_soul_level),
         "evil_soul_level": int(player.evil_soul_level),
         "safe_soul_level": int(player.safe_soul_level),
-        # Special Wave 50 tokens/upgrades are intentionally NOT preserved.
+        # Wave 50 token balances carry through Rebirths; Token Shop upgrade
+        # levels intentionally reset with the normal progression.
+        "special_tokens": dict(getattr(player, "special_tokens", {}) or {}),
     }
     # Global boosters are bot-wide state, not player progression. Preserve the
     # owner's stored expiry fields so Rebirth cannot accidentally disable them.
@@ -3058,7 +3061,7 @@ def perform_rebirth(player: Survivor) -> list[str]:
         "🧹 All normal progression has been reset.",
         f"👻 **+1 Soul Token** — Total: **{player.soul_tokens}**",
         f"🏆 Your highest-wave leaderboard records remain untouched.",
-        "🪙 All Wave 50 Tokens and Token Shop upgrades were wiped for the new Rebirth.",
+        "🪙 Your Wave 50 Token balances carried through the Rebirth; Token Shop upgrade levels were reset.",
     ]
 
 
@@ -4683,7 +4686,7 @@ class RebirthConfirmView(PlayerView):
             "❌ Cash, XP, Level, Stars, weapons, ammo, meds, upgrades, Void progression and all other normal progression will be reset.\n"
             "🏆 Your existing highest-wave leaderboard records will remain.\n"
             "👻 Your Soul Tokens and Soul upgrades will remain.\n"
-            "🪙 All Wave 50 Tokens and Token Shop upgrades will be wiped.\n\n"
+            "🪙 Wave 50 Token balances will remain; Token Shop upgrade levels will reset.\n\n"
             "**This cannot be undone. Are you sure?**"
         )
 
@@ -4758,14 +4761,14 @@ class SoulShopView(PlayerView):
             f"🏆 **Highest Wave Records:** {sum(1 for v in player.highest_waves.values() if int(v) > 0)} zones recorded",
             "",
             f"🔄 **REBIRTH** — Level **{REBIRTH_MIN_LEVEL}+** • Next cost **${rebirth_cost(player):,}**",
-            "Resets ALL normal progression. Highest-wave records, Soul Tokens and Soul upgrades survive.",
+            "Resets ALL normal progression. Highest-wave records, Wave 50 Token balances, Soul Tokens and Soul upgrades survive.",
             "",
             f"💰 **Greedy Soul — Lv {player.greedy_soul_level}** • 1 👻 each • Infinite",
             f"   +{int(player.greedy_soul_level * 15)}% Cash / XP / Void Essence",
             f"😈 **Evil Soul — Lv {player.evil_soul_level}** • 1 👻 each • Infinite",
-            f"   +{player.evil_soul_level * 5} Weapon Damage / +{player.evil_soul_level * 2} Mag / +{player.evil_soul_level}% Crit",
+            f"   +{((SOUL_EVIL_BASE_DAMAGE_MULTIPLIER ** player.evil_soul_level) - 1.0) * 100:.0f}% Base Damage / +{player.evil_soul_level * 2} Mag / +{player.evil_soul_level}% Crit",
             f"🛡️ **Safe Soul — Lv {player.safe_soul_level}** • 1 👻 each • Infinite",
-            f"   +{player.safe_soul_level * 35} Starting HP / +{player.safe_soul_level * 3} Weapon Damage",
+            f"   +{player.safe_soul_level * 35} Starting HP / +{((SOUL_SAFE_BASE_DAMAGE_MULTIPLIER ** player.safe_soul_level) - 1.0) * 100:.0f}% Base Damage",
         ]
         if player.level < REBIRTH_MIN_LEVEL:
             lines.append(f"\n🔒 Rebirth unlocks at Level **{REBIRTH_MIN_LEVEL}** — you are Level **{player.level}**.")
@@ -4779,7 +4782,7 @@ class SoulShopView(PlayerView):
 
 
 class SpecialTokenShopView(PlayerView):
-    """Finite Wave 50 Token Shop. Token balances and upgrades reset on Rebirth."""
+    """Finite Wave 50 Token Shop. Token balances survive Rebirth; upgrades reset."""
     def __init__(self, user_id: int, store, display_name: str = "Survivor", zone_name: str | None = None, selected_up: str | None = None, extra_msgs: list[str] | None = None, timeout: float | None = None):
         super().__init__(user_id, store, display_name, timeout)
         player = self.store.get(user_id)
@@ -4867,7 +4870,7 @@ class SpecialTokenShopView(PlayerView):
             "",
             f"{cfg['token_name']}: **{balance}**",
             "Upgrades are Level 1–10. Cost per level: **1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 → 9 → 10 tokens**.",
-            "Token balances and Token Shop levels reset on Rebirth.",
+            "Token balances survive Rebirth. Token Shop upgrade levels reset on Rebirth.",
             "---",
         ]
         for key, label, kind, per_level, desc in cfg["upgrades"]:
