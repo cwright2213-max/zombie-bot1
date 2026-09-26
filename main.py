@@ -138,10 +138,10 @@ MAX_PAINKILLERS_PER_RUN = COMBAT_MEDIC_PAINKILLERS_PER_RUN[0]
 MAX_FULL_RESTORES_PER_RUN = COMBAT_MEDIC_FULL_RESTORES_PER_RUN[0]
 ZONES: dict[str, dict[str, Any]] = {
     "Graveyard": {"min_level": 1, "hp_mult": 1.0, "dmg_mult": 0.9, "money_mult": 2.0, "xp_mult": 1.6, "desc": "The dead don’t stay buried.", "weights": [60, 25, 12, 3], "ammo_mods": {"Standard": 1.00, "Bleed": 1.00, "Incendiary": 1.00, "Frostbite": 1.00, "Toxic": 1.00, "Shock": 1.00}},
-    "Mega Death City": {"min_level": 50, "hp_mult": 1.8, "dmg_mult": 1.3, "money_mult": 3.5, "xp_mult": 2.0, "desc": "The city belongs to the dead.", "weights": [30, 30, 25, 15], "ammo_mods": {"Standard": 1.00, "Bleed": 1.00, "Incendiary": 1.20, "Frostbite": 0.90, "Toxic": 1.00, "Shock": 1.15}},
-    "Frostbitten Outskirts": {"min_level": 100, "hp_mult": 2.8, "dmg_mult": 1.7, "money_mult": 5.0, "xp_mult": 2.4, "desc": "The cold is the least of your problems.", "weights": [20, 20, 35, 25], "ammo_mods": {"Standard": 1.00, "Bleed": 0.90, "Incendiary": 1.40, "Frostbite": 0.70, "Toxic": 1.00, "Shock": 1.15}},
-    "Toxic Wasteland": {"min_level": 150, "hp_mult": 3.7, "dmg_mult": 2.1, "money_mult": 7.5, "xp_mult": 3.2, "desc": "The land itself wants you dead.", "weights": [15, 15, 35, 35], "ammo_mods": {"Standard": 1.00, "Bleed": 1.00, "Incendiary": 1.10, "Frostbite": 1.00, "Toxic": 1.50, "Shock": 0.90}},
-    "The Void": {"min_level": 200, "hp_mult": 6.5, "dmg_mult": 2.6, "money_mult": 10.0, "xp_mult": 4.5, "desc": "Nothing should exist here.", "weights": [10, 10, 30, 50], "ammo_mods": {"Standard": 0.90, "Bleed": 1.10, "Incendiary": 1.15, "Frostbite": 1.10, "Toxic": 1.25, "Shock": 1.50}},
+    "Mega Death City": {"min_level": 50, "hp_mult": 1.8, "dmg_mult": 1.3, "money_mult": 3.5, "xp_mult": 2.0, "desc": "The city belongs to the dead.", "weights": [30, 30, 25, 15], "ammo_mods": {"Standard": 0.75, "Bleed": 1.00, "Incendiary": 1.20, "Frostbite": 0.90, "Toxic": 1.00, "Shock": 1.15}},
+    "Frostbitten Outskirts": {"min_level": 100, "hp_mult": 2.8, "dmg_mult": 1.7, "money_mult": 5.0, "xp_mult": 2.4, "desc": "The cold is the least of your problems.", "weights": [20, 20, 35, 25], "ammo_mods": {"Standard": 0.50, "Bleed": 0.90, "Incendiary": 1.40, "Frostbite": 0.70, "Toxic": 1.00, "Shock": 1.15}},
+    "Toxic Wasteland": {"min_level": 150, "hp_mult": 3.7, "dmg_mult": 2.1, "money_mult": 7.5, "xp_mult": 3.2, "desc": "The land itself wants you dead.", "weights": [15, 15, 35, 35], "ammo_mods": {"Standard": 0.25, "Bleed": 1.00, "Incendiary": 1.10, "Frostbite": 1.00, "Toxic": 1.50, "Shock": 0.90}},
+    "The Void": {"min_level": 200, "hp_mult": 6.5, "dmg_mult": 2.6, "money_mult": 10.0, "xp_mult": 4.5, "desc": "Nothing should exist here.", "weights": [10, 10, 30, 50], "ammo_mods": {"Standard": 0.25, "Bleed": 1.10, "Incendiary": 1.15, "Frostbite": 1.10, "Toxic": 1.25, "Shock": 1.50}},
 }
 ZONE_ORDER = ["Graveyard", "Mega Death City", "Frostbitten Outskirts", "Toxic Wasteland", "The Void"]
 WAVE_STAR_CHANCE = {"Graveyard": 0.05, "Mega Death City": 0.07, "Frostbitten Outskirts": 0.10, "Toxic Wasteland": 0.13, "The Void": 0.16}
@@ -176,11 +176,11 @@ BLOATER_EXPLODE_PCT = 0.65  # 65% max HP
 BLOATER_BOSS_HP_MULT = 1.5  # Bloaters are mini-bosses in every zone
 AMMO: dict[str, dict[str, Any]] = {
     "Standard": {"unlock_level": 1, "price": 0, "desc": "Reliable regular lead.", "effect": None, "cost_per_attack": 1, "box_price": 15, "box_amount": 24},
-    "Bleed": {"unlock_level": 10, "price": 200, "desc": "25% bleed 15 dmg x3", "effect": "bleed", "cost_per_attack": 2, "box_price": 50, "box_amount": 24},
-    "Incendiary": {"unlock_level": 35, "price": 600, "desc": "30% burn 20 dmg x3", "effect": "burn", "cost_per_attack": 3, "box_price": 100, "box_amount": 24},
-    "Frostbite": {"unlock_level": 70, "price": 1200, "desc": "25% freeze halves dmg x4 + 10 dmg x2", "effect": "freeze", "cost_per_attack": 4, "box_price": 100, "box_amount": 24},
-    "Toxic": {"unlock_level": 110, "price": 2500, "desc": "40% poison 18 dmg x5", "effect": "poison", "cost_per_attack": 5, "box_price": 150, "box_amount": 24},
-    "Shock": {"unlock_level": 160, "price": 5000, "desc": "20% stun 1 turn + 30 dmg", "effect": "shock", "cost_per_attack": 6, "box_price": 185, "box_amount": 24},
+    "Bleed": {"unlock_level": 10, "price": 500, "desc": "25% bleed 15 dmg x3", "effect": "bleed", "cost_per_attack": 2, "box_price": 125, "box_amount": 24},
+    "Incendiary": {"unlock_level": 35, "price": 2000, "desc": "30% burn 20 dmg x3", "effect": "burn", "cost_per_attack": 3, "box_price": 500, "box_amount": 24},
+    "Frostbite": {"unlock_level": 70, "price": 6000, "desc": "25% freeze halves dmg x4 + 10 dmg x2", "effect": "freeze", "cost_per_attack": 4, "box_price": 1500, "box_amount": 24},
+    "Toxic": {"unlock_level": 110, "price": 15000, "desc": "40% poison 18 dmg x5", "effect": "poison", "cost_per_attack": 5, "box_price": 4000, "box_amount": 24},
+    "Shock": {"unlock_level": 160, "price": 40000, "desc": "20% stun 1 turn + 30 dmg", "effect": "shock", "cost_per_attack": 6, "box_price": 40000, "box_amount": 24},
 }
 WEAPONS: dict[str, dict[str, Any]] = {
     "Pistol": {
@@ -537,6 +537,7 @@ class Survivor:
     global_cash_boost_until: str | None = None
     # Persistent flag so admin test runs stay excluded from leaderboards even across restarts.
     admin_test_mode: bool = False
+    ammo_economy_version: int = 2
     # Last time this player interacted with the bot (UTC ISO timestamp).
     # Used for admin/player activity statistics.
     last_activity_at: str | None = None
@@ -657,7 +658,7 @@ class Survivor:
         # when a run is resumed after a restart.
         d = asdict(self)
         d["equipped_weapon"] = self.weapon_name
-        d["__version"] = 5
+        d["__version"] = 6
         return d
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Survivor":
@@ -733,6 +734,8 @@ class Survivor:
             enemy = Enemy(**enemy_allowed)
         else:
             enemy = None
+        data["ammo_economy_version"] = int(data.get("ammo_economy_version", 1) or 1)
+
         spare = data.get("spare_ammo", {"Standard": 36})
         if isinstance(spare, int): spare = {"Standard": spare}
         allowed = {k: v for k, v in data.items() if k in cls.__dataclass_fields__}
@@ -761,6 +764,7 @@ class Survivor:
         allowed.setdefault("xp_boost_until", None)
         allowed.setdefault("global_xp_boost_until", None)
         allowed.setdefault("admin_test_mode", False)
+        allowed.setdefault("ammo_economy_version", data.get("ammo_economy_version", 2))
         allowed.setdefault("last_activity_at", None)
         try:
             allowed["total_play_time_seconds"] = max(0.0, float(allowed.get("total_play_time_seconds", 0.0) or 0.0))
@@ -781,6 +785,22 @@ def zone_for(player: Survivor) -> dict[str, Any]:
 
 def ammo_modifier(player: Survivor, ammo_name: str) -> float:
     return float(zone_for(player).get("ammo_mods", {}).get(ammo_name, 1.0))
+
+OLD_AMMO_BOX_PRICES = {"Standard": 15, "Bleed": 50, "Incendiary": 100, "Frostbite": 100, "Toxic": 150, "Shock": 185}
+
+def migrate_ammo_economy_v2(player: Survivor) -> tuple[int, int]:
+    if getattr(player, "ammo_economy_version", 2) >= 2:
+        return 0, 0
+    refund = 0; removed = 0
+    for ammo_name, old_box_price in OLD_AMMO_BOX_PRICES.items():
+        if ammo_name == "Standard": continue
+        rounds = max(0, int(player.spare_ammo.get(ammo_name, 0) or 0))
+        if rounds:
+            refund += int(round(rounds * old_box_price / 24))
+            removed += rounds
+            player.spare_ammo[ammo_name] = 0
+    player.ammo_economy_version = 2
+    return refund, removed
 
 def ammo_effectiveness_text(player: Survivor) -> str:
     mods = zone_for(player).get("ammo_mods", {})
@@ -2649,6 +2669,26 @@ def equip_ammo(player: Survivor, ammo_name: str) -> list[str]:
     else:
         return [f"🔬 Already using **{ammo_name}** ({AMMO[ammo_name]['cost_per_attack']}/shot)."]
 
+def swap_ammo_in_run(player: Survivor, ammo_name: str) -> list[str]:
+    if not player.run_active:
+        return ["⚠️ Ammo swapping is only available during an active run."]
+    if ammo_name not in AMMO:
+        return ["That ammo doesn't exist."]
+    if ammo_name not in player.owned_ammo and ammo_name != "Standard":
+        return [f"🔒 **{ammo_name}** is not unlocked."]
+    if player.ammo_name == ammo_name:
+        return [f"🔬 Already using **{ammo_name}** ({AMMO[ammo_name]['cost_per_attack']}/shot)."]
+    spare = player.get_spare(ammo_name)
+    if spare <= 0:
+        return [f"❌ No **{ammo_name}** rounds available. Buy ammo before the run."]
+    player.spare_ammo[player.ammo_name] = player.spare_ammo.get(player.ammo_name, 0) + player.magazine
+    player.magazine = 0
+    player.ammo_name = ammo_name
+    load = min(player.magazine_size, spare)
+    player.magazine = load
+    player.spare_ammo[ammo_name] = spare - load
+    return [f"🔄 Switched to **{ammo_name}** ({AMMO[ammo_name]['cost_per_attack']}/shot) and loaded **{load}** rounds."]
+
 def change_zone(player: Survivor, zone_name: str) -> list[str]:
     if player.run_active:
         return ["Can't change zones in a run!"]
@@ -3563,14 +3603,24 @@ class GameStore:
         verify_storage()
         raw = load_all_players()
         loaded = {}
+        migrated = []
         for k, v in raw.items():
             if not isinstance(v, dict):
                 raise RuntimeError(f"Invalid stored data for player {k}")
             try:
-                loaded[str(k)] = Survivor.from_dict(v)
+                player = Survivor.from_dict(v)
+                refund, removed = migrate_ammo_economy_v2(player)
+                if int(v.get("ammo_economy_version", 1) or 1) < 2:
+                    migrated.append((str(k), refund, removed))
+                loaded[str(k)] = player
             except Exception as e:
                 raise RuntimeError(f"Corrupt player save {k}: {e}") from e
         self.players = loaded
+        for key, _refund, _removed in migrated:
+            if not save_player(key, self._player_dict(self.players[key])):
+                raise RuntimeError(f"Could not persist ammo economy migration for player {key}")
+        if migrated:
+            print(f"[AMMO ECONOMY V2] Migrated {len(migrated)} players | Refunded ${sum(x[1] for x in migrated):,} | Removed {sum(x[2] for x in migrated):,} non-Standard rounds")
         global GLOBAL_XP_BOOST_UNTIL, GLOBAL_CASH_BOOST_UNTIL
         owner_record = self.players.get(str(OWNER_ID)) if "OWNER_ID" in globals() else None
         GLOBAL_XP_BOOST_UNTIL = getattr(owner_record, "global_xp_boost_until", None) if owner_record else None
@@ -4155,27 +4205,50 @@ class CombatView(PlayerView):
             ),
         )
 
-    @discord.ui.button(label="🏠 Main Menu", style=discord.ButtonStyle.secondary, row=0)
-    async def main_menu(self, interaction: discord.Interaction, _b):
-        # Always provide a safe exit from combat. This does not abandon the run;
-        # it simply returns to the menu so the player can resume it later.
-        await interaction.response.defer()
-        lock = self.store.action_lock(self.user_id)
-        async with lock:
-            player = self.store.get(self.user_id)
-            if player.run_active and player.enemy is None:
-                msgs = recover_stuck_run(player)
-            else:
-                msgs = []
-            name = getattr(self, "display_name", "Survivor")
-            content = status(player, display_name=name)
-            if msgs:
-                content += "\n\n" + "\n".join(msgs)
-        if msgs:
-            await self.store.save_one_async(str(self.user_id))
-        await interaction.edit_original_response(content=content, embed=None, view=ZombieMenuView(self.user_id, self.store, display_name=name))
+    @discord.ui.button(label="🔄 Ammo", style=discord.ButtonStyle.secondary, row=0)
+    async def ammo_swap(self, interaction: discord.Interaction, _b):
+        player = self.store.get(self.user_id)
+        view = CombatAmmoSwapView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), run_id=self.run_id)
+        await interaction.response.edit_message(content=None, embed=view.get_embed(player), view=view)
 
 
+
+
+class CombatAmmoSwapView(PlayerView):
+    """Mid-run ammo selector. No buying or unlocking is possible here."""
+    def __init__(self, user_id: int, store, display_name: str = "Survivor", run_id: str | None = None, timeout: float | None = None):
+        super().__init__(user_id, store, display_name, timeout)
+        player = self.store.get(user_id); self.run_id = run_id if run_id is not None else player.run_id; self.clear_items()
+        icons = {"Standard":"🔹", "Bleed":"🩸", "Incendiary":"🔥", "Frostbite":"❄️", "Toxic":"☠️", "Shock":"⚡"}
+        for i, ammo_name in enumerate(AMMO):
+            spare = int(player.spare_ammo.get(ammo_name, 0) or 0); loaded = player.magazine if ammo_name == player.ammo_name else 0; available = spare + loaded
+            owned = ammo_name in player.owned_ammo or ammo_name == "Standard"; current = ammo_name == player.ammo_name
+            if not owned: label,disabled,style=f"{icons.get(ammo_name,'🔹')} {ammo_name} 🔒",True,discord.ButtonStyle.secondary
+            elif current: label,disabled,style=f"{icons.get(ammo_name,'🔹')} {ammo_name} ({available}) ✅",True,discord.ButtonStyle.success
+            elif available <= 0: label,disabled,style=f"{icons.get(ammo_name,'🔹')} {ammo_name} (0)",True,discord.ButtonStyle.secondary
+            else: label,disabled,style=f"{icons.get(ammo_name,'🔹')} {ammo_name} ({available})",False,discord.ButtonStyle.primary
+            btn=discord.ui.Button(label=label[:80],style=style,disabled=disabled,row=0 if i<3 else 1)
+            async def cb(interaction: discord.Interaction, an=ammo_name):
+                await interaction.response.defer(); lock=self.store.action_lock(self.user_id)
+                async with lock:
+                    p=self.store.get(self.user_id)
+                    if p.run_id != self.run_id or not p.run_active:
+                        await interaction.edit_original_response(content=None,embed=combat_embed(p,["⚠️ This run is no longer active."]),view=CombatView(self.user_id,self.store,display_name=getattr(self,"display_name","Survivor"),run_id=p.run_id)); return
+                    msgs=swap_ammo_in_run(p,an)
+                    await interaction.edit_original_response(content=None,embed=combat_embed(p,msgs),view=CombatView(self.user_id,self.store,display_name=getattr(self,"display_name","Survivor"),run_id=p.run_id))
+                await self.store.save_one_async(str(self.user_id))
+            btn.callback=cb; self.add_item(btn)
+        back=discord.ui.Button(label="⬅️ Back to Combat",style=discord.ButtonStyle.secondary,row=2)
+        async def back_cb(interaction: discord.Interaction):
+            p=self.store.get(self.user_id); await interaction.response.edit_message(content=None,embed=combat_embed(p,["🔄 Ammo selector closed."]),view=CombatView(self.user_id,self.store,display_name=getattr(self,"display_name","Survivor"),run_id=self.run_id))
+        back.callback=back_cb; self.add_item(back)
+    def get_embed(self, player):
+        icons={"Standard":"🔹","Bleed":"🩸","Incendiary":"🔥","Frostbite":"❄️","Toxic":"☠️","Shock":"⚡"}; lines=["**🔄 MID-RUN AMMO SWAP**","Choose ammo you already own and have in reserve.","**No ammo can be bought or unlocked from this menu.**",""]
+        for ammo_name in AMMO:
+            if ammo_name not in player.owned_ammo and ammo_name != "Standard": continue
+            count=player.spare_ammo.get(ammo_name,0)+(player.magazine if ammo_name==player.ammo_name else 0); marker=" ← EQUIPPED" if ammo_name==player.ammo_name else ""
+            lines.append(f"{icons.get(ammo_name,'🔹')} **{ammo_name}** — {count} rounds{marker}")
+        return make_embed(title="🔄 Ammo Swap",description="\n".join(lines),color=discord.Color.blue())
 
 
 class VoidPerkView(PlayerView):
@@ -4896,7 +4969,7 @@ class WeaponUpgradeView(PlayerView):
 
 
 class AmmoShopView(PlayerView):
-    """Fisher Bait Shop clone - list + select + bulk buy +1 +10 +100 +1000"""
+    """Out-of-run ammo shop. Buying is prohibited during active runs."""
     def __init__(self, user_id: int, store, display_name: str = "Survivor", selected_ammo: str = None, timeout: float | None = None):
         super().__init__(user_id, store, display_name, timeout)
         player = self.store.get(user_id)
@@ -5013,6 +5086,7 @@ class AmmoShopView(PlayerView):
         lines.append("**Ammo Shop**")
         lines.append("")
         lines.append(f"Ammo is consumed **PER SHOT** so make sure to stock up.")
+        lines.append("Buying ammo is only available outside an active run. Use **🔄 Ammo** during combat to swap stocked rounds.")
         lines.append("")
         lines.append(f"Your balance: **${player.money:,}**")
         lines.append(f"Selected: {ammo_icons.get(sel,'🔹')} **{sel}** ({player.spare_ammo.get(sel,0)})")
@@ -6636,6 +6710,47 @@ async def addmoney(interaction: discord.Interaction, amount: int, user: discord.
         player.money += amount
     await game_store.save_one_async(str(target.id))
     await interaction.followup.send(f"💰 **+${amount}** added to {target.mention} → Now has **${player.money}**", ephemeral=True)
+
+
+@bot.tree.command(name="giveall", description="[ADMIN] Give money to every saved player")
+@app_commands.describe(amount="Amount of money to give every player")
+async def giveall(interaction: discord.Interaction, amount: int):
+    await interaction.response.defer(ephemeral=True)
+    if not has_admin_commands(interaction):
+        await interaction.followup.send(admin_denied_message(), ephemeral=True)
+        return
+    if amount < 0:
+        await interaction.followup.send("❌ Amount must be **0 or greater**.", ephemeral=True)
+        return
+
+    keys = list(game_store.players.keys())
+    if not keys:
+        await interaction.followup.send("ℹ️ No saved players were found.", ephemeral=True)
+        return
+
+    for key in keys:
+        async with game_store.action_lock(int(key)):
+            player = game_store.players.get(str(key))
+            if player is not None:
+                player.money += amount
+
+    results = await asyncio.gather(
+        *(game_store.save_one_async(key) for key in keys),
+        return_exceptions=True,
+    )
+    failed = [key for key, result in zip(keys, results) if isinstance(result, Exception)]
+    if failed:
+        await interaction.followup.send(
+            f"⚠️ Gave **${amount:,}** to {len(keys) - len(failed)}/{len(keys)} players, but {len(failed)} save(s) failed.",
+            ephemeral=True,
+        )
+        return
+
+    total = amount * len(keys)
+    await interaction.followup.send(
+        f"💰 **+${amount:,}** given to **{len(keys)} players** (**${total:,} total**).",
+        ephemeral=True,
+    )
 
 
 @bot.tree.command(name="addstars", description="[ADMIN] Add stars to a player")
