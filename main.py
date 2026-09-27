@@ -6794,7 +6794,16 @@ async def give_booster(interaction: discord.Interaction, user: discord.User, sco
         attr = "global_xp_boost_until" if type_value == "xp" else "global_cash_boost_until"
         current_iso = GLOBAL_XP_BOOST_UNTIL if type_value == "xp" else GLOBAL_CASH_BOOST_UNTIL
         current = _parse_xp_boost_expiry(current_iso)
-        base = current if current and current > now else now
+        if current and current > now:
+            remaining = int((current - now).total_seconds())
+            await interaction.response.send_message(
+                f"❌ **Global {type_value.upper()} Booster is already active.** "
+                f"Only one global {type_value.upper()} boost can run at a time. "
+                f"It expires <t:{int(current.timestamp())}:R>.",
+                ephemeral=True,
+            )
+            return
+        base = now
         expiry_iso = (base + duration).isoformat()
         if type_value == "xp":
             GLOBAL_XP_BOOST_UNTIL = expiry_iso
