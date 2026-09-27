@@ -46,6 +46,54 @@ def schedule_shop_save(store, user_id: int):
 
 
 
+def schedule_action_save(store, user_id: int, delay: float = 0.10):
+    """Queue a durable save without making the Discord interaction wait.
+
+    Combat/UI actions mutate memory under the per-player action lock. This helper
+    coalesces rapid clicks and keeps saving off the interaction's critical path.
+    A revision counter makes sure an action that happens while PostgreSQL is
+    writing is persisted by a follow-up save rather than being lost.
+    """
+    import asyncio
+
+    key = str(user_id)
+    store._action_save_revisions[key] = store._action_save_revisions.get(key, 0) + 1
+
+    task = store._pending_action_saves.get(key)
+    if task is not None and not task.done():
+        return
+
+    async def _save_loop():
+        last_saved_revision = -1
+        try:
+            while True:
+                await asyncio.sleep(delay)
+                revision = store._action_save_revisions.get(key, 0)
+                try:
+                    await store.save_one_async(key)
+                    last_saved_revision = revision
+                except Exception as e:
+                    print(f"[ACTION SAVE ERROR] {key}: {e}")
+
+                # If another action happened during the save, immediately take
+                # another snapshot. Otherwise this save is current.
+                if last_saved_revision == store._action_save_revisions.get(key, 0):
+                    break
+        finally:
+            current = store._pending_action_saves.get(key)
+            if current is asyncio.current_task():
+                store._pending_action_saves.pop(key, None)
+                # Close the tiny race where an action arrives after the final
+                # revision check but before this task removes itself.
+                if last_saved_revision != store._action_save_revisions.get(key, 0):
+                    schedule_action_save(store, user_id, delay)
+
+    try:
+        store._pending_action_saves[key] = asyncio.create_task(_save_loop())
+    except RuntimeError as e:
+        print(f"[ACTION SAVE SCHEDULE ERROR] {key}: {e}")
+
+
 def make_bar(current: int, max_val: int, length: int = 12) -> str:
     if max_val <= 0:
         return "░" * length
@@ -3462,6 +3510,10 @@ class GameStore:
         self._save_count = 0
         self._action_locks = {}
         self._save_locks = {}
+        # UI actions schedule persistence in the background so PostgreSQL latency
+        # never makes the next Discord button press wait behind a database write.
+        self._pending_action_saves = {}
+        self._action_save_revisions = {}
         self._reset_lock = asyncio.Lock()
         self._reset_generation = 0
         self.load()
@@ -3753,7 +3805,7 @@ class RunEndedView(PlayerView):
             await interaction.response.defer()
             p = self.store.get(self.user_id)
             msgs = start_run(p)
-            await self.store.save_one_async(str(self.user_id))
+            schedule_action_save(self.store, self.user_id)
             embed = combat_embed(p, msgs)
             await interaction.edit_original_response(content=None, embed=embed, view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
         btn_again.callback = again_cb
@@ -3886,7 +3938,7 @@ class DailyCrateView(PlayerView):
                 p = self.store.get(self.user_id)
                 msgs = claim_daily_crate(p)
             if msgs and msgs[0].startswith("🎁"):
-                await self.store.save_one_async(str(self.user_id))
+                schedule_action_save(self.store, self.user_id)
             self.refresh_view()
             await interaction.edit_original_response(content=None, embed=self.build_embed(p), view=self)
 
@@ -3927,7 +3979,7 @@ class ZombieMenuView(PlayerView):
             if p.run_active:
                 if p.enemy is None:
                     msgs = recover_stuck_run(p)
-                    await self.store.save_one_async(str(self.user_id))
+                    schedule_action_save(self.store, self.user_id)
                     embed = combat_embed(p, msgs)
                     await interaction.edit_original_response(content=None, embed=embed, view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
                     return
@@ -3935,7 +3987,7 @@ class ZombieMenuView(PlayerView):
                 await interaction.edit_original_response(content=None, embed=embed, view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
                 return
             msgs = start_run(p)
-            await self.store.save_one_async(str(self.user_id))
+            schedule_action_save(self.store, self.user_id)
             embed = combat_embed(p, msgs)
             await interaction.edit_original_response(content=None, embed=embed, view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
         btn_start.callback = start_cb
@@ -3985,7 +4037,7 @@ class ZombieMenuView(PlayerView):
             gid=interaction.guild.id if interaction.guild else None
             if gid is not None and str(gid) not in p.leaderboard_guilds:
                 p.leaderboard_guilds.append(str(gid))
-            await self.store.save_one_async(str(self.user_id))
+            schedule_action_save(self.store, self.user_id)
             await interaction.edit_original_response(content=leaderboard_text(self.store, p.zone_name, None, player=p), embed=None, view=LeaderboardView(self.user_id,self.store,display_name=name,guild_id=gid,zone_name=p.zone_name))
         lb_cb.__name__ = "leaderboards_cb"
         self.add_item(btn_lb)
@@ -4060,7 +4112,7 @@ class FleeConfirmView(PlayerView):
                 embed = combat_embed(player, msgs)
                 next_view = CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"))
             await interaction.edit_original_response(content=None, embed=embed, view=next_view)
-        await self.store.save_one_async(str(self.user_id))
+        schedule_action_save(self.store, self.user_id)
 
     @discord.ui.button(label="😇 NOPE, I'M BRAVE", style=discord.ButtonStyle.success, row=0)
     async def cancel_flee(self, interaction: discord.Interaction, _b):
@@ -4144,7 +4196,7 @@ class CombatView(PlayerView):
                     run_id=player.run_id,
                 )
             await interaction.edit_original_response(content=None, embed=embed, view=next_view)
-        await self.store.save_one_async(str(self.user_id))
+        schedule_action_save(self.store, self.user_id)
 
     @discord.ui.button(label="👊 Punch", style=discord.ButtonStyle.danger, row=1)
     async def punch(self, interaction: discord.Interaction, _b):
@@ -4164,7 +4216,7 @@ class CombatView(PlayerView):
                 embed = combat_embed(player, msgs)
                 next_view = CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"))
             await interaction.edit_original_response(content=None, embed=embed, view=next_view)
-        await self.store.save_one_async(str(self.user_id))
+        schedule_action_save(self.store, self.user_id)
 
     @discord.ui.button(label="💥 Void Bazooka", style=discord.ButtonStyle.secondary, row=1)
     async def void_bazooka(self, interaction: discord.Interaction, _b):
@@ -4184,7 +4236,7 @@ class CombatView(PlayerView):
                 embed=combat_embed(player,msgs)
                 next_view = CombatView(self.user_id,self.store,display_name=getattr(self,"display_name","Survivor"))
             await interaction.edit_original_response(content=None, embed=embed, view=next_view)
-        await self.store.save_one_async(str(self.user_id))
+        schedule_action_save(self.store, self.user_id)
 
     @discord.ui.button(label="◈ Void Perks", style=discord.ButtonStyle.secondary, row=1)
     async def void_perks(self, interaction: discord.Interaction, _b):
@@ -4213,7 +4265,7 @@ class CombatView(PlayerView):
             # state mutation. Otherwise rapid clicks can finish out of order and an
             # older interaction can overwrite the message with stale combat state.
             await interaction.edit_original_response(content=None, embed=embed, view=next_view)
-        await self.store.save_one_async(str(self.user_id))
+        schedule_action_save(self.store, self.user_id)
 
     @discord.ui.button(label="💊 Heal", style=discord.ButtonStyle.success, row=0)
     async def heal(self, interaction: discord.Interaction, _b):
@@ -4278,7 +4330,7 @@ class CombatAmmoSwapView(PlayerView):
                         await interaction.edit_original_response(content=None,embed=combat_embed(p,["⚠️ This run is no longer active."]),view=CombatView(self.user_id,self.store,display_name=getattr(self,"display_name","Survivor"),run_id=p.run_id)); return
                     msgs=swap_ammo_in_run(p,an)
                     await interaction.edit_original_response(content=None,embed=combat_embed(p,msgs),view=CombatView(self.user_id,self.store,display_name=getattr(self,"display_name","Survivor"),run_id=p.run_id))
-                await self.store.save_one_async(str(self.user_id))
+                schedule_action_save(self.store, self.user_id)
             btn.callback=cb; self.add_item(btn)
         back=discord.ui.Button(label="⬅️ Back to Combat",style=discord.ButtonStyle.secondary,row=2)
         async def back_cb(interaction: discord.Interaction):
@@ -4331,7 +4383,7 @@ class VoidPerkView(PlayerView):
                         embed=embed,
                         view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")),
                     )
-                await self.store.save_one_async(str(self.user_id))
+                schedule_action_save(self.store, self.user_id)
             btn.callback = perk_cb
             self.add_item(btn)
 
@@ -4410,10 +4462,7 @@ class HealView(PlayerView):
                 msgs=take_action(p,"heal","painkillers")
                 embed = combat_embed(p, msgs)
                 await interaction.edit_original_response(content=None, embed=embed, view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
-            try:
-                await self.store.save_one_async(str(self.user_id))
-            except Exception as e:
-                print(f"Heal save error: {e}")
+            schedule_action_save(self.store, self.user_id)
             return
         pk_btn.callback = pk_cb
         self.add_item(pk_btn)
@@ -4432,10 +4481,7 @@ class HealView(PlayerView):
                 msgs=take_action(p,"heal","full_restore")
                 embed = combat_embed(p, msgs)
                 await interaction.edit_original_response(content=None, embed=embed, view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
-            try:
-                await self.store.save_one_async(str(self.user_id))
-            except Exception as e:
-                print(f"Heal save error: {e}")
+            schedule_action_save(self.store, self.user_id)
             return
         fr_btn.callback = fr_cb
         self.add_item(fr_btn)
@@ -4583,7 +4629,7 @@ class RebirthConfirmView(PlayerView):
             async with self.store.action_lock(self.user_id):
                 p = self.store.get(self.user_id)
                 msgs = perform_rebirth(p)
-            await self.store.save_one_async(str(self.user_id))
+            schedule_action_save(self.store, self.user_id)
             await interaction.edit_original_response(
                 content="\n".join(msgs),
                 embed=None,
@@ -4651,7 +4697,7 @@ class SoulShopView(PlayerView):
                     async with self.store.action_lock(self.user_id):
                         p = self.store.get(self.user_id)
                         msgs = upgrade_soul(p, upgrade_name)
-                    await self.store.save_one_async(str(self.user_id))
+                    schedule_action_save(self.store, self.user_id)
                     view = SoulShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), extra_msgs=msgs)
                     await interaction.edit_original_response(content=view.get_shop_text(p), embed=None, view=view)
                 finally:
@@ -5776,7 +5822,7 @@ class ZoneView(PlayerView):
                 async with lock:
                     p = self.store.get(user_id)
                     msgs = change_zone(p, zn)
-                await self.store.save_one_async(str(user_id))
+                schedule_action_save(self.store, user_id)
                 # Keep the zone picker focused on the zone-change result.  The old
                 # flow appended the full player status/inventory here, which made a
                 # simple zone tap suddenly replace the picker with the inventory screen.
