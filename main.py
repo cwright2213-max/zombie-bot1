@@ -3110,7 +3110,7 @@ def upgrade_special_token(player: Survivor, upgrade_key: str) -> list[str]:
 
 # --- SOUL / REBIRTH SYSTEM --------------------------------------------------
 REBIRTH_MIN_LEVEL = 400
-REBIRTH_BASE_COST = 25_000_000
+REBIRTH_BASE_COST = 15_000_000
 SOUL_TOKEN_UPGRADE_COST = 1
 SOUL_GREEDY_BONUS_PER_LEVEL = 0.15
 SOUL_EVIL_DAMAGE_PER_LEVEL = 5
@@ -3120,7 +3120,7 @@ SOUL_SAFE_HP_PER_LEVEL = 35
 SOUL_SAFE_DAMAGE_PER_LEVEL = 3
 
 def rebirth_cost(player: Survivor) -> int:
-    """Return the next Rebirth cost. Rebirth 1 costs $25M; each later one is x1.5."""
+    """Return the next Rebirth cost. Rebirth 1 costs $15M; each later one is x1.5."""
     count = max(0, int(getattr(player, "rebirth_count", 0) or 0))
     # Exact integer form of $25,000,000 * (3/2)^count; avoids float overflow
     # even if a player reaches an extremely high Rebirth count.
@@ -6414,6 +6414,67 @@ async def admin_list(interaction: discord.Interaction):
 
 # Register the /admin command group with Discord.
 bot.tree.add_command(admin_group)
+
+# Owner/Admin testing command: force an anti-autoclick verification on a player.
+# This does not increment their normal click counter; it creates a real
+# verification challenge so the complete /verify + 120-second timeout flow can
+# be tested safely.
+force_group = app_commands.Group(name="force", description="[ADMIN] Force game test states")
+
+@force_group.command(name="verification", description="[ADMIN] Force an anti-autoclick verification check")
+@app_commands.describe(user="Player to place into the verification check")
+async def force_verification_cmd(interaction: discord.Interaction, user: discord.User):
+    if not has_admin_commands(interaction):
+        await interaction.response.send_message(admin_denied_message(), ephemeral=True)
+        return
+
+    import asyncio
+    async with game_store.action_lock(user.id):
+        player = game_store.get(user.id)
+        if player.game_banned:
+            await interaction.response.send_message(f"⛔ {user.mention} is game-banned and cannot be placed into verification.", ephemeral=True)
+            return
+        # Clear an existing review and issue a fresh real challenge.
+        player.attack_ui_review_pending = False
+        player.attack_ui_review_started_at = None
+        player.attack_ui_verify_required = True
+        player.attack_ui_verify_code = f"{random.randint(100000, 999999):06d}"
+        player.attack_ui_verify_expires_at = (datetime.now(timezone.utc) + timedelta(seconds=120)).isoformat()
+
+    schedule_verification_timeout(game_store, user.id)
+    schedule_action_save(game_store, user.id)
+
+    # Refresh the player's live combat message when one is known, exactly as a
+    # naturally triggered verification would.
+    combat_ref = game_store.get_combat_message(user.id)
+    refreshed = False
+    if combat_ref:
+        try:
+            channel_id, message_id = combat_ref
+            channel = bot.get_channel(channel_id) or await bot.fetch_channel(channel_id)
+            message = await channel.fetch_message(message_id)
+            current = game_store.get(user.id)
+            await message.edit(
+                embed=combat_embed(current, [
+                    f"🤖 **Verification triggered by staff for testing.** Use `/verify {current.attack_ui_verify_code}` within **120 seconds**."
+                ]),
+                view=CombatView(user.id, game_store, display_name=getattr(user, "display_name", "Survivor"), run_id=current.run_id),
+            )
+            refreshed = True
+        except Exception as e:
+            print(f"[FORCE VERIFY UI] Could not refresh combat panel for {user.id}: {e}")
+
+    current = game_store.get(user.id)
+    status = "Combat panel refreshed." if refreshed else "No active combat panel was found; the verification is active for their next CombatView interaction."
+    await interaction.response.send_message(
+        f"🤖 Forced verification for {user.mention}.\n"
+        f"**Test code:** `{current.attack_ui_verify_code}`\n"
+        f"**Expires:** 120 seconds\n"
+        f"{status}",
+        ephemeral=True,
+    )
+
+bot.tree.add_command(force_group)
 
 # Anti-autoclick review tools. Game Owner/Admins can review expired verification
 # challenges without automatically punishing a player.
