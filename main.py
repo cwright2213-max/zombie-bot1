@@ -3681,9 +3681,13 @@ class GameStore:
         self._save_count = 0
         self._action_locks = {}
         self._save_locks = {}
-        # Monotonic UI revisions let rapid combat actions mutate state immediately
-        # while preventing an older interaction from overwriting a newer combat panel.
+        # Monotonic UI revisions prevent an older combat interaction from
+        # overwriting a newer combat panel if another command changes state.
         self._combat_ui_revisions = {}
+        # Only one main CombatView click may execute at a time per player.
+        # This prevents rapid taps on a stale Discord message from executing
+        # multiple attacks/ammo spends before the UI has visibly updated.
+        self._combat_busy = set()
         # UI actions schedule persistence in the background so PostgreSQL latency
         # never makes the next Discord button press wait behind a database write.
         self._pending_action_saves = {}
@@ -3714,6 +3718,16 @@ class GameStore:
 
     def combat_ui_is_current(self, user_id: int, revision: int) -> bool:
         return self._combat_ui_revisions.get(str(user_id), 0) == revision
+
+    def combat_click_is_busy(self, user_id: int) -> bool:
+        return str(user_id) in self._combat_busy
+
+    def set_combat_click_busy(self, user_id: int, busy: bool):
+        key = str(user_id)
+        if busy:
+            self._combat_busy.add(key)
+        else:
+            self._combat_busy.discard(key)
 
     def set_combat_message(self, user_id: int, channel_id: int, message_id: int):
         self._combat_messages[str(user_id)] = (int(channel_id), int(message_id))
@@ -4345,205 +4359,241 @@ class CombatView(PlayerView):
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if not await super().interaction_check(interaction):
             return False
-        player = self.store.get(self.user_id)
-        if player.run_id != self.run_id:
-            await interaction.response.send_message(
-                "⚠️ This combat panel is from an older run. Open **Continue Run** from the main menu to use the current run.",
-                ephemeral=True,
-            )
-            return False
-        if not player.run_active:
-            await interaction.response.send_message(
-                "ℹ️ This run has ended. Return to the main menu to start another run.",
-                ephemeral=True,
-            )
-            return False
-        if getattr(player, "game_banned", False):
-            await interaction.response.send_message("⛔ **Your Zombie Survival account is banned.**", ephemeral=True)
-            return False
-        if getattr(player, "attack_ui_review_pending", False):
-            await interaction.response.send_message(
-                "🚨 **Your account is pending anti-autoclick review.** Staff must reset, ignore, or ban the review.",
-                ephemeral=True,
-            )
-            return False
-        if getattr(player, "attack_ui_verify_required", False):
-            await interaction.response.send_message(
-                f"🤖 **Verification required.** Use `/verify {player.attack_ui_verify_code}` within 120 seconds.",
-                ephemeral=True,
-            )
-            return False
 
-        # Every accepted click on the main CombatView counts: Attack, Punch,
-        # Reload, Heal, Flee, Ammo, and any Void controls currently displayed.
-        verification_triggered = player.register_combat_ui_click()
-        if verification_triggered:
-            schedule_verification_timeout(self.store, self.user_id)
-            await interaction.response.edit_message(
-                content=None,
-                embed=combat_embed(player, [
-                    f"🤖 **Verification triggered.** Use `/verify {player.attack_ui_verify_code}` within **120 seconds**."
-                ]),
-                view=self,
-            )
-            schedule_action_save(self.store, self.user_id)
-            return False
+        # Atomically validate the current run, anti-autoclick state, and claim
+        # this CombatView interaction before the callback can mutate anything.
+        # A second rapid tap is rejected instead of being queued against stale UI.
+        lock = self.store.action_lock(self.user_id)
+        async with lock:
+            player = self.store.get(self.user_id)
+            if player.run_id != self.run_id:
+                await interaction.response.send_message(
+                    "⚠️ This combat panel is from an older run. Open **Continue Run** from the main menu to use the current run.",
+                    ephemeral=True,
+                )
+                return False
+            if not player.run_active:
+                await interaction.response.send_message(
+                    "ℹ️ This run has ended. Return to the main menu to start another run.",
+                    ephemeral=True,
+                )
+                return False
+            if getattr(player, "game_banned", False):
+                await interaction.response.send_message("⛔ **Your Zombie Survival account is banned.**", ephemeral=True)
+                return False
+            if getattr(player, "attack_ui_review_pending", False):
+                await interaction.response.send_message(
+                    "🚨 **Your account is pending anti-autoclick review.** Staff must reset, ignore, or ban the review.",
+                    ephemeral=True,
+                )
+                return False
+            if getattr(player, "attack_ui_verify_required", False):
+                await interaction.response.send_message(
+                    f"🤖 **Verification required.** Use `/verify {player.attack_ui_verify_code}` within 120 seconds.",
+                    ephemeral=True,
+                )
+                return False
 
-        return True
+            if self.store.combat_click_is_busy(self.user_id):
+                await interaction.response.send_message(
+                    "⏳ **Your previous combat action is still processing.** Please wait for the combat panel to update.",
+                    ephemeral=True,
+                )
+                return False
+
+            # Remember the live message for /verify and staff-forced checks.
+            if interaction.message is not None:
+                self.store.set_combat_message(self.user_id, interaction.channel_id, interaction.message.id)
+
+            verification_triggered = player.register_combat_ui_click()
+            if verification_triggered:
+                schedule_verification_timeout(self.store, self.user_id)
+                await interaction.response.edit_message(
+                    content=None,
+                    embed=combat_embed(player, [
+                        f"🤖 **Verification triggered.** Use `/verify {player.attack_ui_verify_code}` within **120 seconds**."
+                    ]),
+                    view=self,
+                )
+                schedule_action_save(self.store, self.user_id)
+                return False
+
+            # Claim the interaction. The callback releases it only after the
+            # corresponding Discord UI update has completed (or failed).
+            self.store.set_combat_click_busy(self.user_id, True)
+            return True
 
     @discord.ui.button(label="🔫 Attack", style=discord.ButtonStyle.danger, row=0)
     async def attack(self, interaction: discord.Interaction, _b):
-        if interaction.message is not None:
-            self.store.set_combat_message(self.user_id, interaction.channel_id, interaction.message.id)
-        await interaction.response.defer()
-        lock = self.store.action_lock(self.user_id)
-        async with lock:
-            player = self.store.get(self.user_id)
-            msgs = take_action(player, "attack")
-            revision = self.store.combat_ui_revision(self.user_id)
-            if not player.run_active:
-                embed = make_embed(title="☠️ Run Ended", description="\n".join(msgs), color=discord.Color.red())
-                embed.add_field(name="🌊 Waves", value=f"{player.wave - 1 if player.run_zombies_killed>0 else 0} survived\nReached Wave {player.wave}", inline=True)
-                embed.add_field(name="🧟 Kills", value=f"{player.run_zombies_killed} zombies", inline=True)
-                embed.add_field(name="💰 Rewards", value=f"+${player.run_money_earned}\n+{player.run_xp_earned} XP", inline=True)
-                set_embed_footer(embed, text=f"HP restored to {player.max_health}/{player.max_health} • Press any button to continue")
-                next_view = RunEndedView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), end_embed=embed)
-            else:
-                embed = combat_embed(player, msgs)
-                next_view = CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), run_id=player.run_id)
-        # Never hold the gameplay lock while waiting for Discord's HTTP edit.
-        # A newer action gets the final UI update if several clicks arrive together.
-        if self.store.combat_ui_is_current(self.user_id, revision):
-            try:
-                await interaction.edit_original_response(content=None, embed=embed, view=next_view)
-            except Exception as e:
-                print(f"[COMBAT UI] attack edit failed for {self.user_id}: {e}")
-        schedule_action_save(self.store, self.user_id)
+        try:
+            await interaction.response.defer()
+            lock = self.store.action_lock(self.user_id)
+            async with lock:
+                player = self.store.get(self.user_id)
+                msgs = take_action(player, "attack")
+                revision = self.store.combat_ui_revision(self.user_id)
+                if not player.run_active:
+                    embed = make_embed(title="☠️ Run Ended", description="\n".join(msgs), color=discord.Color.red())
+                    embed.add_field(name="🌊 Waves", value=f"{player.wave - 1 if player.run_zombies_killed>0 else 0} survived\nReached Wave {player.wave}", inline=True)
+                    embed.add_field(name="🧟 Kills", value=f"{player.run_zombies_killed} zombies", inline=True)
+                    embed.add_field(name="💰 Rewards", value=f"+${player.run_money_earned}\n+{player.run_xp_earned} XP", inline=True)
+                    set_embed_footer(embed, text=f"HP restored to {player.max_health}/{player.max_health} • Press any button to continue")
+                    next_view = RunEndedView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), end_embed=embed)
+                else:
+                    embed = combat_embed(player, msgs)
+                    next_view = CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), run_id=player.run_id)
+
+            if self.store.combat_ui_is_current(self.user_id, revision):
+                try:
+                    await interaction.edit_original_response(content=None, embed=embed, view=next_view)
+                except Exception as e:
+                    print(f"[COMBAT UI] attack edit failed for {self.user_id}: {e}")
+            schedule_action_save(self.store, self.user_id)
+        finally:
+            self.store.set_combat_click_busy(self.user_id, False)
 
     @discord.ui.button(label="👊 Punch", style=discord.ButtonStyle.danger, row=1)
     async def punch(self, interaction: discord.Interaction, _b):
-        await interaction.response.defer()
-        lock = self.store.action_lock(self.user_id)
-        async with lock:
-            player = self.store.get(self.user_id)
-            msgs = take_action(player, "punch")
-            revision = self.store.combat_ui_revision(self.user_id)
-            if not player.run_active:
-                embed = make_embed(title="☠️ Run Ended", description="\n".join(msgs), color=discord.Color.red())
-                embed.add_field(name="🌊 Waves", value=f"{player.wave - 1 if player.run_zombies_killed>0 else 0} survived\nReached Wave {player.wave}", inline=True)
-                embed.add_field(name="🧟 Kills", value=f"{player.run_zombies_killed} zombies", inline=True)
-                embed.add_field(name="💰 Rewards", value=f"+${player.run_money_earned}\n+{player.run_xp_earned} XP", inline=True)
-                set_embed_footer(embed, text=f"HP restored to {player.max_health}/{player.max_health} • Press any button to continue")
-                next_view = RunEndedView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), end_embed=embed)
-            else:
-                embed = combat_embed(player, msgs)
-                next_view = CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), run_id=player.run_id)
-        # Never hold the gameplay lock while waiting for Discord's HTTP edit.
-        # A newer action gets the final UI update if several clicks arrive together.
-        if self.store.combat_ui_is_current(self.user_id, revision):
-            try:
-                await interaction.edit_original_response(content=None, embed=embed, view=next_view)
-            except Exception as e:
-                print(f"[COMBAT UI] punch edit failed for {self.user_id}: {e}")
-        schedule_action_save(self.store, self.user_id)
+        try:
+            await interaction.response.defer()
+            lock = self.store.action_lock(self.user_id)
+            async with lock:
+                player = self.store.get(self.user_id)
+                msgs = take_action(player, "punch")
+                revision = self.store.combat_ui_revision(self.user_id)
+                if not player.run_active:
+                    embed = make_embed(title="☠️ Run Ended", description="\n".join(msgs), color=discord.Color.red())
+                    embed.add_field(name="🌊 Waves", value=f"{player.wave - 1 if player.run_zombies_killed>0 else 0} survived\nReached Wave {player.wave}", inline=True)
+                    embed.add_field(name="🧟 Kills", value=f"{player.run_zombies_killed} zombies", inline=True)
+                    embed.add_field(name="💰 Rewards", value=f"+${player.run_money_earned}\n+{player.run_xp_earned} XP", inline=True)
+                    set_embed_footer(embed, text=f"HP restored to {player.max_health}/{player.max_health} • Press any button to continue")
+                    next_view = RunEndedView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), end_embed=embed)
+                else:
+                    embed = combat_embed(player, msgs)
+                    next_view = CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), run_id=player.run_id)
+
+            if self.store.combat_ui_is_current(self.user_id, revision):
+                try:
+                    await interaction.edit_original_response(content=None, embed=embed, view=next_view)
+                except Exception as e:
+                    print(f"[COMBAT UI] punch edit failed for {self.user_id}: {e}")
+            schedule_action_save(self.store, self.user_id)
+        finally:
+            self.store.set_combat_click_busy(self.user_id, False)
 
     @discord.ui.button(label="💥 Void Bazooka", style=discord.ButtonStyle.secondary, row=1)
     async def void_bazooka(self, interaction: discord.Interaction, _b):
-        await interaction.response.defer()
-        lock = self.store.action_lock(self.user_id)
-        async with lock:
-            player = self.store.get(self.user_id)
-            msgs = take_action(player, "void_bazooka")
-            revision = self.store.combat_ui_revision(self.user_id)
-            if not player.run_active:
-                embed = make_embed(title="☠️ Run Ended", description="\n".join(msgs), color=discord.Color.red())
-                embed.add_field(name="🌊 Waves", value=f"{player.wave - 1 if player.run_zombies_killed>0 else 0} survived\nReached Wave {player.wave}", inline=True)
-                embed.add_field(name="🧟 Kills", value=f"{player.run_zombies_killed} zombies", inline=True)
-                embed.add_field(name="💰 Rewards", value=f"+${player.run_money_earned}\n+{player.run_xp_earned} XP", inline=True)
-                set_embed_footer(embed, text=f"HP restored to {player.max_health}/{player.max_health} • Press any button to continue")
-                next_view = RunEndedView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), end_embed=embed)
-            else:
-                embed = combat_embed(player, msgs)
-                next_view = CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), run_id=player.run_id)
-        # Never hold the gameplay lock while waiting for Discord's HTTP edit.
-        # A newer action gets the final UI update if several clicks arrive together.
-        if self.store.combat_ui_is_current(self.user_id, revision):
-            try:
-                await interaction.edit_original_response(content=None, embed=embed, view=next_view)
-            except Exception as e:
-                print(f"[COMBAT UI] void_bazooka edit failed for {self.user_id}: {e}")
-        schedule_action_save(self.store, self.user_id)
+        try:
+            await interaction.response.defer()
+            lock = self.store.action_lock(self.user_id)
+            async with lock:
+                player = self.store.get(self.user_id)
+                msgs = take_action(player, "void_bazooka")
+                revision = self.store.combat_ui_revision(self.user_id)
+                if not player.run_active:
+                    embed = make_embed(title="☠️ Run Ended", description="\n".join(msgs), color=discord.Color.red())
+                    embed.add_field(name="🌊 Waves", value=f"{player.wave - 1 if player.run_zombies_killed>0 else 0} survived\nReached Wave {player.wave}", inline=True)
+                    embed.add_field(name="🧟 Kills", value=f"{player.run_zombies_killed} zombies", inline=True)
+                    embed.add_field(name="💰 Rewards", value=f"+${player.run_money_earned}\n+{player.run_xp_earned} XP", inline=True)
+                    set_embed_footer(embed, text=f"HP restored to {player.max_health}/{player.max_health} • Press any button to continue")
+                    next_view = RunEndedView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), end_embed=embed)
+                else:
+                    embed = combat_embed(player, msgs)
+                    next_view = CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), run_id=player.run_id)
+
+            if self.store.combat_ui_is_current(self.user_id, revision):
+                try:
+                    await interaction.edit_original_response(content=None, embed=embed, view=next_view)
+                except Exception as e:
+                    print(f"[COMBAT UI] void_bazooka edit failed for {self.user_id}: {e}")
+            schedule_action_save(self.store, self.user_id)
+        finally:
+            self.store.set_combat_click_busy(self.user_id, False)
 
     @discord.ui.button(label="◈ Void Perks", style=discord.ButtonStyle.secondary, row=1)
     async def void_perks(self, interaction: discord.Interaction, _b):
-        player = self.store.get(self.user_id)
-        view = VoidPerkView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"))
-        await interaction.response.edit_message(content=None, embed=view.get_embed(player), view=view)
+        try:
+            player = self.store.get(self.user_id)
+            view = VoidPerkView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"))
+            await interaction.response.edit_message(content=None, embed=view.get_embed(player), view=view)
+        finally:
+            self.store.set_combat_click_busy(self.user_id, False)
 
     @discord.ui.button(label="🔄 Reload", style=discord.ButtonStyle.primary, row=0)
     async def reload(self, interaction: discord.Interaction, _b):
-        await interaction.response.defer()
-        lock = self.store.action_lock(self.user_id)
-        async with lock:
-            player = self.store.get(self.user_id)
-            msgs = take_action(player, "reload")
-            revision = self.store.combat_ui_revision(self.user_id)
-            if not player.run_active:
-                embed = make_embed(title="☠️ Run Ended", description="\n".join(msgs), color=discord.Color.red())
-                embed.add_field(name="🌊 Waves", value=f"{player.wave - 1 if player.run_zombies_killed>0 else 0} survived\nReached Wave {player.wave}", inline=True)
-                embed.add_field(name="🧟 Kills", value=f"{player.run_zombies_killed} zombies", inline=True)
-                embed.add_field(name="💰 Rewards", value=f"+${player.run_money_earned}\n+{player.run_xp_earned} XP", inline=True)
-                set_embed_footer(embed, text=f"HP restored to {player.max_health}/{player.max_health} • Press any button to continue")
-                next_view = RunEndedView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), end_embed=embed)
-            else:
-                embed = combat_embed(player, msgs)
-                next_view = CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), run_id=player.run_id)
-        # Never hold the gameplay lock while waiting for Discord's HTTP edit.
-        # A newer action gets the final UI update if several clicks arrive together.
-        if self.store.combat_ui_is_current(self.user_id, revision):
-            try:
-                await interaction.edit_original_response(content=None, embed=embed, view=next_view)
-            except Exception as e:
-                print(f"[COMBAT UI] reload edit failed for {self.user_id}: {e}")
-        schedule_action_save(self.store, self.user_id)
+        try:
+            await interaction.response.defer()
+            lock = self.store.action_lock(self.user_id)
+            async with lock:
+                player = self.store.get(self.user_id)
+                msgs = take_action(player, "reload")
+                revision = self.store.combat_ui_revision(self.user_id)
+                if not player.run_active:
+                    embed = make_embed(title="☠️ Run Ended", description="\n".join(msgs), color=discord.Color.red())
+                    embed.add_field(name="🌊 Waves", value=f"{player.wave - 1 if player.run_zombies_killed>0 else 0} survived\nReached Wave {player.wave}", inline=True)
+                    embed.add_field(name="🧟 Kills", value=f"{player.run_zombies_killed} zombies", inline=True)
+                    embed.add_field(name="💰 Rewards", value=f"+${player.run_money_earned}\n+{player.run_xp_earned} XP", inline=True)
+                    set_embed_footer(embed, text=f"HP restored to {player.max_health}/{player.max_health} • Press any button to continue")
+                    next_view = RunEndedView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), end_embed=embed)
+                else:
+                    embed = combat_embed(player, msgs)
+                    next_view = CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), run_id=player.run_id)
+
+            if self.store.combat_ui_is_current(self.user_id, revision):
+                try:
+                    await interaction.edit_original_response(content=None, embed=embed, view=next_view)
+                except Exception as e:
+                    print(f"[COMBAT UI] reload edit failed for {self.user_id}: {e}")
+            schedule_action_save(self.store, self.user_id)
+        finally:
+            self.store.set_combat_click_busy(self.user_id, False)
 
     @discord.ui.button(label="💊 Heal", style=discord.ButtonStyle.success, row=0)
     async def heal(self, interaction: discord.Interaction, _b):
-        player = self.store.get(self.user_id)
-        embed = combat_embed(player, ["Choose heal item"])
-        await interaction.response.edit_message(content=None, embed=embed, view=HealView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+        try:
+            player = self.store.get(self.user_id)
+            embed = combat_embed(player, ["Choose heal item"])
+            await interaction.response.edit_message(content=None, embed=embed, view=HealView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+        finally:
+            self.store.set_combat_click_busy(self.user_id, False)
 
     @discord.ui.button(label="🏃 Flee", style=discord.ButtonStyle.secondary, row=0)
     async def flee(self, interaction: discord.Interaction, _b):
-        # Flee is destructive to the active run, so require a confirmation first
-        # to prevent accidental clicks from ending a run.
-        player = self.store.get(self.user_id)
-        embed = make_embed(
-            title="🏃 FLEE?!",
-            description=(
-                "**ARE YOU SURE YOU WANT TO RUN, CHICKEN?!**\n\n"
-                "🐔 **BAWK BAWK BAWK!** 🐔\n\n"
-                "You will end the current run and keep the rewards you've earned.\n"
-                "There is no shame in running... probably. 😅"
-            ),
-            color=discord.Color.orange(),
-        )
-        await interaction.response.edit_message(
-            content=None,
-            embed=embed,
-            view=FleeConfirmView(
-                self.user_id,
-                self.store,
-                display_name=getattr(self, "display_name", "Survivor"),
-                run_id=self.run_id,
-            ),
-        )
+        try:
+            # Flee is destructive to the active run, so require a confirmation first
+            # to prevent accidental clicks from ending a run.
+            player = self.store.get(self.user_id)
+            embed = make_embed(
+                title="🏃 FLEE?!",
+                description=(
+                    "**ARE YOU SURE YOU WANT TO RUN, CHICKEN?!**\n\n"
+                    "🐔 **BAWK BAWK BAWK!** 🐔\n\n"
+                    "You will end the current run and keep the rewards you've earned.\n"
+                    "There is no shame in running... probably. 😅"
+                ),
+                color=discord.Color.orange(),
+            )
+            await interaction.response.edit_message(
+                content=None,
+                embed=embed,
+                view=FleeConfirmView(
+                    self.user_id,
+                    self.store,
+                    display_name=getattr(self, "display_name", "Survivor"),
+                    run_id=self.run_id,
+                ),
+            )
+        finally:
+            self.store.set_combat_click_busy(self.user_id, False)
 
     @discord.ui.button(label="🔄 Ammo", style=discord.ButtonStyle.secondary, row=0)
     async def ammo_swap(self, interaction: discord.Interaction, _b):
-        player = self.store.get(self.user_id)
-        view = CombatAmmoSwapView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), run_id=self.run_id)
-        await interaction.response.edit_message(content=None, embed=view.get_embed(player), view=view)
+        try:
+            player = self.store.get(self.user_id)
+            view = CombatAmmoSwapView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), run_id=self.run_id)
+            await interaction.response.edit_message(content=None, embed=view.get_embed(player), view=view)
+        finally:
+            self.store.set_combat_click_busy(self.user_id, False)
 
 
 
@@ -6228,7 +6278,7 @@ async def verify_cmd(interaction: discord.Interaction, code: str):
             message = "❌ **Incorrect verification code.** Check the Attack UI and enter the current 6-digit code."
         else:
             verified = True
-            message = "✅ **Verified!** You can attack again."
+            message = "✅ **Verified!** Combat controls are unlocked again."
             embed = combat_embed(player, ["✅ **Verification successful!** Attack has been unlocked."])
             view = CombatView(
                 user_id,
@@ -6440,6 +6490,7 @@ async def force_verification_cmd(interaction: discord.Interaction, user: discord
         player.attack_ui_verify_required = True
         player.attack_ui_verify_code = f"{random.randint(100000, 999999):06d}"
         player.attack_ui_verify_expires_at = (datetime.now(timezone.utc) + timedelta(seconds=120)).isoformat()
+        game_store.set_combat_click_busy(user.id, False)
 
     schedule_verification_timeout(game_store, user.id)
     schedule_action_save(game_store, user.id)
@@ -6515,6 +6566,7 @@ async def ban_player_cmd(interaction: discord.Interaction, user: discord.User):
         player.attack_ui_verify_required = False
         player.attack_ui_verify_code = None
         player.attack_ui_verify_expires_at = None
+        game_store.set_combat_click_busy(user.id, False)
     await game_store.save_one_async(str(user.id))
     await interaction.response.send_message(f"⛔ **{user.mention}** is now banned from Zombie Survival.", ephemeral=True)
 
@@ -6534,6 +6586,7 @@ async def ban_reset_cmd(interaction: discord.Interaction, user: discord.User):
         player.attack_ui_verify_expires_at = None
         player.attack_ui_clicks = 0
         player.attack_ui_verify_threshold = random.randint(1000, 1500)
+        game_store.set_combat_click_busy(user.id, False)
     await game_store.save_one_async(str(user.id))
     await interaction.response.send_message(f"🔄 **{user.mention}** anti-autoclick verification has been reset. A new 1,000-1,500 click window is active.", ephemeral=True)
 
@@ -6553,6 +6606,7 @@ async def ban_ignore_cmd(interaction: discord.Interaction, user: discord.User):
         # Keep their accumulated click count, but move the threshold forward so
         # ignoring a review cannot immediately retrigger the same challenge.
         player.attack_ui_verify_threshold = player.attack_ui_clicks + random.randint(1000, 1500)
+        game_store.set_combat_click_busy(user.id, False)
     await game_store.save_one_async(str(user.id))
     await interaction.response.send_message(f"🟢 Anti-autoclick review for **{user.mention}** ignored. Their current click count was preserved.", ephemeral=True)
 
