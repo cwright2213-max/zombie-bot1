@@ -137,11 +137,11 @@ COMBAT_MEDIC_MAX_LEVEL = 6
 MAX_PAINKILLERS_PER_RUN = COMBAT_MEDIC_PAINKILLERS_PER_RUN[0]
 MAX_FULL_RESTORES_PER_RUN = COMBAT_MEDIC_FULL_RESTORES_PER_RUN[0]
 ZONES: dict[str, dict[str, Any]] = {
-    "Graveyard": {"min_level": 1, "hp_mult": 1.0, "dmg_mult": 0.9, "money_mult": 2.0, "xp_mult": 1.6, "desc": "The dead don’t stay buried.", "weights": [60, 25, 12, 3], "ammo_mods": {"Standard": 1.00, "Bleed": 1.00, "Incendiary": 1.00, "Frostbite": 1.00, "Toxic": 1.00, "Shock": 1.00}},
-    "Mega Death City": {"min_level": 50, "hp_mult": 1.8, "dmg_mult": 1.3, "money_mult": 3.5, "xp_mult": 2.0, "desc": "The city belongs to the dead.", "weights": [30, 30, 25, 15], "ammo_mods": {"Standard": 0.75, "Bleed": 1.00, "Incendiary": 1.20, "Frostbite": 0.90, "Toxic": 1.00, "Shock": 1.15}},
-    "Frostbitten Outskirts": {"min_level": 100, "hp_mult": 2.8, "dmg_mult": 1.7, "money_mult": 5.0, "xp_mult": 2.4, "desc": "The cold is the least of your problems.", "weights": [20, 20, 35, 25], "ammo_mods": {"Standard": 0.50, "Bleed": 0.90, "Incendiary": 1.40, "Frostbite": 0.70, "Toxic": 1.00, "Shock": 1.15}},
-    "Toxic Wasteland": {"min_level": 150, "hp_mult": 3.7, "dmg_mult": 2.1, "money_mult": 7.5, "xp_mult": 3.2, "desc": "The land itself wants you dead.", "weights": [15, 15, 35, 35], "ammo_mods": {"Standard": 0.25, "Bleed": 1.00, "Incendiary": 1.10, "Frostbite": 1.00, "Toxic": 1.50, "Shock": 0.90}},
-    "The Void": {"min_level": 200, "hp_mult": 6.5, "dmg_mult": 2.6, "money_mult": 10.0, "xp_mult": 4.5, "desc": "Nothing should exist here.", "weights": [10, 10, 30, 50], "ammo_mods": {"Standard": 0.25, "Bleed": 1.10, "Incendiary": 1.15, "Frostbite": 1.10, "Toxic": 1.25, "Shock": 1.50}},
+    "Graveyard": {"min_level": 1, "hp_mult": 1.0, "dmg_mult": 0.9, "money_mult": 2.0, "xp_mult": 1.6, "desc": "The dead don’t stay buried.", "weights": [60, 25, 12, 3], "standard_damage_mult": 1.00, "proc_mods": {}},
+    "Mega Death City": {"min_level": 50, "hp_mult": 1.8, "dmg_mult": 1.3, "money_mult": 3.5, "xp_mult": 2.0, "desc": "The city belongs to the dead.", "weights": [30, 30, 25, 15], "standard_damage_mult": 0.75, "proc_mods": {"Incendiary": 1.40}},
+    "Frostbitten Outskirts": {"min_level": 100, "hp_mult": 2.8, "dmg_mult": 1.7, "money_mult": 5.0, "xp_mult": 2.4, "desc": "The cold is the least of your problems.", "weights": [20, 20, 35, 25], "standard_damage_mult": 0.50, "proc_mods": {"Frostbite": 1.50}},
+    "Toxic Wasteland": {"min_level": 150, "hp_mult": 3.7, "dmg_mult": 2.1, "money_mult": 7.5, "xp_mult": 3.2, "desc": "The land itself wants you dead.", "weights": [15, 15, 35, 35], "standard_damage_mult": 0.25, "proc_mods": {"Toxic": 1.50}},
+    "The Void": {"min_level": 200, "hp_mult": 6.5, "dmg_mult": 2.6, "money_mult": 10.0, "xp_mult": 4.5, "desc": "Nothing should exist here.", "weights": [10, 10, 30, 50], "standard_damage_mult": 0.25, "proc_mods": {"Shock": 1.75}},
 }
 ZONE_ORDER = ["Graveyard", "Mega Death City", "Frostbitten Outskirts", "Toxic Wasteland", "The Void"]
 WAVE_STAR_CHANCE = {"Graveyard": 0.05, "Mega Death City": 0.07, "Frostbitten Outskirts": 0.10, "Toxic Wasteland": 0.13, "The Void": 0.16}
@@ -175,12 +175,12 @@ BLOATER_FUSE = 5  # attacks before explosion
 BLOATER_EXPLODE_PCT = 0.65  # 65% max HP
 BLOATER_BOSS_HP_MULT = 1.5  # Bloaters are mini-bosses in every zone
 AMMO: dict[str, dict[str, Any]] = {
-    "Standard": {"unlock_level": 1, "price": 0, "desc": "Reliable regular lead.", "effect": None, "cost_per_attack": 1, "box_price": 15, "box_amount": 24},
-    "Bleed": {"unlock_level": 10, "price": 500, "desc": "25% bleed 15 dmg x3", "effect": "bleed", "cost_per_attack": 2, "box_price": 125, "box_amount": 24},
-    "Incendiary": {"unlock_level": 35, "price": 2000, "desc": "30% burn 20 dmg x3", "effect": "burn", "cost_per_attack": 3, "box_price": 500, "box_amount": 24},
-    "Frostbite": {"unlock_level": 70, "price": 6000, "desc": "25% freeze halves dmg x4 + 10 dmg x2", "effect": "freeze", "cost_per_attack": 4, "box_price": 1500, "box_amount": 24},
-    "Toxic": {"unlock_level": 110, "price": 15000, "desc": "40% poison 18 dmg x5", "effect": "poison", "cost_per_attack": 5, "box_price": 4000, "box_amount": 24},
-    "Shock": {"unlock_level": 160, "price": 40000, "desc": "20% stun 2 turns + 30 dmg", "effect": "shock", "cost_per_attack": 6, "box_price": 20000, "box_amount": 24},
+    "Standard": {"unlock_level": 1, "price": 0, "desc": "Reliable regular lead.", "effect": None, "damage_mod": 1.00, "proc_base_chance": 0.00, "cost_per_attack": 1, "box_price": 15, "box_amount": 24},
+    "Bleed": {"unlock_level": 10, "price": 500, "desc": "25% bleed 15 dmg x3 | +15% bullet damage", "effect": "bleed", "damage_mod": 1.15, "proc_base_chance": 0.25, "cost_per_attack": 2, "box_price": 125, "box_amount": 24},
+    "Incendiary": {"unlock_level": 35, "price": 2000, "desc": "30% burn 20 dmg x3 | +25% bullet damage", "effect": "burn", "damage_mod": 1.25, "proc_base_chance": 0.30, "cost_per_attack": 3, "box_price": 500, "box_amount": 24},
+    "Frostbite": {"unlock_level": 70, "price": 6000, "desc": "25% freeze halves dmg x4 + 10 dmg x2 | +35% bullet damage", "effect": "freeze", "damage_mod": 1.35, "proc_base_chance": 0.25, "cost_per_attack": 4, "box_price": 1500, "box_amount": 24},
+    "Toxic": {"unlock_level": 110, "price": 15000, "desc": "40% poison 18 dmg x5 | +50% bullet damage", "effect": "poison", "damage_mod": 1.50, "proc_base_chance": 0.40, "cost_per_attack": 5, "box_price": 4000, "box_amount": 24},
+    "Shock": {"unlock_level": 160, "price": 40000, "desc": "20% stun 2 turns + 30 dmg | +65% bullet damage", "effect": "shock", "damage_mod": 1.65, "proc_base_chance": 0.20, "cost_per_attack": 6, "box_price": 20000, "box_amount": 24},
 }
 WEAPONS: dict[str, dict[str, Any]] = {
     "Pistol": {
@@ -496,16 +496,16 @@ class Survivor:
     weapon_upgrades: dict[str, dict[str, int]] = field(default_factory=dict)
     combat_medic_level: int = 0
     # --- SOUL / REBIRTH PRESTIGE ---
-    # These are the only progression fields that survive a Rebirth, aside from
-    # the existing highest-wave leaderboard records. All three Soul paths are
+    # Soul progression, Wave 50 Token progression, and the existing highest-wave
+    # leaderboard records survive a Rebirth. All three Soul paths are
     # intentionally uncapped and cost exactly 1 Soul Token per upgrade.
     rebirth_count: int = 0
     soul_tokens: int = 0
     greedy_soul_level: int = 0
     evil_soul_level: int = 0
     safe_soul_level: int = 0
-    # Wave 50 special-boss currencies/upgrades. These are Rebirth-scoped and
-    # are intentionally wiped by perform_rebirth().
+    # Wave 50 special-boss currencies/upgrades. These are permanent player
+    # progression and survive Rebirths.
     special_tokens: dict[str, int] = field(default_factory=dict)
     special_token_upgrades: dict[str, int] = field(default_factory=dict)
     special_poison_turns: int = 0
@@ -784,7 +784,22 @@ def zone_for(player: Survivor) -> dict[str, Any]:
     return ZONES.get(player.zone_name, ZONES["Graveyard"])
 
 def ammo_modifier(player: Survivor, ammo_name: str) -> float:
-    return float(zone_for(player).get("ammo_mods", {}).get(ammo_name, 1.0))
+    """Zone multiplier for the selected ammo's proc chance only."""
+    return float(zone_for(player).get("proc_mods", {}).get(ammo_name, 1.0))
+
+def standard_damage_modifier(player: Survivor) -> float:
+    """Zone-only direct damage multiplier for Standard ammo."""
+    return float(zone_for(player).get("standard_damage_mult", 1.0))
+
+def ammo_damage_modifier(ammo_name: str) -> float:
+    """Direct weapon-bullet damage multiplier for an ammo type."""
+    return float(AMMO.get(ammo_name, AMMO["Standard"]).get("damage_mod", 1.0))
+
+def ammo_proc_chance(player: Survivor, ammo_name: str) -> float:
+    """Effective per-bullet proc chance, capped at 90%."""
+    ammo = AMMO.get(ammo_name, AMMO["Standard"])
+    base = float(ammo.get("proc_base_chance", 0.0))
+    return min(0.90, base * ammo_modifier(player, ammo_name))
 
 OLD_AMMO_BOX_PRICES = {"Standard": 15, "Bleed": 50, "Incendiary": 100, "Frostbite": 100, "Toxic": 150, "Shock": 185}
 
@@ -803,12 +818,18 @@ def migrate_ammo_economy_v2(player: Survivor) -> tuple[int, int]:
     return refund, removed
 
 def ammo_effectiveness_text(player: Survivor) -> str:
-    mods = zone_for(player).get("ammo_mods", {})
-    strong = [f"{n} 🔥 {int(mods[n]*100)}%" for n, m in mods.items() if m >= 1.25 and n != "Standard"]
-    weak = [f"{n} ❄️ {int(mods[n]*100)}%" for n, m in mods.items() if m <= 0.85 and n != "Standard"]
-    bonus = ", ".join(strong) if strong else "No major bonus"
-    penalty = ", ".join(weak) if weak else "No major penalty"
-    return f"**Bonus:** {bonus}\n**Penalty:** {penalty}"
+    mods = zone_for(player).get("proc_mods", {})
+    bonuses = []
+    for ammo_name, zone_mult in mods.items():
+        if ammo_name == "Standard" or float(zone_mult) == 1.0:
+            continue
+        base = float(AMMO.get(ammo_name, {}).get("proc_base_chance", 0.0))
+        effective = min(0.90, base * float(zone_mult))
+        bonuses.append(f"{ammo_name} ⚡ {effective*100:.1f}% proc")
+    if bonuses:
+        return "📍 Zone proc bonus: " + ", ".join(bonuses)
+    return "📍 Zone proc bonuses: none."
+
 
 def xp_to_next_level(level: int) -> int:
     # V2: smoother late-game XP curve; keeps level 250 long-term without the sharp endgame wall.
@@ -1685,7 +1706,7 @@ def _apply_damage_over_time(player: Survivor) -> list[str]:
         stacks = int(enemy.effects.get(effect, 0))
         if stacks <= 0:
             continue
-        damage = int(base * ammo_modifier(player, mod_name))
+        damage = int(base)
         enemy.health = max(0, enemy.health - damage)
         enemy.effects[effect] = stacks - 1
         messages.append(f"☠️ {mod_name} {damage} dmg.")
@@ -2354,7 +2375,6 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
                 if enemy.effects["boss_frost"] <= 0:
                     enemy.effects.pop("boss_frost", None)
 
-        mod = ammo_modifier(player, player.ammo_name)
         perk_multiplier, perk_text = _consume_void_offense_bonus(player, enemy)
         total_dmg = 0
         total_crits = 0
@@ -2373,8 +2393,11 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
         # same enemy, but the same effect can only have one active instance at
         # a time (no stacking, refreshing, or extending).
         effect = ammo_data["effect"]
-        proc_chances = {"bleed": 0.25, "burn": 0.30, "freeze": 0.25, "poison": 0.40, "shock": 0.20}
+        proc_chances = {name: ammo_proc_chance(player, name) for name in AMMO if AMMO[name].get("effect")}
         proc_durations = {"bleed": 3, "burn": 3, "freeze": 4, "poison": 5, "shock": 2}
+        bullet_damage_mult = ammo_damage_modifier(player.ammo_name)
+        if player.ammo_name == "Standard":
+            bullet_damage_mult *= standard_damage_modifier(player)
 
         def try_ammo_proc() -> None:
             nonlocal total_dmg
@@ -2391,13 +2414,13 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
                 enemy.effects["freeze_dot"] = 2
             messages.append(f"💥 {player.ammo_name} procs **{effect}**!")
             if effect == "shock":
-                shock_dmg = int(30 * ammo_modifier(player, "Shock"))
+                shock_dmg = 30
                 enemy.health = max(0, enemy.health - shock_dmg)
                 total_dmg += shock_dmg
                 messages.append(f"⚡ Shock deals {shock_dmg} dmg!")
 
         for shot_i in range(shots):
-            dmg = int(player.weapon_damage * mod * perk_multiplier * boss_attack_mult * frost_mult * erased_final_mult)
+            dmg = int(player.weapon_damage * bullet_damage_mult * perk_multiplier * boss_attack_mult * frost_mult * erased_final_mult)
             is_crit = random.random() < player.crit_chance
             if is_crit:
                 dmg = int(dmg * 2)
@@ -2412,15 +2435,20 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
             try_ammo_proc()
             if enemy.health <= 0:
                 break
-        mod_txt = f" (Zone {int(mod*100)}%)" if mod != 1.0 else ""
+        if player.ammo_name == "Standard" and standard_damage_modifier(player) != 1.0:
+            mod_txt = f" (Standard zone dmg ×{standard_damage_modifier(player):.2f})"
+        else:
+            mod_txt = f" (Ammo +{int((ammo_damage_modifier(player.ammo_name) - 1.0) * 100)}% dmg)" if ammo_damage_modifier(player.ammo_name) != 1.0 else ""
+        zone_proc_mult = ammo_modifier(player, player.ammo_name)
+        proc_txt = f" • Zone proc ×{zone_proc_mult:.2f}" if effect and zone_proc_mult != 1.0 else ""
         crit_txt = f" **{total_crits}x CRIT!**" if total_crits > 0 else ""
         magical_txt = " ✨ **MAGICAL! Free shot!**" if is_magical else ""
         perk_txt = f" ⚡ **{perk_text}**" if perk_text else ""
         final_phase_txt = " 🔥 **ERASED FINAL PHASE: +25% DAMAGE**" if erased_final_mult > 1 else ""
         if shots > 1:
-            messages.append(f"🔫 **{shots}x** {player.weapon_name} Hit **{enemy.name} for {total_dmg}** ({'+'.join(map(str, hit_details))}){crit_txt}{magical_txt}{perk_txt} using {player.ammo_name} ({base_cost}x{shots}={cost} ammo){mod_txt}{final_phase_txt}")
+            messages.append(f"🔫 **{shots}x** {player.weapon_name} Hit **{enemy.name} for {total_dmg}** ({'+'.join(map(str, hit_details))}){crit_txt}{magical_txt}{perk_txt} using {player.ammo_name} ({base_cost}x{shots}={cost} ammo){mod_txt}{proc_txt}{final_phase_txt}")
         else:
-            messages.append(f"🔫 Hit **{enemy.name} for {total_dmg}**{crit_txt}{magical_txt}{perk_txt} using {player.ammo_name} ({cost}/shot){mod_txt}{final_phase_txt}")
+            messages.append(f"🔫 Hit **{enemy.name} for {total_dmg}**{crit_txt}{magical_txt}{perk_txt} using {player.ammo_name} ({cost}/shot){mod_txt}{proc_txt}{final_phase_txt}")
         
         # DOUBLE-TAP: per-weapon premium upgrade. The proc immediately repeats
         # the weapon attack for free, inherits weapon/ammo/crit behavior, cannot
@@ -2432,7 +2460,7 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
             bonus_crits = 0
             bonus_hits = []
             for shot_i in range(shots):
-                bonus_dmg = int(player.weapon_damage * mod * frost_mult * erased_final_mult * (0.75 if weapon_erasure_active else 1.0))
+                bonus_dmg = int(player.weapon_damage * bullet_damage_mult * frost_mult * erased_final_mult * (0.75 if weapon_erasure_active else 1.0))
                 bonus_crit = random.random() < player.crit_chance
                 if bonus_crit:
                     bonus_dmg = int(bonus_dmg * 2)
@@ -2450,7 +2478,7 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
                         enemy.effects["freeze_dot"] = 2
                     messages.append(f"💥 Double-Tap {player.ammo_name} procs **{effect}**!")
                     if effect == "shock":
-                        shock_dmg = int(30 * ammo_modifier(player, "Shock"))
+                        shock_dmg = 30
                         enemy.health = max(0, enemy.health - shock_dmg)
                         bonus_total += shock_dmg
                         messages.append(f"⚡ Double-Tap Shock deals {shock_dmg} dmg!")
@@ -2685,15 +2713,19 @@ def swap_ammo_in_run(player: Survivor, ammo_name: str) -> list[str]:
     if player.ammo_name == ammo_name:
         return [f"🔬 Already using **{ammo_name}** ({AMMO[ammo_name]['cost_per_attack']}/shot)."]
     spare = player.get_spare(ammo_name)
-    if spare <= 0:
-        return [f"❌ No **{ammo_name}** rounds available. Buy ammo before the run."]
-    # Swapping ammo must NOT perform a free reload. Moving to a different ammo
-    # type stows the rounds currently loaded in the old ammo type, then leaves
-    # the magazine empty so the player must spend a normal reload action.
-    player.spare_ammo[player.ammo_name] = player.spare_ammo.get(player.ammo_name, 0) + player.magazine
-    player.magazine = 0
+    magazine_rounds = max(0, int(player.magazine))
+    # Ammo swapping preserves the number of rounds currently loaded. Those
+    # rounds are returned to the old ammo's stockpile, while the same number
+    # is taken from the newly selected ammo's stockpile and placed in the
+    # magazine. This makes swapping a true ammo-type change, not a free reload.
+    if spare < magazine_rounds:
+        return [f"❌ Not enough **{ammo_name}** rounds to preserve your current magazine. Need {magazine_rounds}, have {spare}."]
+    old_ammo = player.ammo_name
+    player.spare_ammo[old_ammo] = player.spare_ammo.get(old_ammo, 0) + magazine_rounds
+    player.spare_ammo[ammo_name] = spare - magazine_rounds
     player.ammo_name = ammo_name
-    return [f"🔄 Switched to **{ammo_name}** ({AMMO[ammo_name]['cost_per_attack']}/shot). **Magazine is empty — reload to load it.**"]
+    player.magazine = magazine_rounds
+    return [f"🔄 Switched to **{ammo_name}** ({AMMO[ammo_name]['cost_per_attack']}/shot) with **{magazine_rounds} rounds loaded**. {magazine_rounds} rounds taken from your {ammo_name} stockpile."]
 
 def change_zone(player: Survivor, zone_name: str) -> list[str]:
     if player.run_active:
@@ -2924,9 +2956,10 @@ def perform_rebirth(player: Survivor) -> list[str]:
     if player.money < cost:
         return [f"❌ Your next Rebirth costs **${cost:,}**. You have **${player.money:,}**."]
 
-    # Only Soul progression and the existing highest-wave leaderboard records
-    # survive. The leaderboard identity/guild metadata is retained alongside
-    # those records so the preserved scores continue to display correctly.
+    # Soul progression, Wave 50 Token progression, and the existing highest-wave
+    # leaderboard records survive. The leaderboard identity/guild metadata is
+    # retained alongside those records so the preserved scores continue to
+    # display correctly.
     preserved = {
         "highest_waves": dict(player.highest_waves),
         "highest_wave_dates": dict(player.highest_wave_dates),
@@ -2937,7 +2970,10 @@ def perform_rebirth(player: Survivor) -> list[str]:
         "greedy_soul_level": int(player.greedy_soul_level),
         "evil_soul_level": int(player.evil_soul_level),
         "safe_soul_level": int(player.safe_soul_level),
-        # Special Wave 50 tokens/upgrades are intentionally NOT preserved.
+        # Wave 50 Token balances and Token Shop upgrade levels are permanent
+        # progression and carry across every Rebirth.
+        "special_tokens": {str(k): max(0, int(v or 0)) for k, v in getattr(player, "special_tokens", {}).items()},
+        "special_token_upgrades": {str(k): max(0, int(v or 0)) for k, v in getattr(player, "special_token_upgrades", {}).items()},
     }
     # Global boosters are bot-wide state, not player progression. Preserve the
     # owner's stored expiry fields so Rebirth cannot accidentally disable them.
@@ -2959,7 +2995,7 @@ def perform_rebirth(player: Survivor) -> list[str]:
         "🧹 All normal progression has been reset.",
         f"👻 **+1 Soul Token** — Total: **{player.soul_tokens}**",
         f"🏆 Your highest-wave leaderboard records remain untouched.",
-        "🪙 All Wave 50 Tokens and Token Shop upgrades were wiped for the new Rebirth.",
+        "🪙 Wave 50 Tokens and Token Shop upgrades carried over through Rebirth.",
     ]
 
 
@@ -4573,7 +4609,7 @@ class RebirthConfirmView(PlayerView):
             "❌ Cash, XP, Level, Stars, weapons, ammo, meds, upgrades, Void progression and all other normal progression will be reset.\n"
             "🏆 Your existing highest-wave leaderboard records will remain.\n"
             "👻 Your Soul Tokens and Soul upgrades will remain.\n"
-            "🪙 All Wave 50 Tokens and Token Shop upgrades will be wiped.\n\n"
+            "🪙 Your Wave 50 Tokens and Token Shop upgrades will remain.\n\n"
             "**This cannot be undone. Are you sure?**"
         )
 
@@ -4669,7 +4705,7 @@ class SoulShopView(PlayerView):
 
 
 class SpecialTokenShopView(PlayerView):
-    """Finite Wave 50 Token Shop. Token balances and upgrades reset on Rebirth."""
+    """Finite Wave 50 Token Shop. Token balances and upgrades survive Rebirth."""
     def __init__(self, user_id: int, store, display_name: str = "Survivor", zone_name: str | None = None, selected_up: str | None = None, extra_msgs: list[str] | None = None, timeout: float | None = None):
         super().__init__(user_id, store, display_name, timeout)
         player = self.store.get(user_id)
