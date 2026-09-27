@@ -334,11 +334,11 @@ BLOATER_EXPLODE_PCT = 0.65  # 65% max HP
 BLOATER_BOSS_HP_MULT = 1.5  # Bloaters are mini-bosses in every zone
 AMMO: dict[str, dict[str, Any]] = {
     "Standard": {"unlock_level": 1, "price": 0, "desc": "Reliable regular lead.", "effect": None, "damage_mod": 1.00, "proc_base_chance": 0.00, "cost_per_attack": 1, "box_price": 15, "box_amount": 24},
-    "Bleed": {"unlock_level": 10, "price": 500, "desc": "25% bleed 15 dmg x3 | +15% bullet damage", "effect": "bleed", "damage_mod": 1.15, "proc_base_chance": 0.25, "cost_per_attack": 2, "box_price": 125, "box_amount": 24},
-    "Incendiary": {"unlock_level": 35, "price": 2000, "desc": "30% burn 20 dmg x3 | +25% bullet damage", "effect": "burn", "damage_mod": 1.25, "proc_base_chance": 0.30, "cost_per_attack": 3, "box_price": 500, "box_amount": 24},
-    "Frostbite": {"unlock_level": 70, "price": 6000, "desc": "25% freeze halves dmg x4 + 10 dmg x2 | +35% bullet damage", "effect": "freeze", "damage_mod": 1.35, "proc_base_chance": 0.25, "cost_per_attack": 4, "box_price": 1500, "box_amount": 24},
-    "Toxic": {"unlock_level": 110, "price": 15000, "desc": "40% poison 18 dmg x5 | +50% bullet damage", "effect": "poison", "damage_mod": 1.50, "proc_base_chance": 0.40, "cost_per_attack": 5, "box_price": 4000, "box_amount": 24},
-    "Shock": {"unlock_level": 160, "price": 40000, "desc": "20% stun 2 turns + 30 dmg | +65% bullet damage", "effect": "shock", "damage_mod": 1.65, "proc_base_chance": 0.20, "cost_per_attack": 6, "box_price": 20000, "box_amount": 24},
+    "Bleed": {"unlock_level": 10, "price": 500, "desc": "25% bleed 15% weapon dmg x3 | +15% bullet damage", "effect": "bleed", "damage_mod": 1.15, "proc_base_chance": 0.25, "cost_per_attack": 2, "box_price": 125, "box_amount": 24},
+    "Incendiary": {"unlock_level": 35, "price": 2000, "desc": "30% burn 20% weapon dmg x3 | +25% bullet damage", "effect": "burn", "damage_mod": 1.25, "proc_base_chance": 0.30, "cost_per_attack": 3, "box_price": 500, "box_amount": 24},
+    "Frostbite": {"unlock_level": 70, "price": 6000, "desc": "25% freeze halves dmg x4 + 10% weapon dmg x2 | +35% bullet damage", "effect": "freeze", "damage_mod": 1.35, "proc_base_chance": 0.25, "cost_per_attack": 4, "box_price": 1500, "box_amount": 24},
+    "Toxic": {"unlock_level": 110, "price": 15000, "desc": "40% poison 18% weapon dmg x5 | +50% bullet damage", "effect": "poison", "damage_mod": 1.50, "proc_base_chance": 0.40, "cost_per_attack": 5, "box_price": 4000, "box_amount": 24},
+    "Shock": {"unlock_level": 160, "price": 40000, "desc": "20% stun 2 turns + 30% weapon dmg | +65% bullet damage", "effect": "shock", "damage_mod": 1.65, "proc_base_chance": 0.20, "cost_per_attack": 6, "box_price": 20000, "box_amount": 24},
 }
 WEAPONS: dict[str, dict[str, Any]] = {
     "Pistol": {
@@ -1020,6 +1020,22 @@ def standard_damage_modifier(player: Survivor) -> float:
 def ammo_damage_modifier(ammo_name: str) -> float:
     """Direct weapon-bullet damage multiplier for an ammo type."""
     return float(AMMO.get(ammo_name, AMMO["Standard"]).get("damage_mod", 1.0))
+
+
+def ammo_proc_damage_percent(ammo_name: str) -> float:
+    """Percent of the player's current weapon damage used by proc/DoT damage."""
+    return {
+        "Bleed": 0.15,
+        "Incendiary": 0.20,
+        "Frostbite": 0.10,
+        "Toxic": 0.18,
+        "Shock": 0.30,
+    }.get(ammo_name, 0.0)
+
+
+def ammo_proc_damage(player: Survivor, ammo_name: str) -> int:
+    """Calculate proc/DoT damage from current weapon damage, not flat values."""
+    return max(0, int(player.weapon_damage * ammo_proc_damage_percent(ammo_name)))
 
 def ammo_proc_chance(player: Survivor, ammo_name: str) -> float:
     """Effective per-bullet proc chance, capped at 90%."""
@@ -1933,16 +1949,16 @@ def _apply_damage_over_time(player: Survivor) -> list[str]:
     # enemy attacks, while its bonus cold damage ticks twice, matching the
     # ammo description instead of silently doing nothing.
     dot_data = {
-        "bleed": (15, "Bleed"),
-        "burn": (20, "Incendiary"),
-        "poison": (18, "Toxic"),
-        "freeze_dot": (10, "Frostbite"),
+        "bleed": "Bleed",
+        "burn": "Incendiary",
+        "poison": "Toxic",
+        "freeze_dot": "Frostbite",
     }
-    for effect, (base, mod_name) in dot_data.items():
+    for effect, mod_name in dot_data.items():
         stacks = int(enemy.effects.get(effect, 0))
         if stacks <= 0:
             continue
-        damage = int(base)
+        damage = ammo_proc_damage(player, mod_name)
         enemy.health = max(0, enemy.health - damage)
         enemy.effects[effect] = stacks - 1
         messages.append(f"☠️ {mod_name} {damage} dmg.")
@@ -2681,7 +2697,7 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
                 enemy.effects["freeze_dot"] = 2
             messages.append(f"💥 {player.ammo_name} procs **{effect}**!")
             if effect == "shock":
-                shock_dmg = 30
+                shock_dmg = ammo_proc_damage(player, "Shock")
                 enemy.health = max(0, enemy.health - shock_dmg)
                 total_dmg += shock_dmg
                 messages.append(f"⚡ Shock deals {shock_dmg} dmg!")
@@ -2745,7 +2761,7 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
                         enemy.effects["freeze_dot"] = 2
                     messages.append(f"💥 Double-Tap {player.ammo_name} procs **{effect}**!")
                     if effect == "shock":
-                        shock_dmg = 30
+                        shock_dmg = ammo_proc_damage(player, "Shock")
                         enemy.health = max(0, enemy.health - shock_dmg)
                         bonus_total += shock_dmg
                         messages.append(f"⚡ Double-Tap Shock deals {shock_dmg} dmg!")
