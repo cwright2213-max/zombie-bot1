@@ -12,6 +12,7 @@ from discord import app_commands
 OWNER_ID = 572053060969299977
 XP_BOOST_DURATION_SECONDS = 24 * 60 * 60
 CASH_BOOST_DURATION_SECONDS = 24 * 60 * 60
+GIVE_BOOSTER_DURATION_SECONDS = 60 * 60
 GLOBAL_XP_BOOST_UNTIL: str | None = None
 GLOBAL_CASH_BOOST_UNTIL: str | None = None
 
@@ -684,14 +685,17 @@ class Survivor:
     leaderboard_guilds: list[str] = field(default_factory=list)
     # Daily Survivor Crate cooldown (UTC ISO timestamp of last claim).
     daily_claimed_at: str | None = None
-    # Owner-only temporary 2x XP boost for this player.
+    # Owner-only temporary 1.5x XP boost for this player.
     xp_boost_until: str | None = None
-    # Global 2x XP/cash expiries are persisted on the Owner record.
+    # Global 1.5x XP/cash expiries are persisted on the Owner record.
     global_xp_boost_until: str | None = None
-    # Owner-only temporary 2x Cash boost for this player.
+    # Owner-only temporary 1.5x Cash boost for this player.
     cash_boost_until: str | None = None
-    # Global 2x Cash boost is persisted on the Owner record.
+    # Global 1.5x Cash boost is persisted on the Owner record.
     global_cash_boost_until: str | None = None
+    # Permanent account upgrade: automatically reload whenever the equipped
+    # weapon does not have enough magazine rounds to perform the full attack.
+    auto_reload_unlocked: bool = False
     # Persistent flag so admin test runs stay excluded from leaderboards even across restarts.
     admin_test_mode: bool = False
     ammo_economy_version: int = 2
@@ -858,7 +862,7 @@ class Survivor:
         # when a run is resumed after a restart.
         d = asdict(self)
         d["equipped_weapon"] = self.weapon_name
-        d["__version"] = 6
+        d["__version"] = 7
         return d
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Survivor":
@@ -963,6 +967,9 @@ class Survivor:
         allowed.setdefault("daily_claimed_at", None)
         allowed.setdefault("xp_boost_until", None)
         allowed.setdefault("global_xp_boost_until", None)
+        allowed.setdefault("cash_boost_until", None)
+        allowed.setdefault("global_cash_boost_until", None)
+        allowed["auto_reload_unlocked"] = bool(allowed.get("auto_reload_unlocked", False))
         allowed.setdefault("admin_test_mode", False)
         allowed.setdefault("ammo_economy_version", data.get("ammo_economy_version", 2))
         allowed.setdefault("last_activity_at", None)
@@ -2324,6 +2331,33 @@ def _combat_action_noop(player: Survivor, action: str, heal_item: str | None = N
     return None
 
 
+def _auto_reload_for_attack(player: Survivor) -> list[str]:
+    """Automatically reload enough rounds to make the next full attack possible.
+
+    Auto-Reload is triggered by attack requirements, not by an empty magazine.
+    This matters for multi-shot weapons and ammo types that consume multiple
+    rounds per bullet. The reload is part of the same player action.
+    """
+    if not getattr(player, "auto_reload_unlocked", False):
+        return []
+    ammo_data = AMMO[player.ammo_name]
+    base_cost = int(ammo_data["cost_per_attack"])
+    weapon_data = WEAPONS.get(player.weapon_name, WEAPONS["Pistol"])
+    shots = int(weapon_data.get("shots", 1))
+    required = base_cost * shots
+    capacity = effective_magazine_size(player)
+    if player.magazine >= required or capacity < required:
+        return []
+    spare = player.get_spare()
+    if spare <= 0:
+        return []
+    amount = min(capacity - player.magazine, spare)
+    if amount <= 0:
+        return []
+    player.magazine += amount
+    player.spare_ammo[player.ammo_name] = spare - amount
+    return [f"🔄 **AUTO-RELOAD!** Loaded {amount} {player.ammo_name}. {player.magazine}/{capacity} ready."]
+
 def take_action(player: Survivor, action: str, heal_item: str | None = None) -> list[str]:
     if not player.run_active or player.enemy is None:
         return ["Not in a run. Use Start run."]
@@ -2335,11 +2369,15 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
     if not player.enemy.is_zone_boss and not player.enemy.is_bloater and player.zombies_remaining > MAX_ZOMBIES_PER_WAVE:
         player.zombies_remaining = MAX_ZOMBIES_PER_WAVE
 
+    auto_reload_messages: list[str] = []
+    if action == "attack":
+        auto_reload_messages = _auto_reload_for_attack(player)
+
     noop_message = _combat_action_noop(player, action, heal_item)
     if noop_message is not None:
         return [noop_message]
 
-    messages: list[str] = []
+    messages: list[str] = list(auto_reload_messages)
     # Reload is a real combat action, but pending DoT resolves after the reload
     # so a bleed/burn/poison tick can finish the enemy without cancelling the
     # reload the player just performed. If the DoT does not kill the enemy,
@@ -3203,6 +3241,8 @@ def perform_rebirth(player: Survivor) -> list[str]:
         # progression and carry across every Rebirth.
         "special_tokens": {str(k): max(0, int(v or 0)) for k, v in getattr(player, "special_tokens", {}).items()},
         "special_token_upgrades": {str(k): max(0, int(v or 0)) for k, v in getattr(player, "special_token_upgrades", {}).items()},
+        # Auto-Reload is a permanent account upgrade and survives Rebirth.
+        "auto_reload_unlocked": bool(getattr(player, "auto_reload_unlocked", False)),
     }
     # Global boosters are bot-wide state, not player progression. Preserve the
     # owner's stored expiry fields so Rebirth cannot accidentally disable them.
@@ -3673,13 +3713,22 @@ def _xp_boost_active(value: str | None) -> bool:
     expiry = _parse_xp_boost_expiry(value)
     return bool(expiry and expiry > datetime.now(timezone.utc))
 
+def _combined_boost_multiplier(personal_until: str | None, global_until: str | None) -> float:
+    personal = _xp_boost_active(personal_until)
+    global_active = _xp_boost_active(global_until)
+    if personal and global_active:
+        return 1.75
+    if personal or global_active:
+        return 1.5
+    return 1.0
+
 def xp_boost_multiplier(player: Survivor) -> float:
-    """Return active XP multiplier; personal/global boosts never stack."""
-    return 1.5 if (_xp_boost_active(getattr(player, "xp_boost_until", None)) or _xp_boost_active(GLOBAL_XP_BOOST_UNTIL)) else 1.0
+    """Return XP multiplier: none 1x, either boost 1.5x, both 1.75x."""
+    return _combined_boost_multiplier(getattr(player, "xp_boost_until", None), GLOBAL_XP_BOOST_UNTIL)
 
 def cash_boost_multiplier(player: Survivor) -> float:
-    """Return active cash multiplier; personal/global boosts never stack."""
-    return 1.5 if (_xp_boost_active(getattr(player, "cash_boost_until", None)) or _xp_boost_active(GLOBAL_CASH_BOOST_UNTIL)) else 1.0
+    """Return cash multiplier: none 1x, either boost 1.5x, both 1.75x."""
+    return _combined_boost_multiplier(getattr(player, "cash_boost_until", None), GLOBAL_CASH_BOOST_UNTIL)
 
 class GameStore:
     """CONSTANT SAVE - every player action triggers an instant persistent save.
@@ -4179,6 +4228,45 @@ class DailyCrateView(PlayerView):
         self.add_item(back_btn)
 
 
+class BoostersView(PlayerView):
+    """Main-menu booster panel showing active boosts and the planned bundles."""
+    def build_embed(self, player: Survivor):
+        lines = [
+            "**🚀 YOUR BOOSTERS**",
+            "",
+            f"✨ Personal XP: {_booster_status_line('Status', getattr(player, 'xp_boost_until', None)).replace('Status: ', '')}",
+            f"💰 Personal Cash: {_booster_status_line('Status', getattr(player, 'cash_boost_until', None)).replace('Status: ', '')}",
+            f"🌍 Global XP: {_booster_status_line('Status', GLOBAL_XP_BOOST_UNTIL).replace('Status: ', '')}",
+            f"🌍 Global Cash: {_booster_status_line('Status', GLOBAL_CASH_BOOST_UNTIL).replace('Status: ', '')}",
+            "",
+            f"**Current XP Multiplier:** **{xp_boost_multiplier(player):.2f}×**",
+            f"**Current Cash Multiplier:** **{cash_boost_multiplier(player):.2f}×**",
+            "",
+            "**🛒 BOOSTER BUNDLES**",
+            "",
+            "💵 **$2 Bundle** — 2 × 1-hour Personal Cash + 2 × 1-hour Personal XP",
+            "💵 **$5 Bundle** — 6 × 1-hour Personal Cash + 6 × 1-hour Personal XP",
+            "💵 **$8 Bundle** — 10 × 1-hour Personal Cash + 10 × 1-hour Personal XP + Permanent Auto-Reload",
+            "💵 **$10 Bundle** — Everything in $8 + 1 × Global Cash + 1 × Global XP",
+            "",
+            f"🔄 **Auto-Reload:** {'✅ Unlocked permanently' if getattr(player, 'auto_reload_unlocked', False) else '❌ Not unlocked'}",
+            "",
+            "*Bundle purchases are not connected to a payment system yet.*",
+        ]
+        return make_embed(title="🚀 BOOSTERS", description="\n".join(lines), color=discord.Color.purple())
+
+    def __init__(self, user_id: int, store, display_name: str = "Survivor"):
+        super().__init__(user_id, store, display_name)
+        self.display_name = display_name
+        back = discord.ui.Button(label="🏠 Main Menu", style=discord.ButtonStyle.secondary, row=0)
+        async def back_cb(interaction: discord.Interaction):
+            p = self.store.get(self.user_id)
+            name = getattr(interaction.user, "display_name", None) or getattr(interaction.user, "global_name", None) or interaction.user.name
+            await interaction.response.edit_message(content=status(p, display_name=name), embed=None, view=ZombieMenuView(self.user_id, self.store, display_name=name))
+        back.callback = back_cb
+        self.add_item(back)
+
+
 class ZombieMenuView(PlayerView):
     def __init__(self, user_id: int, store, display_name: str = "Survivor"):
         super().__init__(user_id, store, display_name)
@@ -4272,19 +4360,16 @@ class ZombieMenuView(PlayerView):
         btn_daily.callback = daily_cb
         self.add_item(btn_daily)
 
-        # ROW 2: Refresh
-        btn_refresh = discord.ui.Button(label="🔄 Refresh", style=discord.ButtonStyle.secondary, row=2)
-        async def refresh_cb(interaction: discord.Interaction):
+        # ROW 2: Boosters replaces the old Refresh button.
+        btn_boosters = discord.ui.Button(label="🚀 Boosters", style=discord.ButtonStyle.secondary, row=2)
+        async def boosters_cb(interaction: discord.Interaction):
             p = self.store.get(self.user_id)
-            name = getattr(self, "display_name", "Survivor")
-            try:
-                name = getattr(interaction.user, "display_name", None) or getattr(interaction.user, "global_name", None) or interaction.user.name
-                self.display_name = name
-            except:
-                pass
-            await interaction.response.edit_message(content=status(p, display_name=name), embed=None, view=ZombieMenuView(self.user_id, self.store, display_name=name))
-        btn_refresh.callback = refresh_cb
-        self.add_item(btn_refresh)
+            name = getattr(interaction.user, "display_name", None) or getattr(interaction.user, "global_name", None) or interaction.user.name
+            self.display_name = name
+            view = BoostersView(self.user_id, self.store, display_name=name)
+            await interaction.response.edit_message(content=None, embed=view.build_embed(p), view=view)
+        btn_boosters.callback = boosters_cb
+        self.add_item(btn_boosters)
 
 
 class FleeConfirmView(PlayerView):
@@ -4358,6 +4443,15 @@ class CombatView(PlayerView):
                     "💥 Void Bazooka", "◈ Void Perks"
                 }:
                     self.remove_item(item)
+
+        # Auto-Reload is a permanent account upgrade. The manual Reload button
+        # remains usable, but is shown in the muted/grey style while Auto-Reload
+        # is unlocked so the player can still reload whenever they want.
+        if getattr(player, "auto_reload_unlocked", False):
+            for item in self.children:
+                if getattr(item, "label", "") == "🔄 Reload":
+                    item.style = discord.ButtonStyle.secondary
+                    break
 
         # Flee is permanent through Wave 50. After that it appears only at
         # 5-wave checkpoints: 55, 60, 65, 70, ...
@@ -6669,6 +6763,86 @@ async def give_soul_token(interaction: discord.Interaction, user: discord.User, 
         ephemeral=True,
     )
 
+@give_group.command(name="booster", description="[OWNER] Give a 1-hour personal or global XP/Cash booster")
+@app_commands.describe(
+    user="Player who receives the booster (global still uses this player as the owner record)",
+    scope="personal or global",
+    booster_type="xp or cash",
+)
+@app_commands.choices(
+    scope=[
+        app_commands.Choice(name="Personal", value="personal"),
+        app_commands.Choice(name="Global", value="global"),
+    ],
+    booster_type=[
+        app_commands.Choice(name="XP", value="xp"),
+        app_commands.Choice(name="Cash", value="cash"),
+    ],
+)
+async def give_booster(interaction: discord.Interaction, user: discord.User, scope: app_commands.Choice[str], booster_type: app_commands.Choice[str]):
+    if not is_owner(interaction):
+        await interaction.response.send_message(owner_denied_message(), ephemeral=True)
+        return
+
+    scope_value = scope.value
+    type_value = booster_type.value
+    now = datetime.now(timezone.utc)
+    duration = timedelta(seconds=GIVE_BOOSTER_DURATION_SECONDS)
+
+    if scope_value == "global":
+        global GLOBAL_XP_BOOST_UNTIL, GLOBAL_CASH_BOOST_UNTIL
+        attr = "global_xp_boost_until" if type_value == "xp" else "global_cash_boost_until"
+        current_iso = GLOBAL_XP_BOOST_UNTIL if type_value == "xp" else GLOBAL_CASH_BOOST_UNTIL
+        current = _parse_xp_boost_expiry(current_iso)
+        base = current if current and current > now else now
+        expiry_iso = (base + duration).isoformat()
+        if type_value == "xp":
+            GLOBAL_XP_BOOST_UNTIL = expiry_iso
+        else:
+            GLOBAL_CASH_BOOST_UNTIL = expiry_iso
+        async with game_store.action_lock(OWNER_ID):
+            owner_player = game_store.get(OWNER_ID)
+            setattr(owner_player, attr, expiry_iso)
+        await game_store.save_one_async(str(OWNER_ID))
+        await interaction.response.send_message(
+            f"🌍 **Global {type_value.upper()} Booster given!** Everyone now has the global 1.5× {type_value.upper()} boost until <t:{int((base + duration).timestamp())}:R>.",
+            ephemeral=True,
+        )
+        return
+
+    attr = "xp_boost_until" if type_value == "xp" else "cash_boost_until"
+    async with game_store.action_lock(user.id):
+        player = game_store.get(user.id)
+        current = _parse_xp_boost_expiry(getattr(player, attr, None))
+        base = current if current and current > now else now
+        expiry_iso = (base + duration).isoformat()
+        setattr(player, attr, expiry_iso)
+    await game_store.save_one_async(str(user.id))
+    await interaction.response.send_message(
+        f"✨ **{type_value.upper()} Booster given to {user.mention}!** Personal 1.5× boost active until <t:{int((base + duration).timestamp())}:R>.",
+        ephemeral=True,
+    )
+
+
+auto_group = app_commands.Group(name="auto", description="[OWNER] Permanent account upgrades", parent=give_group)
+
+@auto_group.command(name="reload", description="[OWNER] Give permanent Auto-Reload to a player")
+@app_commands.describe(user="Player to receive permanent Auto-Reload")
+async def give_auto_reload(interaction: discord.Interaction, user: discord.User):
+    if not is_owner(interaction):
+        await interaction.response.send_message(owner_denied_message(), ephemeral=True)
+        return
+    async with game_store.action_lock(user.id):
+        player = game_store.get(user.id)
+        player.auto_reload_unlocked = True
+    await game_store.save_one_async(str(user.id))
+    await interaction.response.send_message(
+        f"🔄 **Permanent Auto-Reload unlocked for {user.mention}!**\n"
+        "Their Attack will automatically reload whenever the magazine lacks enough rounds for the full attack.\n"
+        "The manual Reload button remains available.",
+        ephemeral=True,
+    )
+
 bot.tree.add_command(give_group)
 
 
@@ -7167,7 +7341,7 @@ def _resolve_xp_boost_target(interaction: discord.Interaction, target_text: str)
 @bot.tree.command(name="xpbooster", description="[OWNER] Give a player or everyone 1.5x XP for 24 hours")
 @app_commands.describe(target="Player name/mention/ID, or type Global for everyone")
 async def xpbooster(interaction: discord.Interaction, target: str):
-    """Owner-only temporary 1.5x XP grant. Personal/global boosts do not stack."""
+    """Owner-only temporary 1.5x XP grant. Personal/global boosts use the combined 1.75× rule when both are active."""
     await interaction.response.defer(ephemeral=False)
     if not is_owner(interaction):
         await interaction.followup.send("❌ Owner only.", ephemeral=False)
@@ -7187,7 +7361,7 @@ async def xpbooster(interaction: discord.Interaction, target: str):
         await interaction.followup.send(
             f"🌍 **GLOBAL 1.5x XP ACTIVATED!**\n✨ Everyone earns **1.5× XP** for 24 hours.\n"
             f"⏰ Expires <t:{int(expiry.timestamp())}:F> (<t:{int(expiry.timestamp())}:R>)\n"
-            f"⚠️ Personal + global boosts do **not** stack to 2.25×.",
+            f"⚠️ Personal + global boosts combine to **1.75×** for players with both active.",
             ephemeral=False,
         )
         return
@@ -7207,7 +7381,7 @@ async def xpbooster(interaction: discord.Interaction, target: str):
     await interaction.followup.send(
         f"✨ **1.5x XP ACTIVATED** for <@{value}>!\n"
         f"⏰ Expires <t:{int(expiry.timestamp())}:F> (<t:{int(expiry.timestamp())}:R>)\n"
-        f"XP earned during the boost is increased by 50%. Personal + global boosts never stack to 2.25×.",
+        f"XP earned during the boost is increased by 50%. Personal + global boosts combine to 1.75× when both are active.",
         ephemeral=False,
     )
 
@@ -7220,7 +7394,7 @@ def _resolve_cash_boost_target(interaction: discord.Interaction, target_text: st
 @bot.tree.command(name="moneybooster", description="[OWNER] Give a player or everyone 1.5x Cash for 24 hours")
 @app_commands.describe(target="Player name/mention/ID, or type Global for everyone")
 async def moneybooster(interaction: discord.Interaction, target: str):
-    """Owner-only temporary 1.5x Cash grant. Personal/global boosts do not stack."""
+    """Owner-only temporary 1.5x Cash grant. Personal/global boosts use the combined 1.75× rule when both are active."""
     await interaction.response.defer(ephemeral=False)
     if not is_owner(interaction):
         await interaction.followup.send("❌ Owner only.", ephemeral=False)
@@ -7240,7 +7414,7 @@ async def moneybooster(interaction: discord.Interaction, target: str):
         await interaction.followup.send(
             f"🌍 **GLOBAL 1.5x CASH ACTIVATED!**\n💰 Everyone earns **1.5× Cash** for 24 hours.\n"
             f"⏰ Expires <t:{int(expiry.timestamp())}:F> (<t:{int(expiry.timestamp())}:R>)\n"
-            f"⚠️ Personal + global cash boosts do **not** stack to 2.25×.",
+            f"⚠️ Personal + global cash boosts combine to **1.75×** for players with both active.",
             ephemeral=False,
         )
         return
@@ -7260,7 +7434,7 @@ async def moneybooster(interaction: discord.Interaction, target: str):
     await interaction.followup.send(
         f"💰 **1.5x CASH ACTIVATED** for <@{value}>!\n"
         f"⏰ Expires <t:{int(expiry.timestamp())}:F> (<t:{int(expiry.timestamp())}:R>)\n"
-        f"Cash earned during the boost is increased by 50%. Personal + global boosts never stack to 2.25×.",
+        f"Cash earned during the boost is increased by 50%. Personal + global boosts combine to 1.75× when both are active.",
         ephemeral=False,
     )
 
@@ -7290,7 +7464,7 @@ async def xpboosterstatus(interaction: discord.Interaction):
             f"{_booster_status_line('🌍 Global XP Booster', GLOBAL_XP_BOOST_UNTIL)}\n"
             f"{_booster_status_line('👤 Your Personal XP Booster', getattr(player, 'xp_boost_until', None))}\n\n"
             f"**Current XP Multiplier:** **{xp_boost_multiplier(player):.1f}×**\n"
-            "⚠️ Personal + global boosters do **not** stack."
+            "⚠️ Personal + global boosters combine to **1.75×** when both are active."
         ),
         color=discord.Color.blue(),
     )
@@ -7307,7 +7481,7 @@ async def moneyboosterstatus(interaction: discord.Interaction):
             f"{_booster_status_line('🌍 Global Money Booster', GLOBAL_CASH_BOOST_UNTIL)}\n"
             f"{_booster_status_line('👤 Your Personal Money Booster', getattr(player, 'cash_boost_until', None))}\n\n"
             f"**Current Cash Multiplier:** **{cash_boost_multiplier(player):.1f}×**\n"
-            "⚠️ Personal + global boosters do **not** stack."
+            "⚠️ Personal + global boosters combine to **1.75×** when both are active."
         ),
         color=discord.Color.gold(),
     )
