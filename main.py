@@ -180,7 +180,7 @@ AMMO: dict[str, dict[str, Any]] = {
     "Incendiary": {"unlock_level": 35, "price": 2000, "desc": "30% burn 20 dmg x3", "effect": "burn", "cost_per_attack": 3, "box_price": 500, "box_amount": 24},
     "Frostbite": {"unlock_level": 70, "price": 6000, "desc": "25% freeze halves dmg x4 + 10 dmg x2", "effect": "freeze", "cost_per_attack": 4, "box_price": 1500, "box_amount": 24},
     "Toxic": {"unlock_level": 110, "price": 15000, "desc": "40% poison 18 dmg x5", "effect": "poison", "cost_per_attack": 5, "box_price": 4000, "box_amount": 24},
-    "Shock": {"unlock_level": 160, "price": 40000, "desc": "20% stun 1 turn + 30 dmg", "effect": "shock", "cost_per_attack": 6, "box_price": 40000, "box_amount": 24},
+    "Shock": {"unlock_level": 160, "price": 40000, "desc": "20% stun 2 turns + 30 dmg", "effect": "shock", "cost_per_attack": 6, "box_price": 20000, "box_amount": 24},
 }
 WEAPONS: dict[str, dict[str, Any]] = {
     "Pistol": {
@@ -2369,6 +2369,33 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
             boss_attack_mult *= 0.75
             enemy.effects.pop("erasure_effect", None)
         frost_mult = 0.90 if (enemy.is_zone_boss and enemy.boss_key == "Wendigo" and enemy.effects.get("boss_frost", 0) >= 3) else 1.0
+        # Ammo effects proc PER BULLET. Different effects can coexist on the
+        # same enemy, but the same effect can only have one active instance at
+        # a time (no stacking, refreshing, or extending).
+        effect = ammo_data["effect"]
+        proc_chances = {"bleed": 0.25, "burn": 0.30, "freeze": 0.25, "poison": 0.40, "shock": 0.20}
+        proc_durations = {"bleed": 3, "burn": 3, "freeze": 4, "poison": 5, "shock": 2}
+
+        def try_ammo_proc() -> None:
+            nonlocal total_dmg
+            if enemy.health <= 0 or not effect:
+                return
+            if random.random() >= proc_chances[effect]:
+                return
+            # Only the same status is non-stackable. Other ammo effects already
+            # active on the enemy remain untouched and can coexist.
+            if enemy.effects.get(effect, 0) > 0:
+                return
+            enemy.effects[effect] = proc_durations[effect]
+            if effect == "freeze":
+                enemy.effects["freeze_dot"] = 2
+            messages.append(f"💥 {player.ammo_name} procs **{effect}**!")
+            if effect == "shock":
+                shock_dmg = int(30 * ammo_modifier(player, "Shock"))
+                enemy.health = max(0, enemy.health - shock_dmg)
+                total_dmg += shock_dmg
+                messages.append(f"⚡ Shock deals {shock_dmg} dmg!")
+
         for shot_i in range(shots):
             dmg = int(player.weapon_damage * mod * perk_multiplier * boss_attack_mult * frost_mult * erased_final_mult)
             is_crit = random.random() < player.crit_chance
@@ -2378,6 +2405,11 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
             enemy.health = max(0, enemy.health - dmg)
             total_dmg += dmg
             hit_details.append(dmg)
+            if enemy.health <= 0:
+                break
+            # Every bullet gets its own status roll. If the effect is already
+            # active, the roll simply does nothing rather than stacking it.
+            try_ammo_proc()
             if enemy.health <= 0:
                 break
         mod_txt = f" (Zone {int(mod*100)}%)" if mod != 1.0 else ""
@@ -2410,6 +2442,20 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
                 bonus_hits.append(bonus_dmg)
                 if enemy.health <= 0:
                     break
+                # Each free Double-Tap bullet gets its own proc roll too.
+                # The same status cannot stack/refresh/extend itself.
+                if effect and random.random() < proc_chances[effect] and enemy.effects.get(effect, 0) <= 0:
+                    enemy.effects[effect] = proc_durations[effect]
+                    if effect == "freeze":
+                        enemy.effects["freeze_dot"] = 2
+                    messages.append(f"💥 Double-Tap {player.ammo_name} procs **{effect}**!")
+                    if effect == "shock":
+                        shock_dmg = int(30 * ammo_modifier(player, "Shock"))
+                        enemy.health = max(0, enemy.health - shock_dmg)
+                        bonus_total += shock_dmg
+                        messages.append(f"⚡ Double-Tap Shock deals {shock_dmg} dmg!")
+                if enemy.health <= 0:
+                    break
             dt_crit_txt = f" **{bonus_crits}x CRIT!**" if bonus_crits else ""
             dt_detail = '+'.join(map(str, bonus_hits)) if len(bonus_hits) > 1 else str(bonus_total)
             messages.append(f"🔫 **DOUBLE-TAP!** Free repeat for **{bonus_total} dmg** ({dt_detail}){dt_crit_txt} using {player.ammo_name} — no ammo consumed.")
@@ -2420,36 +2466,6 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
                 enemy.bloater_timer = max(1, enemy.bloater_timer - 1)
                 double_tap_bloater_tick = True
 
-            # Apply the equipped ammo's proc to the bonus attack as part of
-            # mimicking the first attack. It still cannot trigger Double-Tap.
-            effect = ammo_data["effect"]
-            chances = {"bleed": 0.25, "burn": 0.30, "freeze": 0.25, "poison": 0.40, "shock": 0.20}
-            if enemy.health > 0 and effect and random.random() < chances[effect]:
-                durations = {"bleed": 3, "burn": 3, "freeze": 4, "poison": 5, "shock": 1}
-                enemy.effects[effect] = durations[effect]
-                if effect == "freeze":
-                    enemy.effects["freeze_dot"] = 2
-                messages.append(f"💥 Double-Tap {player.ammo_name} procs **{effect}**!")
-                if effect == "shock":
-                    shock_dmg = int(30 * ammo_modifier(player, "Shock"))
-                    enemy.health = max(0, enemy.health - shock_dmg)
-                    bonus_total += shock_dmg
-                    messages.append(f"⚡ Double-Tap Shock deals {shock_dmg} dmg!")
-
-
-        # NORMAL SHOCK PROC: resolve its instant damage before boss-action
-        # accounting so Kingpin sees the full damage dealt by this one attack
-        # action (weapon + Double-Tap + pet + Shock). Other ammo procs remain
-        # in their original post-action position below.
-        effect = ammo_data["effect"]
-        chances = {"bleed": 0.25, "burn": 0.30, "freeze": 0.25, "poison": 0.40, "shock": 0.20}
-        if enemy.health > 0 and effect == "shock" and random.random() < chances["shock"]:
-            enemy.effects["shock"] = 1
-            shock_dmg = int(30 * ammo_modifier(player, "Shock"))
-            enemy.health = max(0, enemy.health - shock_dmg)
-            total_dmg += shock_dmg
-            messages.append(f"💥 {player.ammo_name} procs **shock**!")
-            messages.append(f"⚡ Shock deals {shock_dmg} dmg!")
 
         # PET ATTACK CHECK
         if enemy.health > 0 and player.pet_chance > 0 and random.random() < player.pet_chance:
@@ -2516,16 +2532,6 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
                     msgs.extend(_grant_end_of_run_rewards(player))
                     return messages + msgs
 
-        effect = ammo_data["effect"]
-        chances = {"bleed": 0.25, "burn": 0.30, "freeze": 0.25, "poison": 0.40, "shock": 0.20}
-        if enemy.health > 0 and effect and effect != "shock" and random.random() < chances[effect]:
-            durations = {"bleed": 3, "burn": 3, "freeze": 4, "poison": 5, "shock": 1}
-            enemy.effects[effect] = durations[effect]
-            if effect == "freeze":
-                # Frostbite: halve incoming enemy damage for 4 attacks + 10
-                # bonus damage on the next 2 player actions.
-                enemy.effects["freeze_dot"] = 2
-            messages.append(f"💥 {player.ammo_name} procs **{effect}**!")
     elif action == "reload":
         # A successful reload is a real combat turn: after loading ammo,
         # execution continues to the normal enemy-damage resolution below.
