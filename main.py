@@ -1779,8 +1779,14 @@ def _enemy_damage(player: Survivor, damage_multiplier: float = 1.0) -> list[str]
     enemy = player.enemy
     if enemy is None:
         return []
-    if enemy.effects.pop("shock", 0):
-        return [f"⚡ **{enemy.name} stunned!** Misses."]
+    shock_turns = int(enemy.effects.get("shock", 0) or 0)
+    if shock_turns > 0:
+        shock_turns -= 1
+        if shock_turns > 0:
+            enemy.effects["shock"] = shock_turns
+        else:
+            enemy.effects.pop("shock", None)
+        return [f"⚡ **{enemy.name} stunned!** Misses. ({shock_turns} stun turn(s) remaining)"]
     if player.dodge_chance > 0 and random.random() < player.dodge_chance:
         return [f"💨 **DODGED!** You evaded {enemy.name}'s attack! ({player.dodge_chance*100:.1f}% chance)"]
 
@@ -1908,6 +1914,10 @@ def _enemy_damage(player: Survivor, damage_multiplier: float = 1.0) -> list[str]
 def _apply_damage_over_time(player: Survivor) -> list[str]:
     enemy = player.enemy
     if enemy is None:
+        return []
+    # Fast path: Standard ammo and most attacks have no pending ammo DoT.
+    # Avoid walking the effect table unless a relevant effect is actually active.
+    if not any(int(enemy.effects.get(k, 0) or 0) > 0 for k in ("bleed", "burn", "poison", "freeze_dot")) and not player.special_poison_turns > 0:
         return []
     messages: list[str] = []
 
@@ -2612,7 +2622,7 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
         # same enemy, but the same effect can only have one active instance at
         # a time (no stacking, refreshing, or extending).
         effect = ammo_data["effect"]
-        proc_chances = {name: ammo_proc_chance(player, name) for name in AMMO if AMMO[name].get("effect")}
+        proc_chance = ammo_proc_chance(player, player.ammo_name) if effect else 0.0
         proc_durations = {"bleed": 3, "burn": 3, "freeze": 4, "poison": 5, "shock": 2}
         bullet_damage_mult = ammo_damage_modifier(player.ammo_name)
         if player.ammo_name == "Standard":
@@ -2622,7 +2632,7 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
             nonlocal total_dmg
             if enemy.health <= 0 or not effect:
                 return
-            if random.random() >= proc_chances[effect]:
+            if random.random() >= proc_chance:
                 return
             # Only the same status is non-stackable. Other ammo effects already
             # active on the enemy remain untouched and can coexist.
@@ -2691,7 +2701,7 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
                     break
                 # Each free Double-Tap bullet gets its own proc roll too.
                 # The same status cannot stack/refresh/extend itself.
-                if effect and random.random() < proc_chances[effect] and enemy.effects.get(effect, 0) <= 0:
+                if effect and random.random() < proc_chance and enemy.effects.get(effect, 0) <= 0:
                     enemy.effects[effect] = proc_durations[effect]
                     if effect == "freeze":
                         enemy.effects["freeze_dot"] = 2
@@ -4426,7 +4436,6 @@ class CombatView(PlayerView):
     @discord.ui.button(label="🔫 Attack", style=discord.ButtonStyle.danger, row=0)
     async def attack(self, interaction: discord.Interaction, _b):
         try:
-            await interaction.response.defer()
             lock = self.store.action_lock(self.user_id)
             async with lock:
                 player = self.store.get(self.user_id)
@@ -4445,7 +4454,7 @@ class CombatView(PlayerView):
 
             if self.store.combat_ui_is_current(self.user_id, revision):
                 try:
-                    await interaction.edit_original_response(content=None, embed=embed, view=next_view)
+                    await interaction.response.edit_message(content=None, embed=embed, view=next_view)
                 except Exception as e:
                     print(f"[COMBAT UI] attack edit failed for {self.user_id}: {e}")
             schedule_action_save(self.store, self.user_id)
@@ -4455,7 +4464,6 @@ class CombatView(PlayerView):
     @discord.ui.button(label="👊 Punch", style=discord.ButtonStyle.danger, row=1)
     async def punch(self, interaction: discord.Interaction, _b):
         try:
-            await interaction.response.defer()
             lock = self.store.action_lock(self.user_id)
             async with lock:
                 player = self.store.get(self.user_id)
@@ -4474,7 +4482,7 @@ class CombatView(PlayerView):
 
             if self.store.combat_ui_is_current(self.user_id, revision):
                 try:
-                    await interaction.edit_original_response(content=None, embed=embed, view=next_view)
+                    await interaction.response.edit_message(content=None, embed=embed, view=next_view)
                 except Exception as e:
                     print(f"[COMBAT UI] punch edit failed for {self.user_id}: {e}")
             schedule_action_save(self.store, self.user_id)
@@ -4484,7 +4492,6 @@ class CombatView(PlayerView):
     @discord.ui.button(label="💥 Void Bazooka", style=discord.ButtonStyle.secondary, row=1)
     async def void_bazooka(self, interaction: discord.Interaction, _b):
         try:
-            await interaction.response.defer()
             lock = self.store.action_lock(self.user_id)
             async with lock:
                 player = self.store.get(self.user_id)
@@ -4503,7 +4510,7 @@ class CombatView(PlayerView):
 
             if self.store.combat_ui_is_current(self.user_id, revision):
                 try:
-                    await interaction.edit_original_response(content=None, embed=embed, view=next_view)
+                    await interaction.response.edit_message(content=None, embed=embed, view=next_view)
                 except Exception as e:
                     print(f"[COMBAT UI] void_bazooka edit failed for {self.user_id}: {e}")
             schedule_action_save(self.store, self.user_id)
@@ -4522,7 +4529,6 @@ class CombatView(PlayerView):
     @discord.ui.button(label="🔄 Reload", style=discord.ButtonStyle.primary, row=0)
     async def reload(self, interaction: discord.Interaction, _b):
         try:
-            await interaction.response.defer()
             lock = self.store.action_lock(self.user_id)
             async with lock:
                 player = self.store.get(self.user_id)
@@ -4541,7 +4547,7 @@ class CombatView(PlayerView):
 
             if self.store.combat_ui_is_current(self.user_id, revision):
                 try:
-                    await interaction.edit_original_response(content=None, embed=embed, view=next_view)
+                    await interaction.response.edit_message(content=None, embed=embed, view=next_view)
                 except Exception as e:
                     print(f"[COMBAT UI] reload edit failed for {self.user_id}: {e}")
             schedule_action_save(self.store, self.user_id)
