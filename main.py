@@ -6150,6 +6150,35 @@ class StarterBot(discord.Client):
         except Exception as e:
             print(f"[AUTOSAVE] Failed start: {e}")
 
+    async def close(self):
+        # discord.py calls close() on any clean shutdown, including the one
+        # triggered by SIGTERM/SIGINT inside bot.run(). Without this, a
+        # container restart/redeploy can cancel in-flight combat/shop saves
+        # that schedule_action_save() has queued but not yet written, and any
+        # verification watcher tasks are left dangling. Flush everything we
+        # can before the event loop is torn down.
+        print("[SHUTDOWN] Flushing pending saves before exit...")
+        try:
+            pending = [t for t in list(game_store._pending_action_saves.values()) if not t.done()]
+            if pending:
+                done, still_pending = await asyncio.wait(pending, timeout=10)
+                if still_pending:
+                    print(f"[SHUTDOWN] {len(still_pending)} action save(s) did not finish in time")
+        except Exception as e:
+            print(f"[SHUTDOWN] Error waiting on pending action saves: {e}")
+
+        for task in list(game_store._verification_tasks.values()):
+            if not task.done():
+                task.cancel()
+
+        try:
+            await asyncio.wait_for(game_store.save_async(), timeout=20)
+            print("[SHUTDOWN] Final full save completed")
+        except Exception as e:
+            print(f"[SHUTDOWN] Final full save failed: {e}")
+
+        await super().close()
+
 bot = StarterBot()
 
 @bot.event
