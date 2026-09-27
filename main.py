@@ -2681,13 +2681,13 @@ def swap_ammo_in_run(player: Survivor, ammo_name: str) -> list[str]:
     spare = player.get_spare(ammo_name)
     if spare <= 0:
         return [f"❌ No **{ammo_name}** rounds available. Buy ammo before the run."]
+    # Swapping ammo must NOT perform a free reload. Moving to a different ammo
+    # type stows the rounds currently loaded in the old ammo type, then leaves
+    # the magazine empty so the player must spend a normal reload action.
     player.spare_ammo[player.ammo_name] = player.spare_ammo.get(player.ammo_name, 0) + player.magazine
     player.magazine = 0
     player.ammo_name = ammo_name
-    load = min(player.magazine_size, spare)
-    player.magazine = load
-    player.spare_ammo[ammo_name] = spare - load
-    return [f"🔄 Switched to **{ammo_name}** ({AMMO[ammo_name]['cost_per_attack']}/shot) and loaded **{load}** rounds."]
+    return [f"🔄 Switched to **{ammo_name}** ({AMMO[ammo_name]['cost_per_attack']}/shot). **Magazine is empty — reload to load it.**"]
 
 def change_zone(player: Survivor, zone_name: str) -> list[str]:
     if player.run_active:
