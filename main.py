@@ -654,11 +654,12 @@ class Survivor:
     weapon_upgrades: dict[str, dict[str, int]] = field(default_factory=dict)
     combat_medic_level: int = 0
     # --- SOUL / REBIRTH PRESTIGE ---
-    # Soul progression, Wave 50 Token progression, and the existing highest-wave
-    # leaderboard records survive a Rebirth. All three Soul paths are
-    # intentionally uncapped and cost exactly 1 Soul Token per upgrade.
+    # Unified Rebirth Upgrade. Each level costs exactly 1 Rebirth/Soul Token
+    # and permanently increases all five prestige bonuses. Legacy Soul level
+    # fields remain only for save-data migration compatibility.
     rebirth_count: int = 0
     soul_tokens: int = 0
+    rebirth_upgrade_level: int = 0
     greedy_soul_level: int = 0
     evil_soul_level: int = 0
     safe_soul_level: int = 0
@@ -758,28 +759,27 @@ class Survivor:
         self._ensure_weapon_upgrades()
         base = WEAPONS.get(self.weapon_name, WEAPONS["Pistol"])
         damage_per_upgrade = WEAPON_DAMAGE_PER_UPGRADE.get(self.weapon_name, 3)
-        self.weapon_damage = (
+        base_weapon_damage = (
             base["damage"]
             + self.weapon_upgrade_level("damage") * damage_per_upgrade
-            + self.evil_soul_level * SOUL_EVIL_DAMAGE_PER_LEVEL
-            + self.safe_soul_level * SOUL_SAFE_DAMAGE_PER_LEVEL
             + int(special_token_bonus(self, "damage"))
         )
+        self.weapon_damage = int(base_weapon_damage * (1.0 + max(0, int(getattr(self, "rebirth_upgrade_level", 0) or 0)) * REBIRTH_DAMAGE_BONUS_PER_LEVEL))
         shots = int(base.get("shots", 1))
         mag_per_upgrade = int(base.get("mag_per_upgrade", shots))
         self.magazine_size = (
             base["mag"]
             + self.weapon_upgrade_level("mag") * shots
-            + self.evil_soul_level * SOUL_EVIL_MAG_PER_LEVEL
             + int(special_token_bonus(self, "mag"))
         )
-        self.max_health = 100 + self.health_upgrades * 20 + self.safe_soul_level * SOUL_SAFE_HP_PER_LEVEL + int(special_token_bonus(self, "hp"))
+        base_max_health = 100 + self.health_upgrades * 20 + int(special_token_bonus(self, "hp"))
+        self.max_health = int(base_max_health * (1.0 + max(0, int(getattr(self, "rebirth_upgrade_level", 0) or 0)) * REBIRTH_STARTING_HP_BONUS_PER_LEVEL))
 
     @property
     def crit_chance(self) -> float:
         level = self.weapon_upgrade_level("crit")
         weapon_bonus = 0.0 if level <= 0 else min(0.02 + (level - 1) * 0.005, 0.40)
-        return min(weapon_bonus + self.evil_soul_level * SOUL_EVIL_CRIT_PER_LEVEL + special_token_bonus(self, "crit"), 1.0)
+        return min(weapon_bonus + special_token_bonus(self, "crit"), 1.0)
     @property
     def armor_reduction(self) -> int:
         return self.armor_upgrades * 2 + int(special_token_bonus(self, "armor"))
@@ -912,13 +912,24 @@ class Survivor:
             data["scavenger_upgrades"] = 0
         if "punch_upgrades" not in data:
             data["punch_upgrades"] = 0
-        for field_name in ("rebirth_count", "soul_tokens", "greedy_soul_level", "evil_soul_level", "safe_soul_level"):
+        for field_name in ("rebirth_count", "soul_tokens", "rebirth_upgrade_level", "greedy_soul_level", "evil_soul_level", "safe_soul_level"):
             if field_name not in data:
                 data[field_name] = 0
             try:
                 data[field_name] = max(0, int(data[field_name] or 0))
             except (TypeError, ValueError):
                 data[field_name] = 0
+        # Migrate old Soul purchases into the new single Rebirth Upgrade.
+        # Every legacy Soul level represented one token already spent, so the
+        # total of the three old paths becomes the unified level automatically.
+        legacy_soul_levels = (
+            max(0, int(data.get("greedy_soul_level", 0) or 0))
+            + max(0, int(data.get("evil_soul_level", 0) or 0))
+            + max(0, int(data.get("safe_soul_level", 0) or 0))
+        )
+        data["rebirth_upgrade_level"] = max(
+            0, int(data.get("rebirth_upgrade_level", 0) or 0), legacy_soul_levels
+        )
         if not isinstance(data.get("special_tokens"), dict):
             data["special_tokens"] = {}
         if not isinstance(data.get("special_token_upgrades"), dict):
@@ -2104,15 +2115,15 @@ def _finish_enemy(player: Survivor) -> list[str]:
     player.void_shield_cooldown = max(0, player.void_shield_cooldown - 1)
     player.void_execution_cooldown = max(0, player.void_execution_cooldown - 1)
 
-    # Void Essence is earned only in The Void. Normal kills have a 25% chance
-    # to drop 1 Essence; Bloaters always give +4 Essence.
+    # Void Essence is earned only in The Void. Normal kills have a base 25%
+    # drop chance, increased by +5 percentage points per Rebirth Power level.
+    # Bloaters always give +4 Essence.
     if player.zone_name == "The Void":
         if enemy.is_bloater:
             essence_gain = VOID_ESSENCE_PER_VOID_BLOATER
-        elif random.random() < VOID_ESSENCE_NORMAL_DROP_CHANCE:
-            essence_gain = VOID_ESSENCE_PER_VOID_KILL
         else:
-            essence_gain = 0
+            void_drop_chance = min(1.0, VOID_ESSENCE_NORMAL_DROP_CHANCE + rebirth_upgrade_level(player) * REBIRTH_VOID_CRYSTAL_DROP_BONUS_PER_LEVEL)
+            essence_gain = VOID_ESSENCE_PER_VOID_KILL if random.random() < void_drop_chance else 0
         if essence_gain > 0:
             essence_gain = int(soul_essence_amount(player, essence_gain) * special_token_essence_multiplier(player))
             player.void_essence += essence_gain
@@ -3176,6 +3187,13 @@ def upgrade_special_token(player: Survivor, upgrade_key: str) -> list[str]:
 REBIRTH_MIN_LEVEL = 400
 REBIRTH_BASE_COST = 15_000_000
 SOUL_TOKEN_UPGRADE_COST = 1
+REBIRTH_STARTING_HP_BONUS_PER_LEVEL = 0.20
+REBIRTH_DAMAGE_BONUS_PER_LEVEL = 0.15
+REBIRTH_CASH_BONUS_PER_LEVEL = 0.15
+REBIRTH_XP_BONUS_PER_LEVEL = 0.15
+REBIRTH_VOID_CRYSTAL_DROP_BONUS_PER_LEVEL = 0.05
+
+# Legacy constants retained so old save data can be read/migrated cleanly.
 SOUL_GREEDY_BONUS_PER_LEVEL = 0.15
 SOUL_EVIL_DAMAGE_PER_LEVEL = 5
 SOUL_EVIL_MAG_PER_LEVEL = 2
@@ -3186,49 +3204,42 @@ SOUL_SAFE_DAMAGE_PER_LEVEL = 3
 def rebirth_cost(player: Survivor) -> int:
     """Return the next Rebirth cost. Rebirth 1 costs $15M; each later one is x1.5."""
     count = max(0, int(getattr(player, "rebirth_count", 0) or 0))
-    # Exact integer form of $25,000,000 * (3/2)^count; avoids float overflow
-    # even if a player reaches an extremely high Rebirth count.
     return (REBIRTH_BASE_COST * (3 ** count)) // (2 ** count)
 
+def rebirth_upgrade_level(player: Survivor) -> int:
+    return max(0, int(getattr(player, "rebirth_upgrade_level", 0) or 0))
+
 def soul_earnings_multiplier(player: Survivor) -> float:
-    return 1.0 + max(0, int(getattr(player, "greedy_soul_level", 0) or 0)) * SOUL_GREEDY_BONUS_PER_LEVEL
+    return 1.0 + rebirth_upgrade_level(player) * REBIRTH_CASH_BONUS_PER_LEVEL
 
 def soul_xp_multiplier(player: Survivor) -> float:
-    return soul_earnings_multiplier(player)
+    return 1.0 + rebirth_upgrade_level(player) * REBIRTH_XP_BONUS_PER_LEVEL
 
 def soul_cash_multiplier(player: Survivor) -> float:
-    return soul_earnings_multiplier(player)
+    return 1.0 + rebirth_upgrade_level(player) * REBIRTH_CASH_BONUS_PER_LEVEL
 
 def soul_essence_amount(player: Survivor, base_amount: int) -> int:
-    return int(max(0, base_amount) * soul_earnings_multiplier(player))
+    # Rebirth Power affects Void Crystal/Essence drop chance, not the amount
+    # awarded when a drop occurs. Keep this helper for existing call sites.
+    return int(max(0, base_amount))
 
-def soul_upgrade_cost(_player: Survivor, _upgrade: str) -> int:
+def soul_upgrade_cost(_player: Survivor, _upgrade: str = "unified") -> int:
     return SOUL_TOKEN_UPGRADE_COST
 
-def upgrade_soul(player: Survivor, upgrade: str) -> list[str]:
+def upgrade_soul(player: Survivor, upgrade: str = "unified") -> list[str]:
     if player.run_active:
-        return ["⚠️ Can't buy Soul upgrades during a run! Flee or finish the run first."]
-    upgrade = upgrade.lower().strip()
-    field_map = {
-        "greedy": "greedy_soul_level",
-        "evil": "evil_soul_level",
-        "safe": "safe_soul_level",
-    }
-    field = field_map.get(upgrade)
-    if field is None:
-        return ["❌ Invalid Soul upgrade."]
+        return ["⚠️ Can't buy Rebirth upgrades during a run! Flee or finish the run first."]
     if player.soul_tokens < SOUL_TOKEN_UPGRADE_COST:
-        return [f"❌ Need **{SOUL_TOKEN_UPGRADE_COST} Soul Token**; you have **{player.soul_tokens}**."]
+        return [f"❌ Need **{SOUL_TOKEN_UPGRADE_COST} Rebirth Token**; you have **{player.soul_tokens}**."]
     player.soul_tokens -= SOUL_TOKEN_UPGRADE_COST
-    setattr(player, field, max(0, int(getattr(player, field, 0) or 0)) + 1)
+    player.rebirth_upgrade_level = rebirth_upgrade_level(player) + 1
     player.recalc_stats()
-    if upgrade == "greedy":
-        detail = f"+{int(player.greedy_soul_level * SOUL_GREEDY_BONUS_PER_LEVEL * 100)}% Cash / XP / Void Essence"
-    elif upgrade == "evil":
-        detail = f"+{player.evil_soul_level * SOUL_EVIL_DAMAGE_PER_LEVEL} Weapon Damage / +{player.evil_soul_level * SOUL_EVIL_MAG_PER_LEVEL} Mag / +{player.evil_soul_level}% Crit"
-    else:
-        detail = f"+{player.safe_soul_level * SOUL_SAFE_HP_PER_LEVEL} Starting HP / +{player.safe_soul_level * SOUL_SAFE_DAMAGE_PER_LEVEL} Weapon Damage"
-    return [f"👻 **{upgrade.title()} Soul → Level {getattr(player, field)}!** {detail}", f"👻 Soul Tokens left: **{player.soul_tokens}**"]
+    level = player.rebirth_upgrade_level
+    return [
+        f"👻 **Rebirth Power → Level {level}!**",
+        f"❤️ +{level * 20}% Starting HP • ⚔️ +{level * 15}% All Weapon Damage • 💰 +{level * 15}% All Cash • ✨ +{level * 15}% All XP • 💎 +{level * 5}% Void Crystal Drop Chance",
+        f"👻 Rebirth Tokens left: **{player.soul_tokens}**",
+    ]
 
 def perform_rebirth(player: Survivor) -> list[str]:
     if player.run_active:
@@ -3250,9 +3261,7 @@ def perform_rebirth(player: Survivor) -> list[str]:
         "leaderboard_guilds": list(player.leaderboard_guilds),
         "rebirth_count": int(player.rebirth_count) + 1,
         "soul_tokens": int(player.soul_tokens) + 1,
-        "greedy_soul_level": int(player.greedy_soul_level),
-        "evil_soul_level": int(player.evil_soul_level),
-        "safe_soul_level": int(player.safe_soul_level),
+        "rebirth_upgrade_level": int(getattr(player, "rebirth_upgrade_level", 0) or 0),
         # Wave 50 Token balances and Token Shop upgrade levels are permanent
         # progression and carry across every Rebirth.
         "special_tokens": {str(k): max(0, int(v or 0)) for k, v in getattr(player, "special_tokens", {}).items()},
@@ -3689,7 +3698,7 @@ def status_detailed(player: Survivor, display_name: str = "Survivor") -> str:
     earned, needed = level_progress(player)
     lines = [
         f"**📊 {rebirth_display_name(player, display_name)} — Lvl {player.level}**",
-        f"❤️ HP: {player.health}/{player.max_health} (+{player.health_upgrades*20 + player.safe_soul_level*SOUL_SAFE_HP_PER_LEVEL})",
+        f"❤️ HP: {player.health}/{player.max_health}",
         f"💥 Dmg: {player.weapon_damage} | 📦 Mag: {player.magazine_size} | 🎯 Crit: {player.crit_chance*100:.1f}% | {weapon_upgrade_summary(player)}",
         f"🎯 Crit: {int(player.crit_chance*100)}% | 🛡️ Armor: -{player.armor_reduction} | 💰 Loot: +{int((player.scavenger_bonus-1)*100)}% | 👊 Punch: {player.punch_damage}",
         f"💰 ${player.money} | ⭐ {player.stars} | ✨ {player.xp} XP ({earned}/{needed})",
@@ -5067,7 +5076,7 @@ class RebirthConfirmView(PlayerView):
 
 
 class SoulShopView(PlayerView):
-    """Rebirth activation and infinite Soul Token upgrade shop."""
+    """Rebirth activation and infinite unified Rebirth Upgrade shop."""
     def __init__(self, user_id: int, store, display_name: str = "Survivor", timeout: float | None = None, extra_msgs: list[str] | None = None):
         super().__init__(user_id, store, display_name, timeout)
         player = self.store.get(user_id)
@@ -5086,30 +5095,25 @@ class SoulShopView(PlayerView):
         rebirth_btn.callback = rebirth_cb
         self.add_item(rebirth_btn)
 
-        soul_buttons = [
-            ("greedy", "💰 Greedy Soul", player.greedy_soul_level),
-            ("evil", "😈 Evil Soul", player.evil_soul_level),
-            ("safe", "🛡️ Safe Soul", player.safe_soul_level),
-        ]
-        for i, (key, label, level) in enumerate(soul_buttons):
-            btn = discord.ui.Button(label=f"{label} Lv {level} — 👻1"[:80], style=discord.ButtonStyle.success if player.soul_tokens >= 1 else discord.ButtonStyle.secondary, disabled=player.soul_tokens < 1, row=1)
-            async def soul_cb(interaction, upgrade_name=key):
-                if self.user_id in _purchase_locks:
-                    await interaction.response.defer()
-                    return
+        level = rebirth_upgrade_level(player)
+        btn = discord.ui.Button(label=f"👻 Rebirth Power Lv {level} — 👻1"[:80], style=discord.ButtonStyle.success if player.soul_tokens >= 1 else discord.ButtonStyle.secondary, disabled=player.soul_tokens < 1, row=1)
+        async def soul_cb(interaction):
+            if self.user_id in _purchase_locks:
                 await interaction.response.defer()
-                _purchase_locks.add(self.user_id)
-                try:
-                    async with self.store.action_lock(self.user_id):
-                        p = self.store.get(self.user_id)
-                        msgs = upgrade_soul(p, upgrade_name)
-                    schedule_action_save(self.store, self.user_id)
-                    view = SoulShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), extra_msgs=msgs)
-                    await interaction.edit_original_response(content=view.get_shop_text(p), embed=None, view=view)
-                finally:
-                    _purchase_locks.discard(self.user_id)
-            btn.callback = soul_cb
-            self.add_item(btn)
+                return
+            await interaction.response.defer()
+            _purchase_locks.add(self.user_id)
+            try:
+                async with self.store.action_lock(self.user_id):
+                    p = self.store.get(self.user_id)
+                    msgs = upgrade_soul(p)
+                schedule_action_save(self.store, self.user_id)
+                view = SoulShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"), extra_msgs=msgs)
+                await interaction.edit_original_response(content=view.get_shop_text(p), embed=None, view=view)
+            finally:
+                _purchase_locks.discard(self.user_id)
+        btn.callback = soul_cb
+        self.add_item(btn)
 
         back = discord.ui.Button(label="⬅️ Back to Shop", style=discord.ButtonStyle.secondary, row=2)
         async def back_cb(interaction: discord.Interaction):
@@ -5136,14 +5140,14 @@ class SoulShopView(PlayerView):
             f"🏆 **Highest Wave Records:** {sum(1 for v in player.highest_waves.values() if int(v) > 0)} zones recorded",
             "",
             f"🔄 **REBIRTH** — Level **{REBIRTH_MIN_LEVEL}+** • Next cost **${rebirth_cost(player):,}**",
-            "Resets ALL normal progression. Highest-wave records, Soul Tokens and Soul upgrades survive.",
+            "Resets ALL normal progression. Highest-wave records, Rebirth Tokens and Rebirth upgrades survive.",
             "",
-            f"💰 **Greedy Soul — Lv {player.greedy_soul_level}** • 1 👻 each • Infinite",
-            f"   +{int(player.greedy_soul_level * 15)}% Cash / XP / Void Essence",
-            f"😈 **Evil Soul — Lv {player.evil_soul_level}** • 1 👻 each • Infinite",
-            f"   +{player.evil_soul_level * 5} Weapon Damage / +{player.evil_soul_level * 2} Mag / +{player.evil_soul_level}% Crit",
-            f"🛡️ **Safe Soul — Lv {player.safe_soul_level}** • 1 👻 each • Infinite",
-            f"   +{player.safe_soul_level * 35} Starting HP / +{player.safe_soul_level * 3} Weapon Damage",
+            f"👻 **Rebirth Power — Lv {rebirth_upgrade_level(player)}** • 1 👻 each • Infinite",
+            f"   ❤️ +{rebirth_upgrade_level(player) * 20}% Starting HP",
+            f"   ⚔️ +{rebirth_upgrade_level(player) * 15}% All Weapon Damage",
+            f"   💰 +{rebirth_upgrade_level(player) * 15}% All Cash Gained",
+            f"   ✨ +{rebirth_upgrade_level(player) * 15}% All XP Gained",
+            f"   💎 +{rebirth_upgrade_level(player) * 5}% Void Crystal Drop Chance",
         ]
         if player.level < REBIRTH_MIN_LEVEL:
             lines.append(f"\n🔒 Rebirth unlocks at Level **{REBIRTH_MIN_LEVEL}** — you are Level **{player.level}**.")
@@ -7057,9 +7061,7 @@ async def ownerstats_cmd(interaction: discord.Interaction):
         name="👻 Soul",
         value=(
             f"**Tokens:** {player.soul_tokens:,}\n"
-            f"**Greedy:** Lv {player.greedy_soul_level:,}\n"
-            f"**Evil:** Lv {player.evil_soul_level:,}\n"
-            f"**Safe:** Lv {player.safe_soul_level:,}"
+            f"**Rebirth Power:** Lv {rebirth_upgrade_level(player):,}"
         ),
         inline=True,
     )
@@ -7222,9 +7224,7 @@ async def playerstats_cmd(interaction: discord.Interaction, user: discord.User):
         name="👻 Soul",
         value=(
             f"**Tokens:** {player.soul_tokens:,}\n"
-            f"**Greedy:** Lv {player.greedy_soul_level:,}\n"
-            f"**Evil:** Lv {player.evil_soul_level:,}\n"
-            f"**Safe:** Lv {player.safe_soul_level:,}"
+            f"**Rebirth Power:** Lv {rebirth_upgrade_level(player):,}"
         ),
         inline=True,
     )
