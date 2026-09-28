@@ -239,6 +239,7 @@ def combat_embed(player, last_msgs=None):
     survivor_lines = [
         f"`{p_bar}`",
         f"🔫 {player.weapon_name} {player.magazine}/{effective_magazine_size(player)} ({player.get_spare()} spare) [{player.ammo_name}]",
+        f"🗡️ {effective_melee_weapon(player)} — {melee_damage(player)} dmg" + (f" • {player.melee_durability.get(effective_melee_weapon(player), 0)}/{MELEE_WEAPONS[effective_melee_weapon(player)]['max_durability']} durability" if effective_melee_weapon(player) != "Fists" else " • ∞ durability"),
     ]
     if player.zone_name == "The Void":
         survivor_lines.append(f"◈ Bazooka: {player.void_bazooka_ammo} shot(s) ready | Lvl {player.void_weapon_level}/10")
@@ -370,6 +371,57 @@ WEAPONS: dict[str, dict[str, Any]] = {
         "desc": "Experimental endgame rifle that fires 4 rounds per attack. High sustained damage with an 8-round magazine."
     },
 }
+
+# --- MELEE WEAPON SYSTEM ---
+# Melee weapons are purchased/upgraded separately from firearms. Each weapon
+# unlocks with its corresponding zone and remains usable in that zone and every
+# higher zone. If an equipped melee weapon is not valid for the current zone,
+# combat automatically falls back to Fists until the weapon becomes valid again.
+MELEE_WEAPONS: dict[str, dict[str, Any]] = {
+    "Fists": {
+        "base_damage": 5, "damage_per_upgrade": 2, "max_level": 5,
+        "unlock_level": 1, "unlock_zone": "Graveyard", "price": 0,
+        "max_durability": 0, "repair_price": 0,
+        "upgrade_costs": [500, 750, 1000, 1250, 1500],
+        "desc": "Always available. No ammo, no durability cost.",
+    },
+    "Dagger": {
+        "base_damage": 15, "damage_per_upgrade": 2, "max_level": 5,
+        "unlock_level": 1, "unlock_zone": "Graveyard", "price": 500,
+        "max_durability": 50, "repair_price": 2500,
+        "upgrade_costs": [750, 1000, 1250, 1500, 2000],
+        "desc": "Fast emergency melee weapon. Unlocked in the Graveyard.",
+    },
+    "Hammer": {
+        "base_damage": 25, "damage_per_upgrade": 2, "max_level": 5,
+        "unlock_level": 50, "unlock_zone": "Mega Death City", "price": 1000,
+        "max_durability": 100, "repair_price": 5000,
+        "upgrade_costs": [1250, 1500, 2000, 2500, 3000],
+        "desc": "Heavy melee weapon. Unlocked in Mega Death City.",
+    },
+    "Pickaxe": {
+        "base_damage": 40, "damage_per_upgrade": 4, "max_level": 5,
+        "unlock_level": 100, "unlock_zone": "Frostbitten Outskirts", "price": 1750,
+        "max_durability": 150, "repair_price": 10000,
+        "upgrade_costs": [2000, 2500, 3000, 3500, 4000],
+        "desc": "Hard-hitting tool turned weapon. Unlocked in the Frostbitten Outskirts.",
+    },
+    "Axe": {
+        "base_damage": 65, "damage_per_upgrade": 5, "max_level": 5,
+        "unlock_level": 150, "unlock_zone": "Toxic Wasteland", "price": 2500,
+        "max_durability": 250, "repair_price": 15000,
+        "upgrade_costs": [2750, 3250, 3750, 4500, 5000],
+        "desc": "Brutal chopping weapon. Unlocked in the Toxic Wasteland.",
+    },
+    "Dual Swords": {
+        "base_damage": 95, "damage_per_upgrade": 7, "max_level": 5,
+        "unlock_level": 200, "unlock_zone": "The Void", "price": 4000,
+        "max_durability": 400, "repair_price": 20000,
+        "upgrade_costs": [4500, 5000, 5500, 6000, 7000],
+        "desc": "Endgame twin blades. Unlocked in The Void.",
+    },
+}
+MELEE_WEAPON_ORDER = ["Fists", "Dagger", "Hammer", "Pickaxe", "Axe", "Dual Swords"]
 
 WEAPON_UPGRADE_BASE_COSTS: dict[str, int] = {"damage": 250, "mag": 350, "crit": 400, "double_tap": 5000}
 DOUBLE_TAP_COSTS = (5000, 10000, 20000, 35000, 55000, 85000, 125000, 180000, 260000, 375000)
@@ -648,8 +700,12 @@ class Survivor:
     bloater_wave_result: bool = False
     # --- UNIVERSAL MONEY UPGRADES ---
     health_upgrades: int = 0; armor_upgrades: int = 0; scavenger_upgrades: int = 0
-    # Universal Punch: every survivor has this regardless of weapon.
+    # Universal Punch / melee progression. Fists are the always-available fallback.
     punch_upgrades: int = 0
+    melee_weapon_name: str = "Fists"
+    owned_melee_weapons: list[str] = field(default_factory=lambda: ["Fists"])
+    melee_upgrades: dict[str, int] = field(default_factory=dict)
+    melee_durability: dict[str, int] = field(default_factory=dict)
     # --- INDIVIDUAL WEAPON UPGRADES (cash, per weapon) ---
     weapon_upgrades: dict[str, dict[str, int]] = field(default_factory=dict)
     combat_medic_level: int = 0
@@ -788,7 +844,9 @@ class Survivor:
         return 1.0 + self.scavenger_upgrades * 0.10
     @property
     def punch_damage(self) -> int:
-        return min(5 + self.punch_upgrades, 15)
+        # Backward-compatible alias for older saved/UI references. Combat now
+        # uses the unified Fists melee weapon.
+        return melee_damage(self, "Fists")
     # --- STAR UPGRADE PROPERTIES ---
     @property
     def dodge_chance(self) -> float:
@@ -862,7 +920,7 @@ class Survivor:
         # when a run is resumed after a restart.
         d = asdict(self)
         d["equipped_weapon"] = self.weapon_name
-        d["__version"] = 7
+        d["__version"] = 8
         return d
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Survivor":
@@ -960,6 +1018,54 @@ class Survivor:
         allowed.setdefault("run_money_earned", 0); allowed.setdefault("run_xp_earned", 0)
         allowed.setdefault("bloaters_spawned_this_run", 0); allowed.setdefault("bloater_cooldown", 0); allowed.setdefault("bloater_chance_steps", 0)
         allowed.setdefault("bloater_roll_wave", 0); allowed.setdefault("bloater_wave_result", False)
+        allowed.setdefault("melee_weapon_name", "Fists")
+        allowed.setdefault("owned_melee_weapons", ["Fists"])
+        if not isinstance(allowed.get("owned_melee_weapons"), list):
+            allowed["owned_melee_weapons"] = ["Fists"]
+        allowed["owned_melee_weapons"] = [w for w in allowed["owned_melee_weapons"] if w in MELEE_WEAPONS]
+        if "Fists" not in allowed["owned_melee_weapons"]:
+            allowed["owned_melee_weapons"].insert(0, "Fists")
+        if allowed.get("melee_weapon_name") not in allowed["owned_melee_weapons"]:
+            allowed["melee_weapon_name"] = "Fists"
+        if not isinstance(allowed.get("melee_upgrades"), dict):
+            allowed["melee_upgrades"] = {}
+        allowed["melee_upgrades"] = {
+            str(k): max(0, min(int(MELEE_WEAPONS[str(k)]["max_level"]), int(v or 0)))
+            for k, v in allowed["melee_upgrades"].items() if str(k) in MELEE_WEAPONS
+        }
+        if "Fists" not in allowed["melee_upgrades"]:
+            # Legacy Punch was +1 damage per level (5 → 15). The new Fists path
+            # is +2 damage per level (5 → 15), so map old progress to the nearest
+            # equivalent Fists level without refunding any historical spending.
+            try:
+                old_punch = max(0, int(data.get("punch_upgrades", 0) or 0))
+            except (TypeError, ValueError):
+                old_punch = 0
+            allowed["melee_upgrades"]["Fists"] = min(5, (old_punch + 1) // 2)
+        raw_durability = allowed.get("melee_durability", {})
+        # Early versions of this feature used a single integer. Accept that shape
+        # on load, but migrate to per-weapon durability so switching weapons does
+        # not reset or overwrite the condition of the other melee weapons.
+        if isinstance(raw_durability, int):
+            legacy_current = max(0, int(raw_durability))
+            raw_durability = {allowed["melee_weapon_name"]: legacy_current}
+        if not isinstance(raw_durability, dict):
+            raw_durability = {}
+        melee_durability = {}
+        for wn in allowed["owned_melee_weapons"]:
+            max_dur = int(MELEE_WEAPONS[wn]["max_durability"])
+            if max_dur <= 0:
+                melee_durability[wn] = 0
+            elif wn in raw_durability:
+                try:
+                    melee_durability[wn] = max(0, min(max_dur, int(raw_durability[wn] or 0)))
+                except (TypeError, ValueError):
+                    melee_durability[wn] = max_dur
+            else:
+                # Existing saves that already own a melee weapon but predate
+                # durability tracking start at full durability.
+                melee_durability[wn] = max_dur
+        allowed["melee_durability"] = melee_durability
         allowed.setdefault("owned_ammo", ["Standard"]); allowed.setdefault("owned_weapons", ["Pistol"])
         allowed.setdefault("weapon_upgrades", {})
         allowed.setdefault("void_essence", 0)
@@ -1702,7 +1808,7 @@ def action_help(player: Survivor) -> str:
     if player.enemy.is_bloater:
         return f"💣 BLOATER {player.enemy.bloater_timer} attacks left! {player.enemy.health} HP | 🔫 {player.ammo_name} {player.magazine}/{player.magazine_size} | 🧟 {player.enemy.name} 4 dmg"
     boss_text = f" • {_boss_status_text(player.enemy)}" if player.enemy.is_zone_boss else ""
-    return f"🔫 {player.ammo_name} {player.magazine}/{player.magazine_size} ({cost}/shot) | 👊 Punch {player.punch_damage} dmg | spare: {player.get_spare()} | 🧟 {player.enemy.name} {player.enemy.health} HP{boss_text}"
+    return f"🔫 {player.ammo_name} {player.magazine}/{player.magazine_size} ({cost}/shot) | 🗡️ Fists {melee_damage(player, "Fists")} dmg | spare: {player.get_spare()} | 🧟 {player.enemy.name} {player.enemy.health} HP{boss_text}"
 
 def _apply_boss_attack_effect(player: Survivor, damage_dealt: int) -> tuple[int, list[str]]:
     """Apply a successful Zone Boss attack's mechanic and return adjusted damage/messages."""
@@ -2528,11 +2634,39 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
         messages.extend(_enemy_damage(player))
         return messages
     if action == "punch":
-        punch_damage = player.punch_damage
-        enemy.health = max(0, enemy.health - punch_damage)
-        messages.append(f"👊 **PUNCH!** Hit **{enemy.name} for {punch_damage} dmg**! No ammo used.")
-        if enemy.is_zone_boss and punch_damage > 0:
-            messages.extend(_apply_boss_player_attack_counter(player, punch_damage))
+        melee_name = effective_melee_weapon(player)
+        melee_cfg = MELEE_WEAPONS[melee_name]
+        melee_hit_damage = melee_damage(player, melee_name)
+        if melee_name == "Fists" and getattr(player, "melee_weapon_name", "Fists") != "Fists":
+            chosen = getattr(player, "melee_weapon_name", "Fists")
+            if not melee_valid_in_zone(player, chosen):
+                messages.append(f"🗺️ **{chosen}** is not usable in **{player.zone_name}** yet. Falling back to **Fists**.")
+            elif chosen in getattr(player, "owned_melee_weapons", []) and int(player.melee_durability.get(chosen, 0) or 0) <= 0:
+                messages.append(f"🛠️ **{chosen}** is broken. Repair it in the Melee shop to use it again. Falling back to **Fists**.")
+        enemy.health = max(0, enemy.health - melee_hit_damage)
+        if melee_name == "Fists":
+            messages.append(f"👊 **FISTS!** Hit **{enemy.name} for {melee_hit_damage} dmg**! No ammo used.")
+        else:
+            player.melee_durability[melee_name] = max(0, int(player.melee_durability.get(melee_name, 0) or 0) - 1)
+            messages.append(f"🗡️ **{melee_name.upper()}!** Hit **{enemy.name} for {melee_hit_damage} dmg**! No ammo used. Durability **{player.melee_durability[melee_name]}/{melee_cfg['max_durability']}**.")
+
+        # Melee never creates a fresh ammo status. It only processes ammo effects
+        # that are already attached to this enemy, once per existing DoT effect.
+        if enemy.health > 0:
+            existing_effect_msgs = []
+            for effect_key, ammo_label in (("bleed", "Bleed"), ("burn", "Incendiary"), ("poison", "Toxic"), ("freeze_dot", "Frostbite")):
+                stacks = int(enemy.effects.get(effect_key, 0) or 0)
+                if stacks > 0:
+                    effect_damage = ammo_proc_damage(player, ammo_label)
+                    enemy.health = max(0, enemy.health - effect_damage)
+                    enemy.effects[effect_key] = stacks - 1
+                    if enemy.effects[effect_key] <= 0:
+                        enemy.effects.pop(effect_key, None)
+                    existing_effect_msgs.append(f"☠️ Existing **{ammo_label}** effect triggers for **{effect_damage} dmg**.")
+            messages.extend(existing_effect_msgs)
+
+        if enemy.is_zone_boss and melee_hit_damage > 0:
+            messages.extend(_apply_boss_player_attack_counter(player, melee_hit_damage))
             if player.health <= 0:
                 player.health = player.max_health
                 player.spare_ammo[player.ammo_name] = player.spare_ammo.get(player.ammo_name, 0) + player.magazine
@@ -2547,7 +2681,7 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
         if enemy.health <= 0:
             messages.extend(_finish_enemy(player))
             return messages
-        messages.append("😂 **You chose to punch a zombie instead of shooting it.** Incoming damage is **2×** this turn!")
+        messages.append("😂 **You used melee instead of shooting.** Incoming damage is **2×** this turn!")
         messages.extend(_enemy_damage(player, damage_multiplier=2.0))
         return messages
     if action in {"void_infusion", "void_shield", "void_execution"}:
@@ -2901,7 +3035,7 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
         messages.extend(_grant_end_of_run_rewards(player))
         return messages
     else:
-        return ["Attack, punch, reload, heal, or flee."]
+        return ["Attack, melee, reload, heal, or flee."]
     if enemy.health <= 0:
         messages.extend(_finish_enemy(player))
     else:
@@ -3030,6 +3164,137 @@ def change_zone(player: Survivor, zone_name: str) -> list[str]:
         return [f"{zone_name} unlocks at level {ZONES[zone_name]['min_level']}."]
     player.zone_name = zone_name
     return [f"🗺️ Travelled to **{zone_name}**.", ammo_effectiveness_text(player), f"*{ZONES[zone_name]['desc']}*"]
+
+def melee_zone_index(weapon_name: str) -> int:
+    weapon = MELEE_WEAPONS.get(weapon_name)
+    if not weapon:
+        return 0
+    try:
+        return ZONE_ORDER.index(weapon["unlock_zone"])
+    except ValueError:
+        return 0
+
+
+def melee_unlocked_for_player(player: Survivor, weapon_name: str) -> bool:
+    weapon = MELEE_WEAPONS.get(weapon_name)
+    if not weapon:
+        return False
+    return player.level >= int(weapon["unlock_level"]) and player.level >= int(ZONES[weapon["unlock_zone"]]["min_level"])
+
+
+def melee_valid_in_zone(player: Survivor, weapon_name: str) -> bool:
+    if weapon_name == "Fists":
+        return True
+    if weapon_name not in MELEE_WEAPONS or weapon_name not in player.owned_melee_weapons:
+        return False
+    try:
+        return ZONE_ORDER.index(player.zone_name) >= melee_zone_index(weapon_name)
+    except ValueError:
+        return False
+
+
+def effective_melee_weapon(player: Survivor) -> str:
+    """Return the melee weapon actually available in the current zone."""
+    chosen = getattr(player, "melee_weapon_name", "Fists")
+    if melee_valid_in_zone(player, chosen):
+        if chosen == "Fists" or int(getattr(player, "melee_durability", {}).get(chosen, 0) or 0) > 0:
+            return chosen
+    return "Fists"
+
+
+def melee_upgrade_level(player: Survivor, weapon_name: str | None = None) -> int:
+    wn = weapon_name or getattr(player, "melee_weapon_name", "Fists")
+    return max(0, min(int(MELEE_WEAPONS.get(wn, MELEE_WEAPONS["Fists"])["max_level"]), int(getattr(player, "melee_upgrades", {}).get(wn, 0) or 0)))
+
+
+def melee_damage(player: Survivor, weapon_name: str | None = None) -> int:
+    wn = weapon_name or effective_melee_weapon(player)
+    cfg = MELEE_WEAPONS.get(wn, MELEE_WEAPONS["Fists"])
+    return int(cfg["base_damage"] + melee_upgrade_level(player, wn) * cfg["damage_per_upgrade"])
+
+
+def get_melee_upgrade_cost(player: Survivor, weapon_name: str) -> int:
+    cfg = MELEE_WEAPONS.get(weapon_name)
+    if not cfg:
+        return 0
+    level = melee_upgrade_level(player, weapon_name)
+    costs = cfg["upgrade_costs"]
+    return 0 if level >= int(cfg["max_level"]) else int(costs[level])
+
+
+def buy_melee(player: Survivor, weapon_name: str) -> list[str]:
+    if player.run_active:
+        return ["⚠️ Can't shop in a run! Flee first."]
+    if weapon_name not in MELEE_WEAPONS:
+        return ["❌ That melee weapon doesn't exist."]
+    cfg = MELEE_WEAPONS[weapon_name]
+    if not melee_unlocked_for_player(player, weapon_name):
+        return [f"🔒 **{weapon_name}** unlocks with **{cfg['unlock_zone']}** (Level {cfg['unlock_level']})."]
+    if weapon_name in player.owned_melee_weapons:
+        player.melee_weapon_name = weapon_name
+        if weapon_name != "Fists" and int(player.melee_durability.get(weapon_name, 0) or 0) <= 0:
+            player.melee_durability[weapon_name] = int(cfg["max_durability"])
+        return [f"🗡️ Equipped **{weapon_name}** for free."]
+    price = int(cfg["price"])
+    if player.money < price:
+        return [f"❌ Need **${price:,}** for {weapon_name}; you have **${player.money:,}**."]
+    player.money -= price
+    player.owned_melee_weapons.append(weapon_name)
+    player.melee_upgrades.setdefault(weapon_name, 0)
+    player.melee_weapon_name = weapon_name
+    player.melee_durability[weapon_name] = int(cfg["max_durability"])
+    return [f"🗡️ Purchased and equipped **{weapon_name}**. Durability **{player.melee_durability[weapon_name]}/{cfg['max_durability']}**. ${player.money:,} left."]
+
+
+def upgrade_melee(player: Survivor, weapon_name: str) -> list[str]:
+    if player.run_active:
+        return ["⚠️ Can't upgrade melee weapons during a run! Flee first."]
+    if weapon_name not in MELEE_WEAPONS:
+        return ["❌ That melee weapon doesn't exist."]
+    if weapon_name not in player.owned_melee_weapons:
+        return [f"🔒 You don't own **{weapon_name}** yet."]
+    level = melee_upgrade_level(player, weapon_name)
+    cfg = MELEE_WEAPONS[weapon_name]
+    if level >= int(cfg["max_level"]):
+        return [f"🔥 **{weapon_name} Damage is MAXED at {melee_damage(player, weapon_name)}.**"]
+    cost = get_melee_upgrade_cost(player, weapon_name)
+    if player.money < cost:
+        return [f"❌ Need **${cost:,}** for the next {weapon_name} upgrade; you have **${player.money:,}**."]
+    player.money -= cost
+    player.melee_upgrades[weapon_name] = level + 1
+    return [f"🔧 **{weapon_name} upgraded!** Damage **{melee_damage(player, weapon_name)}** • Level **{level + 1}/{cfg['max_level']}** • Paid **${cost:,}** • 💰 ${player.money:,} left."]
+
+
+def repair_melee(player: Survivor, weapon_name: str) -> list[str]:
+    if player.run_active:
+        return ["⚠️ Can't repair melee weapons during a run! Flee first."]
+    if weapon_name not in MELEE_WEAPONS or weapon_name == "Fists":
+        return ["ℹ️ Fists never need repair."]
+    if weapon_name not in player.owned_melee_weapons:
+        return [f"🔒 You don't own **{weapon_name}** yet."]
+    cfg = MELEE_WEAPONS[weapon_name]
+    max_dur = int(cfg["max_durability"])
+    current = max(0, min(max_dur, int(player.melee_durability.get(weapon_name, 0) or 0)))
+    if current >= max_dur:
+        return [f"🛠️ **{weapon_name}** is already fully repaired ({max_dur}/{max_dur})."]
+    cost = int(cfg["repair_price"])
+    if player.money < cost:
+        return [f"❌ Full repair costs **${cost:,}**; you have **${player.money:,}**."]
+    player.money -= cost
+    player.melee_durability[weapon_name] = max_dur
+    return [f"🛠️ Repaired **{weapon_name}** to **{max_dur}/{max_dur}** for **${cost:,}**. 💰 ${player.money:,} left."]
+
+
+def melee_status_text(player: Survivor, weapon_name: str | None = None) -> str:
+    wn = weapon_name or getattr(player, "melee_weapon_name", "Fists")
+    cfg = MELEE_WEAPONS.get(wn, MELEE_WEAPONS["Fists"])
+    lvl = melee_upgrade_level(player, wn)
+    dmg = melee_damage(player, wn)
+    if wn == "Fists":
+        return f"Damage **{dmg}** • Lv **{lvl}/{cfg['max_level']}** • ∞ durability"
+    dur = max(0, int(player.melee_durability.get(wn, 0) or 0)) if wn in player.owned_melee_weapons else 0
+    return f"Damage **{dmg}** • Lv **{lvl}/{cfg['max_level']}** • Durability **{dur}/{cfg['max_durability']}**"
+
 
 def weapon_upgrade_summary(player: Survivor, weapon_name: str | None = None) -> str:
     wn = weapon_name or player.weapon_name
@@ -3700,7 +3965,7 @@ def status_detailed(player: Survivor, display_name: str = "Survivor") -> str:
         f"**📊 {rebirth_display_name(player, display_name)} — Lvl {player.level}**",
         f"❤️ HP: {player.health}/{player.max_health}",
         f"💥 Dmg: {player.weapon_damage} | 📦 Mag: {player.magazine_size} | 🎯 Crit: {player.crit_chance*100:.1f}% | {weapon_upgrade_summary(player)}",
-        f"🎯 Crit: {int(player.crit_chance*100)}% | 🛡️ Armor: -{player.armor_reduction} | 💰 Loot: +{int((player.scavenger_bonus-1)*100)}% | 👊 Punch: {player.punch_damage}",
+        f"🎯 Crit: {int(player.crit_chance*100)}% | 🛡️ Armor: -{player.armor_reduction} | 💰 Loot: +{int((player.scavenger_bonus-1)*100)}% | 🗡️ Fists: {melee_damage(player, 'Fists')}",
         f"💰 ${player.money} | ⭐ {player.stars} | ✨ {player.xp} XP ({earned}/{needed})",
         f"👻 Soul Tokens: {player.soul_tokens} | Rebirths: {player.rebirth_count}",
         f"🪙 Wave 50 Tokens: Graveyard {special_token_balance(player, 'graveyard')} • City {special_token_balance(player, 'mega_death_city')} • Frost {special_token_balance(player, 'frostbitten')} • Toxic {special_token_balance(player, 'toxic_wasteland')} • Void {special_token_balance(player, 'void')}",
@@ -4462,6 +4727,14 @@ class CombatView(PlayerView):
         # Void-only controls stay out of ordinary-zone combat instead of
         # cluttering the UI with buttons that cannot be used there.
         player = self.store.get(user_id)
+        effective_melee = effective_melee_weapon(player)
+        for item in self.children:
+            if getattr(item, "label", "") == "👊 Punch":
+                if effective_melee == "Fists":
+                    item.label = "👊 Fists"
+                else:
+                    item.label = f"🗡️ {effective_melee}"[:80]
+                break
         if player.zone_name != "The Void":
             for item in list(self.children):
                 if getattr(item, "label", "") in {
@@ -5272,6 +5545,163 @@ class SpecialTokenShopView(PlayerView):
         return "\n".join(lines)
 
 
+class MeleeShopView(PlayerView):
+    """Melee weapon purchase, equip, upgrade, and repair screen."""
+    def __init__(self, user_id: int, store, display_name: str = "Survivor", selected_weapon: str | None = None, extra_msgs: list[str] | None = None, timeout: float | None = None):
+        super().__init__(user_id, store, display_name, timeout)
+        player = self.store.get(user_id)
+        self.selected_weapon = selected_weapon if selected_weapon in MELEE_WEAPONS else getattr(player, "melee_weapon_name", "Fists")
+        self.extra_msgs = extra_msgs or []
+        self.clear_items()
+
+        for i, wname in enumerate(MELEE_WEAPON_ORDER):
+            cfg = MELEE_WEAPONS[wname]
+            owned = wname in player.owned_melee_weapons
+            unlocked = melee_unlocked_for_player(player, wname)
+            selected = wname == self.selected_weapon
+            if selected and owned:
+                label = f"🗡️ {wname} ✅"
+                style = discord.ButtonStyle.success
+            elif owned:
+                label = f"🗡️ {wname}"
+                style = discord.ButtonStyle.primary
+            elif unlocked:
+                label = f"🗡️ {wname} ${cfg['price']:,}"
+                style = discord.ButtonStyle.primary
+            else:
+                label = f"🗡️ {wname} 🔒 Lvl{cfg['unlock_level']}"
+                style = discord.ButtonStyle.secondary
+            btn = discord.ui.Button(label=label[:80], style=style, disabled=not unlocked and not owned, row=0 if i < 3 else 1)
+
+            async def cb(interaction, wn=wname):
+                await interaction.response.defer()
+                p=self.store.get(self.user_id)
+                if p.run_active:
+                    await interaction.edit_original_response(content=None, embed=combat_embed(p, ["🚫 **Shopping is locked during a run.** Flee or finish the run first."]), view=CombatView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor")))
+                    return
+                if wn not in p.owned_melee_weapons:
+                    msgs = buy_melee(p, wn)
+                else:
+                    msgs = buy_melee(p, wn)
+                schedule_shop_save(self.store, self.user_id)
+                view=MeleeShopView(self.user_id, self.store, display_name=getattr(self,"display_name","Survivor"), selected_weapon=wn, extra_msgs=msgs)
+                await interaction.edit_original_response(content=view.get_shop_text(p), embed=None, view=view)
+            btn.callback = cb
+            self.add_item(btn)
+
+        cfg = MELEE_WEAPONS[self.selected_weapon]
+        owned = self.selected_weapon in player.owned_melee_weapons
+        unlocked = melee_unlocked_for_player(player, self.selected_weapon)
+
+        if owned:
+            action_label = f"Equip {self.selected_weapon}" if self.selected_weapon != player.melee_weapon_name else "Equipped"
+            action_btn = discord.ui.Button(label=action_label[:80], style=discord.ButtonStyle.primary, disabled=self.selected_weapon == player.melee_weapon_name, row=2)
+            async def equip_cb(interaction):
+                await interaction.response.defer()
+                p=self.store.get(self.user_id)
+                msgs=buy_melee(p, self.selected_weapon)
+                schedule_shop_save(self.store, self.user_id)
+                view=MeleeShopView(self.user_id,self.store,display_name=getattr(self,"display_name","Survivor"),selected_weapon=self.selected_weapon,extra_msgs=msgs)
+                await interaction.edit_original_response(content=view.get_shop_text(p),embed=None,view=view)
+            action_btn.callback=equip_cb
+        else:
+            action_btn = discord.ui.Button(label=(f"Buy {self.selected_weapon} ${cfg['price']:,}" if unlocked else f"🔒 Unlocks at Level {cfg['unlock_level']}"), style=discord.ButtonStyle.primary, disabled=not unlocked, row=2)
+            async def buy_cb(interaction):
+                await interaction.response.defer()
+                p=self.store.get(self.user_id)
+                msgs=buy_melee(p,self.selected_weapon)
+                schedule_shop_save(self.store,self.user_id)
+                view=MeleeShopView(self.user_id,self.store,display_name=getattr(self,"display_name","Survivor"),selected_weapon=self.selected_weapon,extra_msgs=msgs)
+                await interaction.edit_original_response(content=view.get_shop_text(p),embed=None,view=view)
+            action_btn.callback=buy_cb
+        self.add_item(action_btn)
+
+        upgrade_cost = get_melee_upgrade_cost(player, self.selected_weapon)
+        lvl = melee_upgrade_level(player, self.selected_weapon)
+        upgrade_disabled = (not owned) or lvl >= int(cfg["max_level"])
+        upgrade_label = f"🔧 Upgrade {self.selected_weapon} ${upgrade_cost:,}" if not upgrade_disabled else (f"🔧 {self.selected_weapon} MAX" if owned else "🔧 Upgrade locked")
+        upgrade_btn=discord.ui.Button(label=upgrade_label[:80],style=discord.ButtonStyle.success if not upgrade_disabled else discord.ButtonStyle.secondary,disabled=upgrade_disabled,row=2)
+        async def upgrade_cb(interaction):
+            await interaction.response.defer()
+            p=self.store.get(self.user_id)
+            msgs=upgrade_melee(p,self.selected_weapon)
+            schedule_shop_save(self.store,self.user_id)
+            view=MeleeShopView(self.user_id,self.store,display_name=getattr(self,"display_name","Survivor"),selected_weapon=self.selected_weapon,extra_msgs=msgs)
+            await interaction.edit_original_response(content=view.get_shop_text(p),embed=None,view=view)
+        upgrade_btn.callback=upgrade_cb
+        self.add_item(upgrade_btn)
+
+        repair_disabled = (not owned) or self.selected_weapon == "Fists" or int(player.melee_durability.get(self.selected_weapon, 0) or 0) >= int(cfg.get("max_durability",0))
+        repair_label = "🛠️ Repair Fists" if self.selected_weapon == "Fists" else (f"🛠️ Repair ${cfg['repair_price']:,}" if not repair_disabled else "🛠️ Fully Repaired")
+        repair_btn=discord.ui.Button(label=repair_label[:80],style=discord.ButtonStyle.secondary if repair_disabled else discord.ButtonStyle.success,disabled=repair_disabled,row=3)
+        async def repair_cb(interaction):
+            await interaction.response.defer()
+            p=self.store.get(self.user_id)
+            msgs=repair_melee(p,self.selected_weapon)
+            schedule_shop_save(self.store,self.user_id)
+            view=MeleeShopView(self.user_id,self.store,display_name=getattr(self,"display_name","Survivor"),selected_weapon=self.selected_weapon,extra_msgs=msgs)
+            await interaction.edit_original_response(content=view.get_shop_text(p),embed=None,view=view)
+        repair_btn.callback=repair_cb
+        self.add_item(repair_btn)
+
+        back=discord.ui.Button(label="⬅️ Back to Weapons",style=discord.ButtonStyle.secondary,row=4)
+        async def back_cb(interaction):
+            p=self.store.get(self.user_id)
+            view=WeaponShopView(self.user_id,self.store,display_name=getattr(self,"display_name","Survivor"),selected_weapon=p.weapon_name)
+            await interaction.response.edit_message(content=view.get_shop_text(p),embed=None,view=view)
+        back.callback=back_cb
+        self.add_item(back)
+
+        main=discord.ui.Button(label="🏠 Main Menu",style=discord.ButtonStyle.secondary,row=4)
+        async def main_cb(interaction):
+            p=self.store.get(self.user_id)
+            name=getattr(interaction.user,"display_name",None) or getattr(interaction.user,"global_name",None) or interaction.user.name
+            await interaction.response.edit_message(content=status(p,display_name=name),embed=None,view=ZombieMenuView(self.user_id,self.store,display_name=name))
+        main.callback=main_cb
+        self.add_item(main)
+
+    def get_shop_text(self, player: Survivor) -> str:
+        lines=[]
+        if self.extra_msgs:
+            lines.extend(self.extra_msgs)
+            lines.append("")
+        lines += [
+            "**🗡️ Melee Shop**",
+            "",
+            "Melee attacks use no ammo. An equipped melee weapon works in its unlock zone and every higher zone; before then, combat automatically falls back to Fists.",
+            f"Your balance: **${player.money:,}** | Level **{player.level}** | Zone: **{player.zone_name}**",
+            f"Selected: 🗡️ **{self.selected_weapon}**",
+        ]
+        if self.selected_weapon in player.owned_melee_weapons:
+            lines.append(f"📊 {melee_status_text(player, self.selected_weapon)}")
+            if self.selected_weapon != "Fists":
+                if effective_melee_weapon(player) != self.selected_weapon:
+                    lines.append(f"⚠️ Not currently usable in **{player.zone_name}** — combat will use **Fists** until this zone is reached.")
+                elif player.melee_durability.get(self.selected_weapon, 0) <= 0:
+                    lines.append("🛠️ Broken — repair it before it can be used.")
+        else:
+            cfg=MELEE_WEAPONS[self.selected_weapon]
+            lines.append(f"🔒 Unlock zone: **{cfg['unlock_zone']}** • Level **{cfg['unlock_level']}**")
+            lines.append(f"💵 Purchase: **${cfg['price']:,}**")
+        lines.append("---")
+        for wname in MELEE_WEAPON_ORDER:
+            cfg=MELEE_WEAPONS[wname]
+            owned=wname in player.owned_melee_weapons
+            unlocked=melee_unlocked_for_player(player,wname)
+            marker=" ← SELECTED" if wname == self.selected_weapon else ""
+            if owned:
+                status=f"Owned • {melee_status_text(player,wname)}"
+            elif unlocked:
+                status=f"Available • ${cfg['price']:,}"
+            else:
+                status=f"LOCKED — {cfg['unlock_zone']} • Level {cfg['unlock_level']}"
+            lines.append(f"🗡️ **{wname}**{marker}")
+            lines.append(status)
+            lines.append(cfg['desc'])
+            lines.append("")
+        return "\n".join(lines)
+
+
 class WeaponShopView(PlayerView):
     """Fisher-style Weapon Shop"""
     def __init__(self, user_id: int, store, display_name: str = "Survivor", selected_weapon: str = None, timeout: float | None = None):
@@ -5347,17 +5777,13 @@ class WeaponShopView(PlayerView):
         hub_btn.callback = hub_cb
         self.add_item(hub_btn)
 
-        main_btn = discord.ui.Button(label="🏠 Main menu", style=discord.ButtonStyle.secondary, row=3)
-        async def main_cb(interaction):
-            name = getattr(self, "display_name", "Survivor")
-            try:
-                name = getattr(interaction.user, "display_name", None) or getattr(interaction.user, "global_name", None) or interaction.user.name
-            except:
-                pass
+        melee_btn = discord.ui.Button(label="🗡️ Melee", style=discord.ButtonStyle.success, row=3)
+        async def melee_cb(interaction):
             p=self.store.get(self.user_id)
-            await interaction.response.edit_message(content=status(p, display_name=name), view=ZombieMenuView(self.user_id, self.store, display_name=name))
-        main_btn.callback = main_cb
-        self.add_item(main_btn)
+            view=MeleeShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"))
+            await interaction.response.edit_message(content=view.get_shop_text(p), embed=None, view=view)
+        melee_btn.callback = melee_cb
+        self.add_item(melee_btn)
 
     def get_shop_text(self, player, selected_override=None, extra_msgs=None):
         sel = selected_override or getattr(self, "selected_weapon", player.weapon_name)
@@ -5737,19 +6163,16 @@ class UpgradeView(PlayerView):
             ("health", "❤️ Health", "+20 HP"),
             ("armor", "🛡️ Armor", "-2 Dmg"),
             ("scavenger", "💰 Loot", "+10%"),
-            ("punch", "👊 Punch", "+1 Damage"),
             ("combat_medic", "💉 Combat Medic", "More meds/run"),
         ]
         for i, (uid, uname, plus) in enumerate(upgrades):
             is_sel = uid == self.selected_up
             cost = (
                 get_combat_medic_cost(player) if uid == "combat_medic"
-                else get_punch_upgrade_cost(player) if uid == "punch"
                 else get_upgrade_cost(player, uid)
             )
             lvl = (
                 player.combat_medic_level if uid == "combat_medic"
-                else player.punch_upgrades if uid == "punch"
                 else (player.scavenger_upgrades if uid == "scavenger" else getattr(player, f"{uid}_upgrades", 0))
             )
             label = f"{uname.split()[1]} ({lvl}) {'✅' if is_sel else ''}"
@@ -5777,15 +6200,13 @@ class UpgradeView(PlayerView):
         # Single buy button for selected upgrade - no bulk as requested
         cost = (
             get_combat_medic_cost(player) if self.selected_up == "combat_medic"
-            else get_punch_upgrade_cost(player) if self.selected_up == "punch"
             else get_upgrade_cost(player, self.selected_up)
         )
         selected_max = (
             (self.selected_up == "combat_medic" and player.combat_medic_level >= COMBAT_MEDIC_MAX_LEVEL)
-            or (self.selected_up == "punch" and player.punch_upgrades >= PUNCH_MAX_LEVEL)
         )
         if selected_max:
-            max_label = "Combat Medic MAXED" if self.selected_up == "combat_medic" else "Punch MAXED"
+            max_label = "Combat Medic MAXED"
             btn_buy = discord.ui.Button(label=f"🔥 {max_label}", style=discord.ButtonStyle.secondary, disabled=True, row=2)
         else:
             buy_label = f"Buy {self.selected_up.replace('_', ' ').title()} ${cost:,}"
@@ -5844,15 +6265,6 @@ class UpgradeView(PlayerView):
         lines.append(f"Your balance: **${player.money:,}** | Stars: **{player.stars}**")
         lines.append(f"Selected: **{sel.replace('_', ' ').title()}**")
         lines.append("---")
-        if sel == "punch":
-            lvl = player.punch_upgrades
-            lines.append(f"👊 **Punch ({lvl}/{PUNCH_MAX_LEVEL})**")
-            lines.append(f"**{player.punch_damage} damage** — no ammo required.")
-            if lvl < PUNCH_MAX_LEVEL:
-                lines.append(f"Next upgrade: +1 damage for **${get_punch_upgrade_cost(player):,}**")
-            else:
-                lines.append("🔥 **MAXED — 15 damage**")
-            lines.append("")
         if sel == "combat_medic":
             next_cost = get_combat_medic_cost(player)
             lvl = player.combat_medic_level
@@ -5867,17 +6279,14 @@ class UpgradeView(PlayerView):
             ("health", "❤️ Health", "+20 HP"),
             ("armor", "🛡️ Armor", "-2 Dmg taken"),
             ("scavenger", "💰 Loot", "+10% Money"),
-            ("punch", "👊 Punch", "+1 Damage"),
             ("combat_medic", "💉 Combat Medic", "More meds/run"),
         ]:
             cost = (
                 get_combat_medic_cost(player) if uid == "combat_medic"
-                else get_punch_upgrade_cost(player) if uid == "punch"
                 else get_upgrade_cost(player, uid)
             )
             lvl = (
                 player.combat_medic_level if uid == "combat_medic"
-                else player.punch_upgrades if uid == "punch"
                 else (player.scavenger_upgrades if uid == "scavenger" else getattr(player, f"{uid}_upgrades", 0))
             )
             sel_mark = " ← SELECTED" if uid == sel else ""
@@ -5888,26 +6297,15 @@ class UpgradeView(PlayerView):
                     if lvl < COMBAT_MEDIC_MAX_LEVEL else
                     f"{player.max_painkillers_per_run} 💊 Painkillers + {player.max_full_restores_per_run} ✨ Full Restore per run - MAXED"
                 )
-            elif uid == "punch":
-                lines.append(
-                    f"👊 {player.punch_damage} damage - Cost ${cost:,} - Lvl {lvl}"
-                    if lvl < PUNCH_MAX_LEVEL else
-                    f"👊 {player.punch_damage} damage - MAXED"
-                )
             else:
                 lines.append(f"{plus} per level - Cost ${cost:,} - Lvl {lvl}")
             lines.append("")
         if sel == "combat_medic" and player.combat_medic_level >= COMBAT_MEDIC_MAX_LEVEL:
             lines.append("Next: **Combat Medic MAXED — Lvl 6**")
-        elif sel == "punch" and player.punch_upgrades >= PUNCH_MAX_LEVEL:
-            lines.append("Next: **Punch MAXED — 15 damage**")
         else:
             if sel == "combat_medic":
                 next_lvl = player.combat_medic_level + 1
                 next_cost = get_combat_medic_cost(player)
-            elif sel == "punch":
-                next_lvl = player.punch_upgrades + 1
-                next_cost = get_punch_upgrade_cost(player)
             else:
                 next_lvl = (getattr(player, f"{sel}_upgrades", 0) + 1) if sel != "scavenger" else player.scavenger_upgrades + 1
                 next_cost = get_upgrade_cost(player, sel)
@@ -7067,7 +7465,7 @@ async def ownerstats_cmd(interaction: discord.Interaction):
     )
     embed.add_field(
         name="🛡️ Survivor",
-        value=f"**HP:** {player.health:,}/{player.max_health:,}\n**Armour:** {player.armor_reduction:,}\n**Punch:** {player.punch_damage:,}",
+        value=f"**HP:** {player.health:,}/{player.max_health:,}\n**Armour:** {player.armor_reduction:,}\n**Fists:** {melee_damage(player, 'Fists'):,}",
         inline=True,
     )
     embed.add_field(
@@ -7233,7 +7631,7 @@ async def playerstats_cmd(interaction: discord.Interaction, user: discord.User):
         value=(
             f"**HP:** {player.health:,}/{player.max_health:,}\n"
             f"**Armour:** {player.armor_reduction:,}\n"
-            f"**Punch:** {player.punch_damage:,}\n"
+            f"**Fists:** {melee_damage(player, 'Fists'):,}\n"
             f"**Ammo:** {player.ammo_name}"
         ),
         inline=True,
