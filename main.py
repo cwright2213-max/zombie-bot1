@@ -239,7 +239,7 @@ def combat_embed(player, last_msgs=None):
     survivor_lines = [
         f"`{p_bar}`",
         f"🔫 {player.weapon_name} {player.magazine}/{effective_magazine_size(player)} ({player.get_spare()} spare) [{player.ammo_name}]",
-        f"🗡️ {effective_melee_weapon(player)} — {melee_damage(player)} dmg" + (f" • {player.melee_durability.get(effective_melee_weapon(player), 0)}/{MELEE_WEAPONS[effective_melee_weapon(player)]['max_durability']} durability" if effective_melee_weapon(player) != "Fists" else " • ∞ durability"),
+        f"{melee_emoji(effective_melee_weapon(player))} {effective_melee_weapon(player)} — {melee_damage(player)} dmg" + (f" • {player.melee_durability.get(effective_melee_weapon(player), 0)}/{MELEE_WEAPONS[effective_melee_weapon(player)]['max_durability']} durability" if effective_melee_weapon(player) != "Fists" else " • ∞ durability"),
     ]
     if player.zone_name == "The Void":
         survivor_lines.append(f"◈ Bazooka: {player.void_bazooka_ammo} shot(s) ready | Lvl {player.void_weapon_level}/10")
@@ -422,6 +422,17 @@ MELEE_WEAPONS: dict[str, dict[str, Any]] = {
     },
 }
 MELEE_WEAPON_ORDER = ["Fists", "Dagger", "Hammer", "Pickaxe", "Axe", "Dual Swords"]
+MELEE_WEAPON_EMOJIS: dict[str, str] = {
+    "Fists": "👊",
+    "Dagger": "🗡️",
+    "Hammer": "🔨",
+    "Pickaxe": "⛏️",
+    "Axe": "🪓",
+    "Dual Swords": "⚔️",
+}
+
+def melee_emoji(weapon_name: str) -> str:
+    return MELEE_WEAPON_EMOJIS.get(weapon_name, "👊")
 
 WEAPON_UPGRADE_BASE_COSTS: dict[str, int] = {"damage": 250, "mag": 350, "crit": 400, "double_tap": 5000}
 DOUBLE_TAP_COSTS = (5000, 10000, 20000, 35000, 55000, 85000, 125000, 180000, 260000, 375000)
@@ -1808,7 +1819,7 @@ def action_help(player: Survivor) -> str:
     if player.enemy.is_bloater:
         return f"💣 BLOATER {player.enemy.bloater_timer} attacks left! {player.enemy.health} HP | 🔫 {player.ammo_name} {player.magazine}/{player.magazine_size} | 🧟 {player.enemy.name} 4 dmg"
     boss_text = f" • {_boss_status_text(player.enemy)}" if player.enemy.is_zone_boss else ""
-    return f"🔫 {player.ammo_name} {player.magazine}/{player.magazine_size} ({cost}/shot) | 🗡️ Fists {melee_damage(player, "Fists")} dmg | spare: {player.get_spare()} | 🧟 {player.enemy.name} {player.enemy.health} HP{boss_text}"
+    return f"🔫 {player.ammo_name} {player.magazine}/{player.magazine_size} ({cost}/shot) | {melee_emoji("Fists")} Fists {melee_damage(player, "Fists")} dmg | spare: {player.get_spare()} | 🧟 {player.enemy.name} {player.enemy.health} HP{boss_text}"
 
 def _apply_boss_attack_effect(player: Survivor, damage_dealt: int) -> tuple[int, list[str]]:
     """Apply a successful Zone Boss attack's mechanic and return adjusted damage/messages."""
@@ -2648,7 +2659,7 @@ def take_action(player: Survivor, action: str, heal_item: str | None = None) -> 
             messages.append(f"👊 **FISTS!** Hit **{enemy.name} for {melee_hit_damage} dmg**! No ammo used.")
         else:
             player.melee_durability[melee_name] = max(0, int(player.melee_durability.get(melee_name, 0) or 0) - 1)
-            messages.append(f"🗡️ **{melee_name.upper()}!** Hit **{enemy.name} for {melee_hit_damage} dmg**! No ammo used. Durability **{player.melee_durability[melee_name]}/{melee_cfg['max_durability']}**.")
+            messages.append(f"{melee_emoji(melee_name)} **{melee_name.upper()}!** Hit **{enemy.name} for {melee_hit_damage} dmg**! No ammo used. Durability **{player.melee_durability[melee_name]}/{melee_cfg['max_durability']}**.")
 
         # Melee never creates a fresh ammo status. It only processes ammo effects
         # that are already attached to this enemy, once per existing DoT effect.
@@ -3234,7 +3245,7 @@ def buy_melee(player: Survivor, weapon_name: str) -> list[str]:
         player.melee_weapon_name = weapon_name
         if weapon_name != "Fists" and int(player.melee_durability.get(weapon_name, 0) or 0) <= 0:
             player.melee_durability[weapon_name] = int(cfg["max_durability"])
-        return [f"🗡️ Equipped **{weapon_name}** for free."]
+        return [f"{melee_emoji(weapon_name)} Equipped **{weapon_name}** for free."]
     price = int(cfg["price"])
     if player.money < price:
         return [f"❌ Need **${price:,}** for {weapon_name}; you have **${player.money:,}**."]
@@ -3243,7 +3254,7 @@ def buy_melee(player: Survivor, weapon_name: str) -> list[str]:
     player.melee_upgrades.setdefault(weapon_name, 0)
     player.melee_weapon_name = weapon_name
     player.melee_durability[weapon_name] = int(cfg["max_durability"])
-    return [f"🗡️ Purchased and equipped **{weapon_name}**. Durability **{player.melee_durability[weapon_name]}/{cfg['max_durability']}**. ${player.money:,} left."]
+    return [f"{melee_emoji(weapon_name)} Purchased and equipped **{weapon_name}**. Durability **{player.melee_durability[weapon_name]}/{cfg['max_durability']}**. ${player.money:,} left."]
 
 
 def upgrade_melee(player: Survivor, weapon_name: str) -> list[str]:
@@ -3965,7 +3976,7 @@ def status_detailed(player: Survivor, display_name: str = "Survivor") -> str:
         f"**📊 {rebirth_display_name(player, display_name)} — Lvl {player.level}**",
         f"❤️ HP: {player.health}/{player.max_health}",
         f"💥 Dmg: {player.weapon_damage} | 📦 Mag: {player.magazine_size} | 🎯 Crit: {player.crit_chance*100:.1f}% | {weapon_upgrade_summary(player)}",
-        f"🎯 Crit: {int(player.crit_chance*100)}% | 🛡️ Armor: -{player.armor_reduction} | 💰 Loot: +{int((player.scavenger_bonus-1)*100)}% | 🗡️ Fists: {melee_damage(player, 'Fists')}",
+        f"🎯 Crit: {int(player.crit_chance*100)}% | 🛡️ Armor: -{player.armor_reduction} | 💰 Loot: +{int((player.scavenger_bonus-1)*100)}% | {melee_emoji('Fists')} Fists: {melee_damage(player, 'Fists')}",
         f"💰 ${player.money} | ⭐ {player.stars} | ✨ {player.xp} XP ({earned}/{needed})",
         f"👻 Soul Tokens: {player.soul_tokens} | Rebirths: {player.rebirth_count}",
         f"🪙 Wave 50 Tokens: Graveyard {special_token_balance(player, 'graveyard')} • City {special_token_balance(player, 'mega_death_city')} • Frost {special_token_balance(player, 'frostbitten')} • Toxic {special_token_balance(player, 'toxic_wasteland')} • Void {special_token_balance(player, 'void')}",
@@ -4733,7 +4744,7 @@ class CombatView(PlayerView):
                 if effective_melee == "Fists":
                     item.label = "👊 Fists"
                 else:
-                    item.label = f"🗡️ {effective_melee}"[:80]
+                    item.label = f"{melee_emoji(effective_melee)} {effective_melee}"[:80]
                 break
         if player.zone_name != "The Void":
             for item in list(self.children):
@@ -5560,16 +5571,16 @@ class MeleeShopView(PlayerView):
             unlocked = melee_unlocked_for_player(player, wname)
             selected = wname == self.selected_weapon
             if selected and owned:
-                label = f"🗡️ {wname} ✅"
+                label = f"{melee_emoji(wname)} {wname} ✅"
                 style = discord.ButtonStyle.success
             elif owned:
-                label = f"🗡️ {wname}"
+                label = f"{melee_emoji(wname)} {wname}"
                 style = discord.ButtonStyle.primary
             elif unlocked:
-                label = f"🗡️ {wname} ${cfg['price']:,}"
+                label = f"{melee_emoji(wname)} {wname} ${cfg['price']:,}"
                 style = discord.ButtonStyle.primary
             else:
-                label = f"🗡️ {wname} 🔒 Lvl{cfg['unlock_level']}"
+                label = f"{melee_emoji(wname)} {wname} 🔒 Lvl{cfg['unlock_level']}"
                 style = discord.ButtonStyle.secondary
             btn = discord.ui.Button(label=label[:80], style=style, disabled=not unlocked and not owned, row=0 if i < 3 else 1)
 
@@ -5666,11 +5677,11 @@ class MeleeShopView(PlayerView):
             lines.extend(self.extra_msgs)
             lines.append("")
         lines += [
-            "**🗡️ Melee Shop**",
+            "**⚔️ Melee Shop**",
             "",
             "Melee attacks use no ammo. An equipped melee weapon works in its unlock zone and every higher zone; before then, combat automatically falls back to Fists.",
             f"Your balance: **${player.money:,}** | Level **{player.level}** | Zone: **{player.zone_name}**",
-            f"Selected: 🗡️ **{self.selected_weapon}**",
+            f"Selected: {melee_emoji(self.selected_weapon)} **{self.selected_weapon}**",
         ]
         if self.selected_weapon in player.owned_melee_weapons:
             lines.append(f"📊 {melee_status_text(player, self.selected_weapon)}")
@@ -5695,7 +5706,7 @@ class MeleeShopView(PlayerView):
                 status=f"Available • ${cfg['price']:,}"
             else:
                 status=f"LOCKED — {cfg['unlock_zone']} • Level {cfg['unlock_level']}"
-            lines.append(f"🗡️ **{wname}**{marker}")
+            lines.append(f"{melee_emoji(wname)} **{wname}**{marker}")
             lines.append(status)
             lines.append(cfg['desc'])
             lines.append("")
@@ -5777,7 +5788,7 @@ class WeaponShopView(PlayerView):
         hub_btn.callback = hub_cb
         self.add_item(hub_btn)
 
-        melee_btn = discord.ui.Button(label="🗡️ Melee", style=discord.ButtonStyle.success, row=3)
+        melee_btn = discord.ui.Button(label="⚔️ Melee", style=discord.ButtonStyle.success, row=3)
         async def melee_cb(interaction):
             p=self.store.get(self.user_id)
             view=MeleeShopView(self.user_id, self.store, display_name=getattr(self, "display_name", "Survivor"))
